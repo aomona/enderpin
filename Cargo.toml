@@ -1,0 +1,25 @@
+[package]
+name = "enderpin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Reproducible Minecraft client and server workspaces"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dialoguer = "0.12"
+directories = "6"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+toml = "0.9"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
+
