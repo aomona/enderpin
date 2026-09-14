@@ -196,15 +196,21 @@ pub fn start(
     let mut command = sandbox::windows::configuration(&runtime.java, &policy)?;
     #[cfg(target_os = "macos")]
     inherit_target_lock(&mut command, &target)?;
-    let classpath = std::env::join_paths(&runtime.classpath)?
+    let classpath = std::env::join_paths(runtime.classpath.iter().map(|p| storage::java_path(p)))?
         .into_string()
         .map_err(|_| anyhow::anyhow!("non-UTF8 classpath"))?;
     let mut args = vec![
         format!("-Xmx{}M", options.memory_mib),
-        format!("-Djava.io.tmpdir={}", policy.temporary.display()),
-        format!("-Duser.home={}", policy.game.display()),
+        format!(
+            "-Djava.io.tmpdir={}",
+            storage::java_path(&policy.temporary).display()
+        ),
+        format!("-Duser.home={}", storage::java_path(&policy.game).display()),
         "-XX:-UsePerfData".into(),
-        format!("-Dfabric.gameJarPath={}", runtime.game_jar.display()),
+        format!(
+            "-Dfabric.gameJarPath={}",
+            storage::java_path(&runtime.game_jar).display()
+        ),
     ];
     args.extend(
         workspace.lockfile.runtimes[&side]
@@ -253,15 +259,27 @@ pub fn start(
             ("user_properties", "{}".into()),
             ("version_name", workspace.manifest.minecraft.clone()),
             ("version_type", "release".into()),
-            ("game_directory", policy.game.to_string_lossy().into_owned()),
-            ("assets_root", game_assets.to_string_lossy().into_owned()),
+            (
+                "game_directory",
+                storage::java_path(&policy.game)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "assets_root",
+                storage::java_path(&game_assets)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             (
                 "assets_index_name",
                 runtime.asset_index.clone().context("asset index missing")?,
             ),
             (
                 "natives_directory",
-                policy.temporary.to_string_lossy().into_owned(),
+                storage::java_path(&policy.temporary)
+                    .to_string_lossy()
+                    .into_owned(),
             ),
             ("launcher_name", "Enderpin".into()),
             ("launcher_version", env!("CARGO_PKG_VERSION").into()),
@@ -274,7 +292,9 @@ pub fn start(
             ),
             (
                 "library_directory",
-                runtime.readonly_roots[0].to_string_lossy().into_owned(),
+                storage::java_path(&runtime.readonly_roots[0])
+                    .to_string_lossy()
+                    .into_owned(),
             ),
         ]);
         for argument in crate::runtime::arguments(&runtime.metadata.arguments.jvm, &features)? {
@@ -302,7 +322,10 @@ pub fn start(
     }
     argument_file.flush()?;
     command
-        .arg(format!("@{}", argument_file.path().display()))
+        .arg(format!(
+            "@{}",
+            storage::java_path(argument_file.path()).display()
+        ))
         .stdin(if side == Side::Server {
             Stdio::piped()
         } else {

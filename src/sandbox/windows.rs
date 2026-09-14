@@ -24,8 +24,8 @@ use windows_sys::Win32::{
     },
     Security::{
         Authorization::{
-            ConvertSidToStringSidW, ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-            GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW, TRUSTEE_IS_SID,
+            ConvertSidToStringSidW, ConvertStringSidToSidW, EXPLICIT_ACCESS_W,
+            GetNamedSecurityInfoW, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
             TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
         },
         DACL_SECURITY_INFORMATION, FreeSid, GetSecurityDescriptorControl,
@@ -89,7 +89,7 @@ fn system_directory() -> Result<PathBuf> {
 pub(crate) fn configuration(java: &Path, policy: &Policy) -> Result<Command> {
     policy.validate(java)?;
     let system = system_directory()?;
-    let mut command = Command::new(java);
+    let mut command = Command::new(crate::storage::java_path(java));
     command.env_clear();
     super::environment(&mut command, policy);
     command
@@ -101,8 +101,8 @@ pub(crate) fn configuration(java: &Path, policy: &Policy) -> Result<Command> {
             "WINDIR",
             system.parent().context("invalid system directory")?,
         )
-        .env("APPDATA", &policy.game)
-        .env("LOCALAPPDATA", &policy.temporary);
+        .env("APPDATA", crate::storage::java_path(&policy.game))
+        .env("LOCALAPPDATA", crate::storage::java_path(&policy.temporary));
     Ok(command)
 }
 
@@ -241,7 +241,8 @@ fn grant_traverse(path: &Path, sid: &Sid) -> Result<()> {
         // FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
         // no listing, file read, write or inheritance permission.
         grfAccessPermissions: 0x20 | 0x80 | 0x20000 | 0x100000,
-        grfAccessMode: GRANT_ACCESS,
+        // Replace this SID's previous ancestor ACE, including inheritance flags.
+        grfAccessMode: SET_ACCESS,
         grfInheritance: 0,
         Trustee: TRUSTEE_W {
             pMultipleTrustee: null_mut(),
@@ -299,6 +300,16 @@ fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
     {
         validate_tree(path)?;
         for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
+            // Managed ancestors receive their declared RX/M tree grant; do not
+            // narrow them to traversal when preparing nested Java/tmp roots.
+            if policy
+                .readonly
+                .iter()
+                .chain([&policy.java_home, &policy.game, &policy.temporary])
+                .any(|root| ancestor.starts_with(root))
+            {
+                continue;
+            }
             grant_traverse(ancestor, sid)?;
         }
         icacls(
@@ -521,7 +532,7 @@ fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
     }
     let mut line = wide(OsStr::new(&line))?;
     ensure!(line.len() <= 32767, "Windows command line is too long");
-    let cwd = wide(policy.game.as_os_str())?;
+    let cwd = wide(crate::storage::java_path(&policy.game).as_os_str())?;
     let mut envs: Vec<_> = command
         .get_envs()
         .filter_map(|(k, v)| v.map(|v| (k, v)))

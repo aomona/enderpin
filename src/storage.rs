@@ -11,6 +11,23 @@ use sha2::{Digest, Sha512};
 
 use crate::model::{LockedPackage, hash_bytes, safe_filename, validate_hash};
 
+/// Java's legacy canonicalizer rejects the '?' in Win32 extended path prefixes.
+/// Keep canonical paths for filesystem validation, but use DOS/UNC syntax for Java.
+pub fn java_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(text) = path.to_str() {
+        if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+        if let Some(disk) = text.strip_prefix(r"\\?\")
+            && disk.as_bytes().get(1..3) == Some(b":\\")
+        {
+            return PathBuf::from(disk);
+        }
+    }
+    path.to_owned()
+}
+
 pub fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
@@ -444,6 +461,20 @@ pub fn recover(root: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(windows)]
+    fn java_paths_use_dos_and_unc_syntax() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\Java Runtime\bin\java.exe",
+                r"C:\Java Runtime\bin\java.exe",
+            ),
+            (r"\\?\UNC\server\share\file.jar", r"\\server\share\file.jar"),
+            (r"C:\game\mods\file.jar", r"C:\game\mods\file.jar"),
+        ] {
+            assert_eq!(java_path(Path::new(input)), PathBuf::from(expected));
+        }
+    }
     #[test]
     fn interrupted_commit_restores_original_files() -> Result<()> {
         let temp = tempfile::tempdir()?;

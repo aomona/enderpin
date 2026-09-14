@@ -60,15 +60,18 @@ pub fn command(java: &Path, policy: &Policy) -> Result<Command> {
 }
 
 pub(crate) fn environment(command: &mut Command, policy: &Policy) {
+    let game = crate::storage::java_path(&policy.game);
+    let temporary = crate::storage::java_path(&policy.temporary);
+    let java = crate::storage::java_path(&policy.java_home);
     command
-        .current_dir(&policy.game)
-        .env("HOME", &policy.game)
-        .env("USERPROFILE", &policy.game)
-        .env("TMPDIR", &policy.temporary)
-        .env("TMP", &policy.temporary)
-        .env("TEMP", &policy.temporary)
-        .env("JAVA_HOME", &policy.java_home)
-        .env("PATH", policy.java_home.join("bin"))
+        .current_dir(&game)
+        .env("HOME", &game)
+        .env("USERPROFILE", &game)
+        .env("TMPDIR", &temporary)
+        .env("TMP", &temporary)
+        .env("TEMP", &temporary)
+        .env("JAVA_HOME", &java)
+        .env("PATH", java.join("bin"))
         .env("LANG", "en_US.UTF-8");
 }
 

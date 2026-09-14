@@ -86,12 +86,16 @@ public class Probe {
         };
         let args: Vec<std::ffi::OsString> = vec![
             "-XX:-UsePerfData".into(),
-            format!("-Djava.io.tmpdir={}", temporary.display()).into(),
-            game.join("Probe.java").into(),
-            game.clone().into(),
-            temporary.clone().into(),
-            readonly.clone().into(),
-            secret.clone().into(),
+            format!(
+                "-Djava.io.tmpdir={}",
+                enderpin::storage::java_path(&temporary).display()
+            )
+            .into(),
+            enderpin::storage::java_path(&game.join("Probe.java")).into(),
+            enderpin::storage::java_path(&game).into(),
+            enderpin::storage::java_path(&temporary).into(),
+            enderpin::storage::java_path(&readonly).into(),
+            enderpin::storage::java_path(&secret).into(),
             if network { "allow" } else { "deny" }.into(),
             listener.local_addr()?.port().to_string().into(),
         ];
