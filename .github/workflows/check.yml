@@ -23,7 +23,19 @@ jobs:
           java-version: '21'
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu restricts unprivileged user namespaces. Authorize bwrap only;
+          # leave the system-wide restriction and the sandbox enforcement enabled.
+          sudo tee /etc/apparmor.d/enderpin-bwrap > /dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile enderpin-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/enderpin-bwrap
       - name: Probe native sandbox enforcement
         shell: bash
         run: ENDERPIN_TEST_JAVA_HOME="$JAVA_HOME" cargo test --locked -- --ignored --nocapture

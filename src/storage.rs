@@ -298,7 +298,12 @@ pub fn commit(root: &Path, changes: Vec<Change>) -> Result<()> {
                     sha512,
                 } => {
                     fs::copy(source, &path)?;
-                    File::open(&path)?.sync_all()?;
+                    // Windows FlushFileBuffers requires a handle opened for writing.
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&path)?
+                        .sync_all()
+                        .context("could not sync staged artifact")?;
                     let actual = hash_file(&path)?.0;
                     ensure!(&actual == sha512, "cached artifact changed while staging");
                     Some(actual)
