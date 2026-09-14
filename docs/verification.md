@@ -1,44 +1,65 @@
-# 初版の検証記録
+# 検証記録
 
-2026-09-14。ワークフローの定義と、実際に実行した検証を分けて記録する。
+2026-09-14更新。サンドボックス拡張で実行した検証と、初版の実測を区別して記録する。
 
-## 実行結果
+## サンドボックス拡張の実測
 
 | 環境 | 確認した範囲 | 結果 |
 | --- | --- | --- |
-| macOS / Apple Silicon / Rust 1.94 | fmt、全ターゲットClippy、通常テスト15件 | 成功 |
-| Linux ARM64 / Docker / Rust 1.94 | 通常テスト15件 | 成功 |
-| Windows x86_64 GNU向け / Linux上 | 全ターゲットのClippyとクロスコンパイル検査 | 成功。Windows実行ではない |
-| macOS / 管理下Temurin JDK | 実JVMのファイル・通信制限、JVMによる実行中ロック保持 | 2件成功 |
-| Linux ARM64 / OrbStack Ubuntu VM / 管理下Temurin JDK | bubblewrapとseccompによる実JVMのファイル・通信制限 | 成功 |
-| macOS | 実Modrinth検索・導入・両側同期・ハッシュ・別環境オフライン再現・ignore依存・手動変更復元・HTTPS URL導入と削除 | 成功 |
-| macOS、Linux ARM64 VM | Fabricサーバーの準備・起動・状態取得・コンソール・保存・正常終了・実行中同期拒否と終了後同期 | 両方成功 |
-| macOS | Microsoftログイン、OS資格情報ストア保存、Fabricクライアントの描画・音声・認証付きサーバー参加 | 成功。利用者のワールド参加報告とサーバー側の参加ログで確認 |
+| macOS / Apple Silicon / Rust 1.94 | fmt、全ターゲットClippy、通常テスト41件 | 成功 |
+| Linux ARM64 / Docker / Rust 1.94 | 全ターゲットClippy、通常テスト41件、Java/JNIビルド | 成功 |
+| macOS / Temurin 21.0.7 | 実JVMのファイル・通信制限、認証JNI、ナレーターJavaブリッジ、JVMによる実行中ロック保持 | 成功 |
+| Linux ARM64 / OrbStack Ubuntu VM / 管理下Temurin 21.0.12.1+1 | bubblewrap・seccompの実JVM制限、認証JNI、ナレーターJavaブリッジ | 成功 |
+| Windows / GitHub Actions / Temurin 21 | fmt、全ターゲットClippy、通常テスト41件、認証JNI、ナレーターJavaブリッジ、AppContainerのファイル・通信制限と権限の遷移 | 成功 |
+| macOS / Fabric 1.21.1 | ホスト認証を使った実クライアントの描画・音声初期化と認証付きサーバー参加 | 成功。サーバーの参加ログと秘密鍵キャッシュがないことを確認 |
+| macOS / Fabric 1.21.1 | サーバーの状態取得・コンソール・保存・正常終了・実行中同期拒否と終了後同期 | 成功 |
 
-ゲームで確認した固定構成はMinecraft 1.21.1、Fabric 0.19.5、Temurin `jdk-21.0.12.1+1`。共通のLithiumとクライアントのSodiumを同じ構成・ロックから配置した。サーバーは `online-mode=true`、`enforce-secure-profile=true` でlocalhostに待ち受けた。クライアントのスキンはゲーム内assetsへ保存され、共有キャッシュへの書込エラーがなくなったことも確認した。
+[GitHub Actions run 34846902368](https://github.com/aomona/enderpin/actions/runs/34846902368) はコミット `1bbaa89` の3 OSすべてで成功した。Windowsでは、継承を無効にした既存ファイルにも直接の読取権限を適用する修正後、読取専用化・取消し・再許可の全シナリオが成功した。
 
-クライアント認証の実測には、利用者の承認を得て既存MonaLauncherの公開クライアントIDを使用した。製品の既定IDとして同梱していない。資格情報はOSストアに保存し、この記録には含めない。接続テスト後はクライアントが終了し、サーバーも全ディメンションの保存と終了コード0を確認した。
+通常テスト41件には、権限宣言の読取とハッシュ照合、ローカル割り当て、変更時の承認失効、未対応の拒否設定、ハードリンク拒否、認証の失効・入力境界・署名の用途制限、ナレーターの入力・キュー・頻度制限を含む。
 
-## 制限プローブ
+### 制限と認証のプローブ
 
-`tests/sandbox.rs` はゲーム用と一時用ディレクトリへの書込、固定ファイルの読取を許可し、それ以外のテストファイルの読取・書込、固定ファイルの変更を拒否することを実JVMで確認する。ネットワーク有効時のloopback通信と、無効時の接続拒否も検証する。macOSでは追加の子プロセス起動拒否も確認する。
+`tests/sandbox.rs` は書込可能なゲーム・外部フォルダから、MODサブフォルダと外部フォルダの読取専用化、ゲーム全体の読取専用化と外部フォルダの取消し、元の権限への復帰を順番に検証する。読取専用MODの書込・削除・名前変更、許可していないファイルの読取・書込、Javaの変更が拒否されることを実JVMで確認する。ネットワーク有効時のloopback通信と無効時の接続拒否、macOSでは追加の子プロセス起動拒否も検証する。
 
-Linuxでは合成ルートと `/tmp` 等の書込を拒否するよう明示的に読取専用へ再マウントし、許可した個別のbind mountだけを書込可能にした。ゲームを起動したスレッドは終了まで保持する。Docker内の入れ子の名前空間では実行条件を満たせなかったため、制限の実測にはUbuntu VMを使用した。システムJDKの外部シンボリックリンクへ許可を広げず、Enderpinが取得・固定したJDKで検証した。
+`src/auth/broker/native_tests.rs` は実際のJavaエージェントとJNIをサンドボックス内で使う。テスト専用鍵で生成したチャット署名の検証、秘密鍵をエクスポートしないこと、別ハンドルの拒否、仲介の通信拒否を確認する。ナレーターJavaブリッジも許可時・無効時の出力を検査する。音声エンジンから実際に聞こえることの確認ではない。
 
-これらは指定したプローブの結果であり、OSの脆弱性やあらゆるデスクトップサービス経由の操作に対する完全な隔離証明ではない。MODごとの権限分離や、ゲームのアクセストークンをMODから隠すbrokerは実装していない。
+LinuxではDockerをビルドに使い、OS制限はOrbStack VMで実測した。合成ルートと `/tmp` 等を読取専用にし、明示したbind mountだけを書込可能にする。seccompのファイル記述子と認証socketの継承スロットを分離し、bubblewrapが継承socketをJVMへ渡せることを確認した。
+
+### 実ゲームでの認証
+
+固定構成はMinecraft 1.21.1、Fabric 0.19.5、Temurin `jdk-21.0.12.1+1`。共有LithiumとクライアントSodiumを同じ構成・ロックから配置した。localhostのサーバーは `online-mode=true`、`enforce-secure-profile=true`。ゲームへアクセストークンを渡す方式への切り替えは行わず、ホスト認証ブリッジで参加した。
+
+実測には利用者の承認を得てMonaLauncherの公開クライアントIDとOSストアのアカウントを使用した。製品の既定IDとしては同梱していない。資格情報はこの記録に含めない。検証用ワークスペースは一時ディレクトリへ複製し、終了時にクライアントとサーバーを停止した。プレイヤーのチャット送信は実行していないため、実ゲームでの署名付きチャットの相互運用まで成功したとは扱わない。
 
 ## 再実行
 
-通常のRustチェック、公開配布元を使う `tests/live_packages.py`、実JVMのignoredテスト、実サーバーの `tests/live_server.py` の手順は [README](../README.md#検証) に記載している。
+ビルドにはJDK 17以上とCコンパイラーが必要。Java/JNIブリッジはビルド時に同梱し、通常利用時にはコンパイラーを必要としない。
 
-`live_server.py` は固定済みワークスペースを一時ディレクトリへ複製し、空きlocalhostポートで起動する。明示的な `--accept-eula` が必要。状態取得、実行中の同期拒否、`list`、`stop`、`world/level.dat` の保存、終了後の同期を検証する。このスクリプトだけではプレイヤー参加を検証しない。
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+ENDERPIN_TEST_JAVA_HOME=/absolute/path/to/jdk cargo test --locked -- --ignored --nocapture
+cargo build --locked
+python3 tests/live_server.py /path/to/locked/workspace --accept-eula
+python3 tests/live_client.py /path/to/locked/workspace --accept-eula --use-account
+```
 
-CodeRabbitで未コミット変更をレビューし、指摘されたassets複製の途中ファイル対策と、保存中の30秒自動強制終了を修正した。最終コードで通常テストとClippyを再確認した。
+実ゲームのスクリプトには固定済みファイル・実行環境キャッシュが必要。`live_client.py` はデスクトップとログイン済みアカウントも必要とする。両スクリプトとも権限要求や外部フォルダがない検証用構成だけを自動承認し、MODの要求は自動承認しない。`live_server.py` はプレイヤー参加を検証しない。
+
+CodeRabbitのレビューを実施し、権限表示の制御文字除去、無音設定時のPulseAudio環境変数処理、認証状態の読取エラー処理、Windows検証用クライアントの終了処理を修正した。未対応の必須権限を黙って無視する提案は採用せず、理由を示して起動を停止する動作を維持した。
+
+## 初版で確認済みの範囲
+
+初版ではmacOS上で実Modrinth検索・導入・両側同期・ハッシュ・別環境でのオフライン再現・ignore依存・手動変更の復元・HTTPS URL導入と削除を確認した。Fabricサーバーの起動・コンソール・保存・終了はmacOSとLinux ARM64 VMで確認した。これらの配布元・全ゲーム操作をサンドボックス拡張の各修正ごとに繰り返したわけではない。
 
 ## 未検証・後続
 
-- Windowsのネイティブ実行・AppContainer強制・ゲーム起動。今回使えるWindows実機やVMはなかった。
-- Linuxの実クライアント画面と認証付きゲーム接続。ARM64 VMではサーバーと制限プローブを確認した。
-- GitHub Actionsの3 OSジョブの実行結果。定義済みだが、リモートへの公開・pushは行っていない。
-- 上記以外のMinecraft・Fabric・Javaの組み合わせ、旧式native形式。
-- Paper、NeoForge/Sinytra Connector、MonaLauncher組込、権限メタデータ。合意した後続段階で扱う。
+- WindowsとLinuxの実Minecraftクライアント画面、認証付きサーバー参加。CIの実JVMプローブとゲーム画面の検証は別。
+- 各OSのホスト音声エンジンによる実際の読み上げ、マイク・クリップボード・全デスクトップサービスの操作。対応と制約は [sandbox.md](sandbox.md) を参照。
+- 実ゲームの署名付きチャット送信。Minecraft 1.21.8 / 26.2のアダプターは移植済みだが、Enderpinからの実ゲーム接続は未検証。
+- MOD単位の強制隔離、実行中の権限追加。承認した権限はMinecraftプロセス全体で共有する。
+- Paper、NeoForge/Sinytra Connector、MonaLauncherへの組込は後続段階。
+
+この記録は指定した条件・プローブの結果であり、OSの脆弱性やあらゆるデスクトップサービスを含む完全な隔離証明ではない。
