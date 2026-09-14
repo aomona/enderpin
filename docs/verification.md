@@ -10,13 +10,13 @@
 | Linux ARM64 / Docker / Rust 1.94 | 全ターゲットClippy、通常テスト41件、Java/JNIビルド | 成功 |
 | macOS / Temurin 21.0.7 | 実JVMのファイル・通信制限、認証JNI、ナレーターJavaブリッジ、JVMによる実行中ロック保持 | 成功 |
 | Linux ARM64 / OrbStack Ubuntu VM / 管理下Temurin 21.0.12.1+1 | bubblewrap・seccompの実JVM制限、認証JNI、ナレーターJavaブリッジ | 成功 |
-| Windows / GitHub Actions / Temurin 21 | fmt、全ターゲットClippy、通常テスト41件、認証JNI、ナレーターJavaブリッジ、AppContainerのファイル・通信制限と権限の遷移 | 成功 |
+| Windows / GitHub Actions / Temurin 21 | fmt、全ターゲットClippy、通常テスト42件、認証JNI、ナレーターJavaブリッジ、AppContainerのファイル・通信制限と権限の遷移 | 成功 |
 | macOS / Fabric 1.21.1 | ホスト認証を使った実クライアントの描画・音声初期化と認証付きサーバー参加 | 成功。サーバーの参加ログと秘密鍵キャッシュがないことを確認 |
 | macOS / Fabric 1.21.1 | サーバーの状態取得・コンソール・保存・正常終了・実行中同期拒否と終了後同期 | 成功 |
 
 [GitHub Actions run 34846902368](https://github.com/aomona/enderpin/actions/runs/34846902368) はコミット `1bbaa89` の3 OSすべてで成功した。Windowsでは、継承を無効にした既存ファイルにも直接の読取権限を適用する修正後、読取専用化・取消し・再許可の全シナリオが成功した。
 
-通常テスト41件には、権限宣言の読取とハッシュ照合、ローカル割り当て、変更時の承認失効、未対応の拒否設定、ハードリンク拒否、認証の失効・入力境界・署名の用途制限、ナレーターの入力・キュー・頻度制限を含む。
+通常テスト（macOS/Linux 41件、Windows 42件）には、権限宣言の読取とハッシュ照合、ローカル割り当て、変更時の承認失効、未対応の拒否設定、ハードリンク拒否、認証の失効・入力境界・署名の用途制限、ナレーターの入力・キュー・頻度制限を含む。
 
 ### 制限と認証のプローブ
 
