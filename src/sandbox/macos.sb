@@ -6,7 +6,6 @@
 (allow file-read* (literal "/") (subpath "/System/Library")
     (subpath "/System/Cryptexes") (subpath "/usr/lib")
     (subpath "/private/var/db/timezone"))
-(allow file-read* file-write* (subpath (param "GAME")) (subpath (param "TMP"))
-    (literal "/dev/null"))
+(allow file-read* file-write* (literal "/dev/null"))
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom"))
 (allow mach-lookup (global-name "com.apple.system.logger") (global-name "com.apple.logd"))

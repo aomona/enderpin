@@ -131,6 +131,10 @@ pub struct Target {
     pub enabled: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled: Vec<String>,
+    #[serde(default)]
+    pub sandbox: crate::sandbox::permissions::Settings,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub permissions: BTreeMap<String, Vec<crate::sandbox::permissions::Request>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +156,8 @@ impl Manifest {
             packages: BTreeMap::new(),
             enabled: vec![],
             disabled: vec![],
+            sandbox: Default::default(),
+            permissions: BTreeMap::new(),
         };
         let manifest = Self {
             format: FORMAT,
@@ -205,6 +211,11 @@ impl Manifest {
         identifier(&self.minecraft)?;
         for side in Side::ALL {
             let target = self.target(side);
+            for requests in target.permissions.values() {
+                for request in requests {
+                    request.validate()?;
+                }
+            }
             if let Some(version) = &target.loader_version {
                 identifier(version)?;
             }

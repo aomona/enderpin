@@ -1,0 +1,8 @@
+(allow mach-lookup (global-name "com.apple.tsm.uiserver") (global-name "com.apple.dock.fullscreen")
+    (xpc-service-name "com.apple.hiservices-xpcservice")
+    (xpc-service-name "com.apple.ViewBridgeAuxiliary")
+    (xpc-service-name "com.apple.TextInputUI.xpc.CursorUIViewService"))
+(allow mach-register (local-name "com.apple.tsm.portname"))
+(allow user-preference-read (preference-domain "com.apple.HIToolbox") (preference-domain "com.apple.hitoolbox"))
+(allow file-read* (subpath "/usr/share/icu") (subpath "/usr/share/locale")
+    (literal "/Library/Preferences/com.apple.HIToolbox.plist"))

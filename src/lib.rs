@@ -1,7 +1,9 @@
 //! Reproducible Minecraft packages, runtimes and sandboxed launch, independent of a GUI.
 pub mod auth;
+mod bridges;
 pub mod launch;
 pub mod model;
+pub mod narrator;
 pub mod registry;
 pub mod resolver;
 pub mod runtime;

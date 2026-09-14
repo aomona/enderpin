@@ -191,3 +191,7 @@ Modrinthの旧project側 `client_side` / `server_side` のみを前提にせず�
 - Windowsはx86_64 GNU向け全ターゲットClippyが成功。ネイティブ実行は未検証。3 OSのCIを定義したが、リモートの実行結果はまだない。
 - 実測条件、再実行方法、限界は [docs/verification.md](docs/verification.md) に記録した。
 - Paper、Connector、MonaLauncherへの接続、権限メタデータは合意した順序で後続段階として扱う。
+
+## サンドボックス拡張（2026-09-14）
+
+フォルダ別制御、外部フォルダのローカル割り当て、MOD内および共有構成からの権限要求、ハッシュと実効計画に対応した承認を追加する。認証・ナレーターのホスト処理とJavaブリッジは、利用者の合意によりMonaLauncherからGPLv3で再利用する。操作例とOSごとの差は [docs/sandbox.md](docs/sandbox.md) に記載する。
