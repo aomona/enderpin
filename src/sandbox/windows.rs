@@ -186,6 +186,11 @@ fn validate_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 fn icacls(path: &Path, args: &[String]) -> Result<()> {
+    eprintln!(
+        "AppContainer: applying {} to {}",
+        args.join(" "),
+        path.display()
+    );
     let system = system_directory()?;
     let output = Command::new(system.join("icacls.exe"))
         .arg(path)
@@ -549,7 +554,9 @@ pub fn output(
 ) -> Result<std::process::Output> {
     let mut command = configuration(java, policy)?;
     command.args(args);
+    eprintln!("AppContainer probe: preparing process");
     let mut process = spawn_inner(&command, policy)?;
+    eprintln!("AppContainer probe: process {} started", process.id());
     process.stdin.take();
     let mut stdout = process.stdout.take().context("stdout missing")?;
     let mut stderr = process.stderr.take().context("stderr missing")?;
@@ -576,6 +583,7 @@ pub fn output(
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
+    eprintln!("AppContainer probe: process exited with {status}; collecting output");
     let output = std::process::Output {
         status,
         stdout: out
