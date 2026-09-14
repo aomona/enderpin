@@ -639,10 +639,22 @@ fn quote_argument(argument: &str) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-fn inherit_target_lock(command: &mut std::process::Command, target: &File) -> Result<()> {
+pub(crate) fn inherit_target_lock(
+    command: &mut std::process::Command,
+    target: &File,
+) -> Result<()> {
     use nix::libc;
-    use std::os::{fd::AsRawFd, unix::process::CommandExt};
-    let lease = target.try_clone()?;
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    };
+    // The broker replaces fd 3 in the child. Never put the retained lock there.
+    // SAFETY: fcntl creates a new owned descriptor for the live target file.
+    let duplicate = unsafe { libc::fcntl(target.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let lease = unsafe { File::from_raw_fd(duplicate) };
     // Keep the target locked in the JVM even if the macOS CLI is forcibly killed.
     // SAFETY: the closure owns the descriptor and uses only async-signal-safe fcntl;
     // flags change in the child, and no unrelated descriptor becomes inheritable.
