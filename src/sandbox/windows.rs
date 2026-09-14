@@ -312,6 +312,23 @@ fn grant_traverse(path: &Path, sid: &Sid) -> Result<()> {
     Ok(())
 }
 
+fn grant_tree(path: &Path, sid: &str, rights: &str) -> Result<()> {
+    // An inheritance-only grant can miss files whose inheritance was disabled.
+    // Apply direct rights to every existing object, then add future-child rights.
+    for (mode, flags) in [("/grant:r", ""), ("/grant", "(OI)(CI)")] {
+        icacls(
+            path,
+            &[
+                mode.into(),
+                format!("*{sid}:{flags}{rights}"),
+                "/T".into(),
+                "/Q".into(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
     // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
     // recurse through game-controlled junctions into the host's files.
@@ -327,15 +344,7 @@ fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
             }
             grant_traverse(ancestor, sid)?;
         }
-        icacls(
-            path,
-            &[
-                "/grant:r".into(),
-                format!("*{sid_text}:(OI)(CI){}", if writable { "M" } else { "RX" }),
-                "/T".into(),
-                "/Q".into(),
-            ],
-        )?;
+        grant_tree(path, sid_text, if writable { "M" } else { "RX" })?;
         if writable {
             icacls(
                 path,
@@ -365,15 +374,7 @@ fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
                 "/Q".into(),
             ],
         )?;
-        icacls(
-            &path,
-            &[
-                "/grant:r".into(),
-                format!("*{sid_text}:(OI)(CI)RX"),
-                "/T".into(),
-                "/Q".into(),
-            ],
-        )?;
+        grant_tree(&path, sid_text, "RX")?;
     }
     Ok(())
 }

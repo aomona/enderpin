@@ -13,7 +13,7 @@ use std::{
 };
 
 #[allow(unsafe_code)]
-pub(super) fn command(java: &Path, policy: &Policy, ipc: bool) -> Result<Command> {
+pub(super) fn command(java: &Path, policy: &Policy) -> Result<Command> {
     ensure!(
         Path::new("/usr/bin/bwrap").is_file(),
         "install bubblewrap (/usr/bin/bwrap); refusing unisolated launch"
@@ -38,9 +38,6 @@ pub(super) fn command(java: &Path, policy: &Policy, ipc: bool) -> Result<Command
         ] {
             ro_if_present(&mut command, path);
         }
-    }
-    if ipc {
-        command.args(["--preserve-fds", "1"]);
     }
     for path in [
         "/usr",
@@ -94,6 +91,19 @@ pub(super) fn command(java: &Path, policy: &Policy, ipc: bool) -> Result<Command
     filter.write_all(&seccomp(policy.network)?)?;
     use std::io::Seek;
     filter.rewind()?;
+    // Keep the seccomp descriptor out of the broker's fixed child slot. bwrap
+    // inherits non-CLOEXEC descriptors without an extra command-line option.
+    if filter.as_raw_fd() == crate::auth::broker::channel::CHILD_FD {
+        use std::os::fd::FromRawFd;
+        // SAFETY: fcntl duplicates the live file into a separately owned descriptor.
+        let duplicate = unsafe { libc::fcntl(filter.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4) };
+        ensure!(
+            duplicate >= 0,
+            "cannot reserve broker descriptor: {}",
+            std::io::Error::last_os_error()
+        );
+        filter = unsafe { std::fs::File::from_raw_fd(duplicate) };
+    }
     let fd = filter.as_raw_fd();
     command
         .arg("--seccomp")
@@ -196,18 +206,20 @@ fn desktop(command: &mut Command, audio: bool) -> Result<()> {
             .env("XAUTHORITY", "/run/enderpin/Xauthority")
             .env("XDG_SESSION_TYPE", "x11");
     }
-    let pulse = match std::env::var("PULSE_SERVER") {
-        Ok(server) => Some(PathBuf::from(
-            server
-                .strip_prefix("unix:")
-                .context("audio requires a local unix: PULSE_SERVER")?,
-        )),
-        Err(_) => runtime
-            .map(|p| p.join("pulse/native"))
-            .filter(|p| p.exists()),
-    };
-    if audio && let Some(pulse) = pulse {
-        bind_socket(command, &pulse, Path::new("/run/enderpin/pulse"))?;
+    if audio {
+        let pulse = match std::env::var("PULSE_SERVER") {
+            Ok(server) => Some(PathBuf::from(
+                server
+                    .strip_prefix("unix:")
+                    .context("audio requires a local unix: PULSE_SERVER")?,
+            )),
+            Err(_) => runtime
+                .map(|p| p.join("pulse/native"))
+                .filter(|p| p.exists()),
+        };
+        if let Some(pulse) = pulse {
+            bind_socket(command, &pulse, Path::new("/run/enderpin/pulse"))?;
+        }
     }
     command
         .env("PULSE_SERVER", "unix:/run/enderpin/pulse")

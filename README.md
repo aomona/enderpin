@@ -51,9 +51,9 @@ enderpin login --client-id YOUR_REGISTERED_CLIENT_ID
 enderpin launch --target client --connect localhost:25565
 ```
 
-表示されたURLとコードを使ってブラウザでログインします。`--connect` はQuick Play対応版で利用でき、省略すると通常起動します。Microsoftの更新用資格情報はEnderpin専用のOS資格情報ストアへ保存し、構成・ロックには保存しません。`enderpin logout` で削除できます。起動中のゲームのセッションは終了まで残ります。
+表示されたURLとコードを使ってブラウザでログインします。`--connect` はQuick Play対応版で利用でき、省略すると通常起動します。Microsoftの更新用資格情報はEnderpin専用のOS資格情報ストアへ保存し、構成・ロックには保存しません。`enderpin logout` で削除し、起動中の認証仲介も失効させます。既に確立したサーバー接続を切断する操作ではありません。
 
-ゲームには短命なMinecraftアクセストークンを渡します。コマンドライン一覧に直接載せず専用一時ディレクトリの引数ファイルを利用しますが、同じJVMのMODからトークンを隠す認証brokerは初版の範囲に含みません。
+Minecraftのアクセストークンとチャット署名用秘密鍵はホスト側に保持し、ゲームにはプレースホルダーと用途を限定した認証ブリッジを渡します。対応するMinecraft・Java・authlibの組み合わせを検査し、未対応版では停止します。[認証とナレーターの対応範囲](docs/sandbox.md#認証とナレーター) を参照してください。
 
 起動は常に固定済みの構成を検証します。実行環境を更新する場合は `prepare --update`、Gitで戻したロックを再現する場合は `prepare --locked` を使います。Fabricの版を構成で指定するには各対象に `loader_version = "0.19.5"` のように記入します。
 

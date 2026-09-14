@@ -240,9 +240,9 @@ pub fn login(
 
 pub fn session() -> Result<Session> {
     let _guard = crate::storage::operation_lock(&state_root()?)?;
-    let generation = match auth_generation() {
-        Ok(value) => value,
-        Err(_) => advance_generation()?,
+    let generation = match crate::storage::read_optional(&state_root()?, "generation")? {
+        Some(value) => value,
+        None => advance_generation()?,
     };
     let text = entry()?
         .get_password()

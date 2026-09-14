@@ -245,6 +245,13 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
     }
     for package in packages {
         let path = storage::safe_path(&ws.root, &package.relative_path(side))?;
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("{} is not installed; run sync --locked", package.name))?;
+        ensure!(
+            metadata.is_file() && !storage::is_link(&metadata) && metadata.len() == package.size,
+            "{} must be the regular file recorded in the lock",
+            package.name
+        );
         // Read and hash the same descriptor before inspecting untrusted ZIP metadata.
         let mut file = File::open(&path)
             .with_context(|| format!("{} is not installed; run sync --locked", package.name))?;

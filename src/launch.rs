@@ -299,7 +299,7 @@ pub fn start(
     );
     let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
     #[cfg(not(windows))]
-    let mut command = sandbox::command_with_ipc(&runtime.java, &policy, broker.is_some())?;
+    let mut command = sandbox::command(&runtime.java, &policy)?;
     #[cfg(windows)]
     let mut command = sandbox::windows::configuration(&runtime.java, &policy)?;
     if let Some(graphics) = graphics {
@@ -354,9 +354,19 @@ pub fn start(
         ));
         args.push(format!("-Dmonalauncher.narrator.token={narrator_token}"));
         if let Some(broker) = &broker {
+            // The JVM splits -javaagent at the first '='. Keep user-selected
+            // workspace paths out of the agent filename portion.
             args.push(format!(
                 "-javaagent:{}={}",
-                storage::java_path(&files.path().join("auth-bridge.jar")).display(),
+                std::path::Path::new("../launch")
+                    .join(
+                        files
+                            .path()
+                            .file_name()
+                            .context("bridge directory missing")?
+                    )
+                    .join("auth-bridge.jar")
+                    .display(),
                 storage::java_path(&crate::bridges::native(files.path())).display()
             ));
             #[cfg(unix)]

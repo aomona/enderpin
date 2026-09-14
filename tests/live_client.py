@@ -65,7 +65,11 @@ def main():
                 print(json.dumps({"authenticated_join": True, "secure_profile_server": True, "game_private_key_cache": False, "player_chat_sent": False}))
             finally:
                 if client is not None and client.poll() is None:
-                    client.send_signal(signal.SIGINT)
+                    if os.name == "nt":
+                        # Closing Enderpin also closes its kill-on-close AppContainer job.
+                        client.terminate()
+                    else:
+                        client.send_signal(signal.SIGINT)
                     try:
                         client.wait(timeout=30)
                     except subprocess.TimeoutExpired:

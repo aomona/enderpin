@@ -176,12 +176,8 @@ pub(crate) fn graphics_cache(root: &Path, policy: &mut Policy) -> Result<Option<
 }
 
 pub fn command(java: &Path, policy: &Policy) -> Result<Command> {
-    command_with_ipc(java, policy, false)
-}
-
-pub(crate) fn command_with_ipc(java: &Path, policy: &Policy, ipc: bool) -> Result<Command> {
     policy.validate(java)?;
-    let mut command = platform_command(java, policy, ipc)?;
+    let mut command = platform_command(java, policy)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -208,7 +204,7 @@ pub(crate) fn environment(command: &mut Command, policy: &Policy) {
 }
 
 #[cfg(target_os = "macos")]
-fn platform_command(java: &Path, policy: &Policy, _ipc: bool) -> Result<Command> {
+fn platform_command(java: &Path, policy: &Policy) -> Result<Command> {
     ensure!(
         Path::new("/usr/bin/sandbox-exec").is_file(),
         "macOS sandbox-exec is unavailable; refusing unisolated launch"
@@ -273,17 +269,17 @@ fn platform_command(java: &Path, policy: &Policy, _ipc: bool) -> Result<Command>
 }
 
 #[cfg(target_os = "linux")]
-fn platform_command(java: &Path, policy: &Policy, ipc: bool) -> Result<Command> {
-    linux::command(java, policy, ipc)
+fn platform_command(java: &Path, policy: &Policy) -> Result<Command> {
+    linux::command(java, policy)
 }
 
 #[cfg(windows)]
-fn platform_command(_java: &Path, _policy: &Policy, _ipc: bool) -> Result<Command> {
+fn platform_command(_java: &Path, _policy: &Policy) -> Result<Command> {
     anyhow::bail!(
         "Windows needs the native AppContainer process API; use launch::start or sandbox::windows::output"
     )
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-fn platform_command(_java: &Path, _policy: &Policy, _ipc: bool) -> Result<Command> {
+fn platform_command(_java: &Path, _policy: &Policy) -> Result<Command> {
     anyhow::bail!("sandbox backend is not implemented on this OS; refusing unisolated launch")
 }

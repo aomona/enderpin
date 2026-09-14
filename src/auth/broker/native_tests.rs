@@ -36,7 +36,7 @@ fn native_bridge_signs_without_exporting_keys_and_enforces_denial() -> Result<()
         std::env::var_os("ENDERPIN_TEST_JAVA_HOME").context("set ENDERPIN_TEST_JAVA_HOME")?,
     )
     .canonicalize()?;
-    let root = tempfile::tempdir()?;
+    let root = tempfile::Builder::new().prefix("enderpin=ipc-").tempdir()?;
     let root = root.path().canonicalize()?;
     let game = crate::storage::directory(&root, "game")?;
     let tmp = crate::storage::directory(&root, "tmp")?;
@@ -80,7 +80,7 @@ fn native_bridge_signs_without_exporting_keys_and_enforces_denial() -> Result<()
         let arguments: Vec<std::ffi::OsString> = vec![
             format!(
                 "-javaagent:{}={}",
-                crate::storage::java_path(&bridge.join("auth-bridge.jar")).display(),
+                "../bridge/auth-bridge.jar",
                 crate::storage::java_path(&crate::bridges::native(&bridge)).display()
             )
             .into(),
@@ -93,7 +93,7 @@ fn native_bridge_signs_without_exporting_keys_and_enforces_denial() -> Result<()
         ];
         #[cfg(unix)]
         let output = {
-            let mut command = crate::sandbox::command_with_ipc(&java, &policy, true)?;
+            let mut command = crate::sandbox::command(&java, &policy)?;
             broker.configure(&mut command)?;
             command.args(&arguments).output()?
         };
