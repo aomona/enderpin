@@ -23,10 +23,17 @@ use windows_sys::Win32::{
         WAIT_OBJECT_0,
     },
     Security::{
-        Authorization::{ConvertSidToStringSidW, ConvertStringSidToSidW},
-        FreeSid,
+        Authorization::{
+            ConvertSidToStringSidW, ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+            GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW, TRUSTEE_IS_SID,
+            TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+        },
+        DACL_SECURITY_INFORMATION, FreeSid, GetSecurityDescriptorControl,
+        InitializeSecurityDescriptor,
         Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
-        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+        SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, SetFileSecurityW,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
     },
     System::{
         JobObjects::{
@@ -186,11 +193,6 @@ fn validate_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 fn icacls(path: &Path, args: &[String]) -> Result<()> {
-    eprintln!(
-        "AppContainer: applying {} to {}",
-        args.join(" "),
-        path.display()
-    );
     let system = system_directory()?;
     let output = Command::new(system.join("icacls.exe"))
         .arg(path)
@@ -210,7 +212,82 @@ fn icacls(path: &Path, args: &[String]) -> Result<()> {
     );
     Ok(())
 }
-fn grants(policy: &Policy, sid: &str) -> Result<()> {
+
+fn grant_traverse(path: &Path, sid: &Sid) -> Result<()> {
+    let path = wide(path.as_os_str())?;
+    let (mut old_acl, mut descriptor) = (null_mut(), null_mut());
+    // SAFETY: SDK initializes the output pointers; descriptor owns old_acl's storage.
+    let error = unsafe {
+        GetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut old_acl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32).into());
+    }
+    let descriptor = Local(descriptor);
+    // A null DACL already grants everyone access. Do not accidentally restrict it.
+    if old_acl.is_null() {
+        return Ok(());
+    }
+    let entry = EXPLICIT_ACCESS_W {
+        // FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
+        // no listing, file read, write or inheritance permission.
+        grfAccessPermissions: 0x20 | 0x80 | 0x20000 | 0x100000,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.0.cast(),
+        },
+    };
+    let mut acl = null_mut();
+    // SAFETY: entry, SID and original descriptor remain alive for the merge.
+    let error = unsafe { SetEntriesInAclW(1, &entry, old_acl, &mut acl) };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32).into());
+    }
+    let _acl = Local(acl.cast());
+    let (mut control, mut revision) = (0, 0);
+    let mut updated: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let updated_ptr = (&mut updated as *mut SECURITY_DESCRIPTOR).cast();
+    // SAFETY: all SDK buffers and ACL allocations remain valid through the update.
+    unsafe {
+        check(GetSecurityDescriptorControl(
+            descriptor.0,
+            &mut control,
+            &mut revision,
+        ))?;
+        check(InitializeSecurityDescriptor(updated_ptr, 1))?;
+        check(SetSecurityDescriptorDacl(updated_ptr, 1, acl, 0))?;
+        let mask = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ;
+        check(SetSecurityDescriptorControl(
+            updated_ptr,
+            mask,
+            control & mask,
+        ))?;
+        // Intentionally use SetFileSecurity: unlike SetNamedSecurityInfo/icacls,
+        // it updates only this directory, without reapplying ACLs to every child.
+        check(SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            updated_ptr,
+        ))?;
+    }
+    Ok(())
+}
+
+fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
     // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
     // recurse through game-controlled junctions into the host's files.
     for (path, writable) in policy
@@ -222,20 +299,13 @@ fn grants(policy: &Policy, sid: &str) -> Result<()> {
     {
         validate_tree(path)?;
         for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
-            icacls(
-                ancestor,
-                &[
-                    "/grant:r".into(),
-                    format!("*{sid}:(X,RA,RC,S)"),
-                    "/Q".into(),
-                ],
-            )?;
+            grant_traverse(ancestor, sid)?;
         }
         icacls(
             path,
             &[
                 "/grant:r".into(),
-                format!("*{sid}:(OI)(CI){}", if writable { "M" } else { "RX" }),
+                format!("*{sid_text}:(OI)(CI){}", if writable { "M" } else { "RX" }),
                 "/T".into(),
                 "/Q".into(),
             ],
@@ -371,7 +441,7 @@ pub(crate) fn spawn(command: &Command, policy: &Policy) -> Result<Process> {
 fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
     policy.validate(Path::new(command.get_program()))?;
     let (sid, sid_text) = identity(&policy.game)?;
-    grants(policy, &sid_text)?;
+    grants(policy, &sid, &sid_text)?;
     let mut allocations = vec![];
     let mut capabilities = vec![];
     if policy.network {
