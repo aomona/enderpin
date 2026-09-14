@@ -1,7 +1,11 @@
-//! Minecraft package management, independent of a terminal or launcher GUI.
+//! Reproducible Minecraft packages, runtimes and sandboxed launch, independent of a GUI.
+pub mod auth;
+pub mod launch;
 pub mod model;
 pub mod registry;
 pub mod resolver;
+pub mod runtime;
+pub mod sandbox;
 pub mod storage;
 pub mod workspace;
 

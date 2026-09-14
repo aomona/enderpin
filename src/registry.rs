@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::{IpAddr, SocketAddr, ToSocketAddrs},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
@@ -16,6 +17,42 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const MAX_JSON_SIZE: u64 = 32 * 1024 * 1024;
 const API: &str = "https://api.modrinth.com/v2";
 
+type Origin = (String, u16, Vec<SocketAddr>);
+static CONNECTIONS: OnceLock<Mutex<BTreeMap<Origin, reqwest::blocking::Client>>> = OnceLock::new();
+
+fn pinned_client(
+    host: &str,
+    port: u16,
+    addresses: &[SocketAddr],
+) -> Result<reqwest::blocking::Client> {
+    let key = (host.to_owned(), port, addresses.to_vec());
+    let mut clients = CONNECTIONS
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| anyhow::anyhow!("connection cache is unavailable"))?;
+    if let Some(client) = clients.get(&key) {
+        return Ok(client.clone());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .redirect(Policy::none())
+        .no_proxy()
+        .user_agent(concat!(
+            "enderpin/",
+            env!("CARGO_PKG_VERSION"),
+            " (Minecraft workspace manager)"
+        ))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .resolve_to_addrs(host, addresses)
+        .build()?;
+    // ponytail: bounded origin cache; clearing at 64 entries avoids an LRU dependency.
+    if clients.len() >= 64 {
+        clients.clear();
+    }
+    clients.insert(key, client.clone());
+    Ok(client)
+}
+
 /// HTTPS transport validates and pins DNS results for every redirect hop.
 /// It never forwards credentials or records temporary signed redirect URLs.
 pub fn response(raw: &str) -> Result<Response> {
@@ -26,7 +63,7 @@ pub fn response(raw: &str) -> Result<Response> {
             .context("URL has no host")?
             .trim_matches(['[', ']']);
         let port = url.port_or_known_default().context("URL has no port")?;
-        let addresses: Vec<SocketAddr> = (host, port)
+        let mut addresses: Vec<SocketAddr> = (host, port)
             .to_socket_addrs()
             .context("DNS lookup failed")?
             .collect();
@@ -34,18 +71,9 @@ pub fn response(raw: &str) -> Result<Response> {
             !addresses.is_empty() && addresses.iter().all(|a| public_address(a.ip())),
             "download host must resolve only to public addresses"
         );
-        let client = reqwest::blocking::Client::builder()
-            .redirect(Policy::none())
-            .no_proxy()
-            .user_agent(concat!(
-                "enderpin/",
-                env!("CARGO_PKG_VERSION"),
-                " (Minecraft workspace manager)"
-            ))
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(180))
-            .resolve_to_addrs(host, &addresses)
-            .build()?;
+        addresses.sort_unstable();
+        addresses.dedup();
+        let client = pinned_client(host, port, &addresses)?;
         let reply = client
             .get(url.clone())
             .send()

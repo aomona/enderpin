@@ -112,10 +112,28 @@ pub fn operation_lock(root: &Path) -> Result<File> {
     Ok(file)
 }
 
+/// Kept by the launcher while a target runs; independent targets can run together.
+pub fn target_lock(root: &Path, side: crate::Side) -> Result<File> {
+    directory(root, &format!(".enderpin/{}", side.name()))?;
+    let path = safe_path(root, &format!(".enderpin/{}/run.lock", side.name()))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    file.try_lock()
+        .map_err(|_| anyhow::anyhow!("{} is running or being synchronized", side.name()))?;
+    Ok(file)
+}
+
 pub struct Cache {
     root: PathBuf,
 }
 impl Cache {
+    pub fn runtime_root(&self) -> Result<PathBuf> {
+        directory(&self.root, "runtime")
+    }
     pub fn open(path: &Path) -> Result<Self> {
         fs::create_dir_all(path)?;
         let root = path.canonicalize()?;

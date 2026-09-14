@@ -1,0 +1,576 @@
+//! AppContainer identity + exact filesystem grants + kill-on-close process job.
+//! Windows SDK owns enforcement; failures never launch with an ordinary token.
+#![allow(unsafe_code)]
+use super::Policy;
+use anyhow::{Context, Result, ensure};
+use std::{
+    ffi::{OsStr, c_void},
+    fs::{self, File},
+    io,
+    mem::size_of,
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        process::{CommandExt, ExitStatusExt},
+    },
+    path::{Path, PathBuf},
+    process::{Command, ExitStatus},
+    ptr::{null, null_mut},
+};
+use windows_sys::Win32::{
+    Foundation::{
+        ERROR_ALREADY_EXISTS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
+        WAIT_OBJECT_0,
+    },
+    Security::{
+        Authorization::{ConvertSidToStringSidW, ConvertStringSidToSidW},
+        FreeSid,
+        Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
+        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+    },
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, TerminateJobObject,
+        },
+        Pipes::CreatePipe,
+        SystemInformation::GetSystemDirectoryW,
+        Threading::{
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+            InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
+            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+            WaitForSingleObject,
+        },
+    },
+};
+
+fn wide(value: &OsStr) -> Result<Vec<u16>> {
+    let mut value: Vec<_> = value.encode_wide().collect();
+    ensure!(!value.contains(&0), "Windows string contains NUL");
+    value.push(0);
+    Ok(value)
+}
+fn check(ok: i32) -> io::Result<()> {
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
+    if handle.is_null() || handle == -1isize as HANDLE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: caller transfers a newly created, unique, valid kernel handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+fn system_directory() -> Result<PathBuf> {
+    let mut text = vec![0u16; 32768];
+    // SAFETY: buffer and reported capacity agree; API writes at most its capacity.
+    let count = unsafe { GetSystemDirectoryW(text.as_mut_ptr(), text.len() as u32) } as usize;
+    ensure!(
+        count > 0 && count < text.len(),
+        "cannot locate Windows system directory"
+    );
+    Ok(PathBuf::from(String::from_utf16(&text[..count])?))
+}
+
+/// Configuration only; callers must use this module's spawn, never Command::spawn.
+pub(crate) fn configuration(java: &Path, policy: &Policy) -> Result<Command> {
+    policy.validate(java)?;
+    let system = system_directory()?;
+    let mut command = Command::new(java);
+    command.env_clear();
+    super::environment(&mut command, policy);
+    command
+        .env(
+            "SystemRoot",
+            system.parent().context("invalid system directory")?,
+        )
+        .env(
+            "WINDIR",
+            system.parent().context("invalid system directory")?,
+        )
+        .env("APPDATA", &policy.game)
+        .env("LOCALAPPDATA", &policy.temporary);
+    Ok(command)
+}
+
+struct Sid(*mut c_void);
+impl Drop for Sid {
+    fn drop(&mut self) {
+        /* SAFETY: SDK-allocated SID, owned once. */
+        unsafe {
+            FreeSid(self.0);
+        }
+    }
+}
+struct Local(*mut c_void);
+impl Drop for Local {
+    fn drop(&mut self) {
+        /* SAFETY: LocalAlloc-compatible SDK output, owned once. */
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
+fn identity(game: &Path) -> Result<(Sid, String)> {
+    let name = format!(
+        "Enderpin.{}",
+        &crate::model::hash_bytes(game.as_os_str().to_string_lossy().as_bytes())[..40]
+    );
+    let name = wide(OsStr::new(&name))?;
+    let mut sid = null_mut();
+    // SAFETY: terminated name and valid output pointer; no capabilities at profile creation.
+    let result = unsafe {
+        CreateAppContainerProfile(
+            name.as_ptr(),
+            name.as_ptr(),
+            name.as_ptr(),
+            null(),
+            0,
+            &mut sid,
+        )
+    };
+    if result < 0 {
+        ensure!(
+            result as u32 == 0x80070000 | ERROR_ALREADY_EXISTS,
+            "AppContainer profile creation failed: {result:#x}"
+        );
+        // SAFETY: same validated name; successful call allocates an owned SID.
+        let result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+        ensure!(
+            result >= 0,
+            "AppContainer identity lookup failed: {result:#x}"
+        );
+    }
+    ensure!(!sid.is_null(), "AppContainer returned no SID");
+    let sid = Sid(sid);
+    let mut text = null_mut();
+    // SAFETY: sid is a valid owned SID; SDK allocates a terminated UTF-16 string.
+    check(unsafe { ConvertSidToStringSidW(sid.0, &mut text) })?;
+    let allocation = Local(text.cast());
+    let mut len = 0;
+    // SAFETY: ConvertSidToStringSidW guarantees a terminated string, shorter than 184 chars.
+    while len < 184 && unsafe { *text.add(len) } != 0 {
+        len += 1;
+    }
+    ensure!(len < 184, "unexpected SID string length");
+    let string = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) })?;
+    drop(allocation);
+    Ok((sid, string))
+}
+
+fn validate_tree(root: &Path) -> Result<()> {
+    let mut paths = vec![root.to_owned()];
+    let mut count = 0;
+    while let Some(path) = paths.pop() {
+        count += 1;
+        ensure!(count <= 1_000_000, "sandbox tree is too large");
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            !crate::storage::is_link(&metadata),
+            "sandbox tree contains a reparse point: {}",
+            path.display()
+        );
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                paths.push(entry?.path());
+            }
+        }
+    }
+    Ok(())
+}
+fn icacls(path: &Path, args: &[String]) -> Result<()> {
+    let system = system_directory()?;
+    let output = Command::new(system.join("icacls.exe"))
+        .arg(path)
+        .args(args)
+        .env_clear()
+        .env(
+            "SystemRoot",
+            system.parent().context("invalid system directory")?,
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "cannot apply AppContainer access to {} (icacls {})",
+        path.display(),
+        output.status
+    );
+    Ok(())
+}
+fn grants(policy: &Policy, sid: &str) -> Result<()> {
+    // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
+    // recurse through game-controlled junctions into the host's files.
+    for (path, writable) in policy
+        .readonly
+        .iter()
+        .chain(std::iter::once(&policy.java_home))
+        .map(|p| (p, false))
+        .chain([(&policy.game, true), (&policy.temporary, true)])
+    {
+        validate_tree(path)?;
+        for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
+            icacls(
+                ancestor,
+                &[
+                    "/grant:r".into(),
+                    format!("*{sid}:(X,RA,RC,S)"),
+                    "/Q".into(),
+                ],
+            )?;
+        }
+        icacls(
+            path,
+            &[
+                "/grant:r".into(),
+                format!("*{sid}:(OI)(CI){}", if writable { "M" } else { "RX" }),
+                "/T".into(),
+                "/Q".into(),
+            ],
+        )?;
+        if writable {
+            icacls(
+                path,
+                &[
+                    "/setintegritylevel".into(),
+                    "(OI)(CI)L".into(),
+                    "/T".into(),
+                    "/Q".into(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn pipe(child_reads: bool) -> Result<(OwnedHandle, File)> {
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 1,
+    };
+    let (mut read, mut write) = (null_mut(), null_mut());
+    // SAFETY: attributes and both output pointers remain valid throughout the call.
+    check(unsafe { CreatePipe(&mut read, &mut write, &attrs, 0) })?;
+    let read = owned(read)?;
+    let write = owned(write)?;
+    let (child, parent) = if child_reads {
+        (read, write)
+    } else {
+        (write, read)
+    };
+    check(unsafe { SetHandleInformation(parent.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) })?;
+    Ok((child, parent.into()))
+}
+
+pub struct Process {
+    process: OwnedHandle,
+    job: OwnedHandle,
+    id: u32,
+    pub stdin: Option<File>,
+    stdout: Option<File>,
+    stderr: Option<File>,
+}
+impl Process {
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        // SAFETY: process handle is retained for the lifetime of self.
+        let result = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) };
+        if result == 258 {
+            return Ok(None);
+        }
+        if result != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut code = 0;
+        check(unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) })?;
+        Ok(Some(ExitStatus::from_raw(code)))
+    }
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        if unsafe { WaitForSingleObject(self.process.as_raw_handle(), u32::MAX) } != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.try_wait()?
+            .ok_or_else(|| io::Error::other("process has not exited"))
+    }
+    pub fn kill(&mut self) -> io::Result<()> {
+        check(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
+    }
+    fn relay(&mut self) {
+        if let Some(mut output) = self.stdout.take() {
+            std::thread::spawn(move || {
+                let _ = io::copy(&mut output, &mut io::stdout().lock());
+            });
+        }
+        if let Some(mut output) = self.stderr.take() {
+            std::thread::spawn(move || {
+                let _ = io::copy(&mut output, &mut io::stderr().lock());
+            });
+        }
+    }
+}
+impl Drop for Process {
+    fn drop(&mut self) {
+        let _ = self.kill();
+        let _ = self.wait();
+    }
+}
+
+struct Attributes {
+    pointer: *mut c_void,
+    _storage: Vec<usize>,
+}
+impl Attributes {
+    fn new() -> Result<Self> {
+        let mut bytes = 0;
+        // SAFETY: first call queries required allocation size.
+        unsafe {
+            InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes);
+        }
+        ensure!(
+            bytes > 0 && bytes < 65536,
+            "invalid Windows attribute list size"
+        );
+        let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+        let pointer = storage.as_mut_ptr().cast();
+        check(unsafe { InitializeProcThreadAttributeList(pointer, 2, 0, &mut bytes) })?;
+        Ok(Self {
+            pointer,
+            _storage: storage,
+        })
+    }
+}
+impl Drop for Attributes {
+    fn drop(&mut self) {
+        unsafe {
+            DeleteProcThreadAttributeList(self.pointer);
+        }
+    }
+}
+
+pub(crate) fn spawn(command: &Command, policy: &Policy) -> Result<Process> {
+    let mut process = spawn_inner(command, policy)?;
+    process.relay();
+    Ok(process)
+}
+
+fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
+    policy.validate(Path::new(command.get_program()))?;
+    let (sid, sid_text) = identity(&policy.game)?;
+    grants(policy, &sid_text)?;
+    let mut allocations = vec![];
+    let mut capabilities = vec![];
+    if policy.network {
+        for value in ["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"] {
+            let value = wide(OsStr::new(value))?;
+            let mut pointer = null_mut();
+            check(unsafe { ConvertStringSidToSidW(value.as_ptr(), &mut pointer) })?;
+            allocations.push(Local(pointer));
+            capabilities.push(SID_AND_ATTRIBUTES {
+                Sid: pointer,
+                Attributes: 4,
+            });
+        }
+    }
+    let security = SECURITY_CAPABILITIES {
+        AppContainerSid: sid.0,
+        Capabilities: if capabilities.is_empty() {
+            null_mut()
+        } else {
+            capabilities.as_mut_ptr()
+        },
+        CapabilityCount: capabilities.len() as u32,
+        Reserved: 0,
+    };
+    let (input_child, input) = pipe(true)?;
+    let (output_child, output) = pipe(false)?;
+    let (error_child, error) = pipe(false)?;
+    let handles = [
+        input_child.as_raw_handle(),
+        output_child.as_raw_handle(),
+        error_child.as_raw_handle(),
+    ];
+    let attributes = Attributes::new()?;
+    // SAFETY: payloads and inherited handles remain alive until CreateProcessW returns.
+    check(unsafe {
+        UpdateProcThreadAttribute(
+            attributes.pointer,
+            0,
+            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+            (&security as *const SECURITY_CAPABILITIES).cast(),
+            size_of::<SECURITY_CAPABILITIES>(),
+            null_mut(),
+            null(),
+        )
+    })?;
+    check(unsafe {
+        UpdateProcThreadAttribute(
+            attributes.pointer,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            handles.as_ptr().cast(),
+            size_of_val(&handles),
+            null_mut(),
+            null(),
+        )
+    })?;
+    let job = owned(unsafe { CreateJobObjectW(null(), null()) })?;
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    check(unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            size_of_val(&limits) as u32,
+        )
+    })?;
+    let application = wide(command.get_program())?;
+    let mut line = String::new();
+    for value in std::iter::once(command.get_program()).chain(command.get_args()) {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&quote(
+            value.to_str().context("Windows arguments must be UTF-8")?,
+        ));
+    }
+    let mut line = wide(OsStr::new(&line))?;
+    ensure!(line.len() <= 32767, "Windows command line is too long");
+    let cwd = wide(policy.game.as_os_str())?;
+    let mut envs: Vec<_> = command
+        .get_envs()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect();
+    envs.sort_by_key(|(k, _)| k.to_string_lossy().to_uppercase());
+    let mut environment = vec![];
+    for (key, value) in envs {
+        ensure!(
+            !key.to_string_lossy().contains('='),
+            "invalid Windows environment key"
+        );
+        let entry = format!(
+            "{}={}",
+            key.to_str().context("non-UTF8 environment key")?,
+            value.to_str().context("non-UTF8 environment value")?
+        );
+        environment.extend(wide(OsStr::new(&entry))?);
+    }
+    environment.push(0u16);
+    let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = handles[0];
+    startup.StartupInfo.hStdOutput = handles[1];
+    startup.StartupInfo.hStdError = handles[2];
+    startup.lpAttributeList = attributes.pointer;
+    let mut info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: every pointer references a live buffer; JVM starts suspended so it
+    // cannot execute before assignment to the non-breakaway kill-on-close job.
+    check(unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            line.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_SUSPENDED
+                | CREATE_UNICODE_ENVIRONMENT
+                | CREATE_NO_WINDOW,
+            environment.as_ptr().cast(),
+            cwd.as_ptr(),
+            &startup.StartupInfo,
+            &mut info,
+        )
+    })?;
+    let process = owned(info.hProcess)?;
+    let thread = owned(info.hThread)?;
+    if let Err(error) =
+        check(unsafe { AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle()) })
+    {
+        unsafe {
+            TerminateProcess(process.as_raw_handle(), 1);
+            WaitForSingleObject(process.as_raw_handle(), u32::MAX);
+        }
+        return Err(error.into());
+    }
+    if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+        unsafe {
+            TerminateJobObject(job.as_raw_handle(), 1);
+            WaitForSingleObject(process.as_raw_handle(), u32::MAX);
+        }
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(Process {
+        process,
+        job,
+        id: info.dwProcessId,
+        stdin: Some(input),
+        stdout: Some(output),
+        stderr: Some(error),
+    })
+}
+
+fn quote(value: &str) -> String {
+    let mut output = String::from("\"");
+    let mut slashes = 0;
+    for ch in value.chars() {
+        if ch == '\\' {
+            slashes += 1;
+            continue;
+        }
+        output.extend(std::iter::repeat_n(
+            '\\',
+            if ch == '"' { slashes * 2 + 1 } else { slashes },
+        ));
+        output.push(ch);
+        slashes = 0;
+    }
+    output.extend(std::iter::repeat_n('\\', slashes * 2));
+    output.push('"');
+    output
+}
+
+/// Captured process output for enforcement tests. Same native launch path as games.
+pub fn output(
+    java: &Path,
+    policy: &Policy,
+    args: &[std::ffi::OsString],
+) -> Result<std::process::Output> {
+    let mut command = configuration(java, policy)?;
+    command.args(args);
+    let mut process = spawn_inner(&command, policy)?;
+    process.stdin.take();
+    let mut stdout = process.stdout.take().context("stdout missing")?;
+    let mut stderr = process.stderr.take().context("stderr missing")?;
+    let out = std::thread::spawn(move || {
+        use io::Read;
+        let mut bytes = vec![];
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let err = std::thread::spawn(move || {
+        use io::Read;
+        let mut bytes = vec![];
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let status = process.wait()?;
+    Ok(std::process::Output {
+        status,
+        stdout: out
+            .join()
+            .map_err(|_| anyhow::anyhow!("stdout worker failed"))??,
+        stderr: err
+            .join()
+            .map_err(|_| anyhow::anyhow!("stderr worker failed"))??,
+    })
+}

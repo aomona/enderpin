@@ -2,7 +2,7 @@
 
 Minecraftのクライアントとサーバーの構成を、同じGitリポジトリで固定・再現するRustライブラリとCLIです。
 
-開発中です。現在はパッケージ管理部分を実装しています。初版の完成条件にはFabricの両側起動・Javaの準備・サンドボックスも含まれ、それらはまだ開発途中です。実装範囲と順序は [PLAN.md](PLAN.md) を参照してください。
+初版として、パッケージの固定・同期、JavaとFabricの自動準備、認証付きクライアントとサーバーのサンドボックス起動を実装しています。macOSで実際のワールド参加まで確認しました。OSごとの検証範囲は [検証記録](docs/verification.md)、後続の実装順序は [PLAN.md](PLAN.md) を参照してください。
 
 ## 試す
 
@@ -18,6 +18,7 @@ enderpin add lithium --target all
 enderpin add sodium --target client
 enderpin search iris
 enderpin list --target all
+enderpin prepare --target all
 ```
 
 `--target client` が標準です。`--target server` はサーバーだけ、`--target all` の追加は共通指定を編集して両側を同期します。検索は1つの対象を指定します。
@@ -26,9 +27,45 @@ enderpin list --target all
 
 ```sh
 enderpin sync --target server --locked
+enderpin prepare --target server --locked
 ```
 
 `--locked` は構成とロックの不一致を拒否します。通常の `sync` は手編集された構成を解決し、既存の固定版を維持します。最新版へ進める場合は `update` を使います。
+
+## 起動する
+
+`prepare` はMinecraft本体・Fabric・Temurin JDKの配布版とハッシュをロックし、現在のOS・CPU用のファイルを取得します。初回の両側準備後に、`enderpin.toml` と `enderpin.lock` をGitへ追加してください。別のPCでは必要な側だけを準備できます。
+
+サーバーは [Minecraft EULA](https://aka.ms/MinecraftEULA) を確認し、同意する場合に明示して起動します。
+
+```sh
+enderpin launch --target server --accept-eula
+```
+
+同意はこのサーバーの `eula.txt` に保存します。ログを表示しながら `list`、`stop` 等のコンソール入力を使えます。Ctrl-Cは終了を要求し、2回目で強制停止します。保存完了まで自動的に待ち、時間だけを理由に強制終了しません。
+
+クライアントはMicrosoftの公開クライアントアプリケーションIDを指定してデバイスログインします。現在、Enderpinには配布用の既定IDを同梱していません。下記の値には、Minecraft認証で利用できる登録済みのIDが必要です。
+
+```sh
+enderpin login --client-id YOUR_REGISTERED_CLIENT_ID
+enderpin launch --target client --connect localhost:25565
+```
+
+表示されたURLとコードを使ってブラウザでログインします。`--connect` はQuick Play対応版で利用でき、省略すると通常起動します。Microsoftの更新用資格情報はEnderpin専用のOS資格情報ストアへ保存し、構成・ロックには保存しません。`enderpin logout` で削除できます。起動中のゲームのセッションは終了まで残ります。
+
+ゲームには短命なMinecraftアクセストークンを渡します。コマンドライン一覧に直接載せず専用一時ディレクトリの引数ファイルを利用しますが、同じJVMのMODからトークンを隠す認証brokerは初版の範囲に含みません。
+
+起動は常に固定済みの構成を検証します。実行環境を更新する場合は `prepare --update`、Gitで戻したロックを再現する場合は `prepare --locked` を使います。Fabricの版を構成で指定するには各対象に `loader_version = "0.19.5"` のように記入します。
+
+## サンドボックスと対応範囲
+
+- macOSはSeatbelt、Linuxはbubblewrapとseccomp、WindowsはAppContainerとJob Objectを使います。通常起動への自動切り替えはありません。
+- 対象のゲームディレクトリと専用一時ディレクトリを書込可能にし、共有Java・ライブラリ・キャッシュを読取専用にします。クライアントのassetsは検証してゲーム内へ複製し、スキンの保存先も分離します。
+- 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
+- `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新には別途ネットワークが必要です。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
+- Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
+- 初版の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- Windowsの実機起動、Linuxのゲーム画面は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
 
@@ -98,8 +135,11 @@ example-mod
 | `update` | 選んだ対象のModrinthパッケージを更新 |
 | `restore` | 変更された管理対象ファイルをロックの内容へ明示的に復元 |
 | `list` | ロックされたパッケージとロックの更新要否を表示 |
+| `prepare [--locked] [--update]` | Minecraft・Fabric・Javaを固定して準備 |
+| `login --client-id ID` / `logout` | OS資格情報ストアを使ったログイン・削除 |
+| `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
-全コマンドで `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` を利用できます。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
+共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`login` と `launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
 
 ## ファイルと保護
 
@@ -111,7 +151,7 @@ example-mod
 - 構成・ロック・ファイル変更をステージングし、復旧用ジャーナルを保存してから反映します。中断時は次の操作で元の状態へ戻します。復旧中に別の変更を見つけた場合はバックアップを保持して停止します。
 - 以前の構成とロックをGitで戻して `sync --locked` すれば、そのファイルへ戻せます。配布元またはキャッシュから取得できることが前提です。
 
-現在のパッケージ管理CLIにはゲームの実行中管理がまだないため、外部ランチャーで起動したゲームは終了してから同期してください。
+Enderpinで起動している対象への同期は拒否します。反対側は独立して操作できます。外部ランチャーで起動したゲームは検出しないため、終了してから同期してください。
 
 ## 検証
 
@@ -123,8 +163,15 @@ cargo test --locked
 # 実ネットワークを使う追加検証。Python 3.11以上。
 cargo build --locked
 python3 tests/live_packages.py
+
+# 実JVMでファイルと通信の許可・拒否を確認します。
+ENDERPIN_TEST_JAVA_HOME=/absolute/path/to/jdk cargo test --locked -- --ignored --nocapture
+
+# 固定済みワークスペースを複製してサーバーを起動・保存・終了します。
+# EULAに同意する場合のみ実行してください。
+python3 tests/live_server.py /path/to/workspace --accept-eula
 ```
 
 通常テストは固定データと一時ディレクトリで実行します。実ネットワーク検証はModrinthの検索・導入、両側の配置、ハッシュ、キャッシュからの別環境再現、ignore、変更検出、URL導入を検証します。ゲームの起動やサンドボックスの強制を証明するテストではありません。
 
-GitHub ActionsにはWindows・macOS・LinuxのRustチェックを定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。
+GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](docs/verification.md) に今回実行した範囲を記載しています。

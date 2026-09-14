@@ -67,6 +67,42 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub fn prepare_runtime(
+        &mut self,
+        sides: &[Side],
+        options: SyncOptions,
+        update: bool,
+        mut progress: impl FnMut(Side, &str),
+    ) -> Result<BTreeMap<Side, crate::runtime::PreparedRuntime>> {
+        let manifest = self.manifest.clone();
+        let mut lock = self.plan(&manifest, sides, options)?;
+        let mut prepared = BTreeMap::new();
+        for &side in sides {
+            let previous = lock.runtimes.get(&side);
+            if options.locked || options.offline {
+                ensure!(!update, "cannot update runtimes with --locked or --offline");
+                ensure!(
+                    previous.is_some_and(|runtime| crate::runtime::RuntimeLock::fingerprint(
+                        &manifest, side
+                    )
+                    .is_ok_and(|fp| fp == runtime.fingerprint)),
+                    "{} runtime is not locked; run prepare first",
+                    side.name()
+                );
+            }
+            let runtime = crate::runtime::resolve(&manifest, side, previous, update, &self.cache)?;
+            let ready =
+                crate::runtime::prepare(&runtime, side, &self.cache, options.offline, |message| {
+                    progress(side, message)
+                })?;
+            lock.runtimes.insert(side, runtime);
+            prepared.insert(side, ready);
+        }
+        self.apply(manifest, lock, sides, options, |event| {
+            progress(event.target, &event.package)
+        })?;
+        Ok(prepared)
+    }
     pub fn init(root: &Path, minecraft: String) -> Result<()> {
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
@@ -210,6 +246,10 @@ impl Workspace {
         options: SyncOptions,
         mut progress: impl FnMut(Progress),
     ) -> Result<SyncReport> {
+        let _targets = sides
+            .iter()
+            .map(|&side| storage::target_lock(&self.root, side))
+            .collect::<Result<Vec<_>>>()?;
         manifest.validate()?;
         lock.validate()?;
         ensure!(
@@ -366,6 +406,27 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn running_target_blocks_its_sync_but_not_the_other_target() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        Workspace::init(root.path(), "1.21.1".into())?;
+        let mut ws = Workspace::open(root.path(), cache.path())?;
+        let running = storage::target_lock(&ws.root, Side::Server)?;
+        let options = SyncOptions {
+            locked: true,
+            offline: true,
+            ..Default::default()
+        };
+        assert!(
+            ws.sync(ws.manifest.clone(), &[Side::Server], options, |_| ())
+                .is_err()
+        );
+        ws.sync(ws.manifest.clone(), &[Side::Client], options, |_| ())?;
+        drop(running);
+        ws.sync(ws.manifest.clone(), &[Side::Server], options, |_| ())?;
+        Ok(())
+    }
     use crate::model::{Kind, LockedPackage, Package};
     #[test]
     fn locked_restore_ignore_and_unmanaged_files() -> Result<()> {

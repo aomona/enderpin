@@ -59,6 +59,40 @@ impl Scope {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in using your registered Microsoft public-client application.
+    Login {
+        #[arg(long)]
+        client_id: String,
+    },
+    /// Delete this CLI's credential from the OS credential store.
+    Logout,
+    /// Launch a pinned target in the OS sandbox; Ctrl-C stops the server gracefully.
+    Launch {
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        no_network: bool,
+        /// Explicit acceptance of https://aka.ms/MinecraftEULA for this local server.
+        #[arg(long)]
+        accept_eula: bool,
+        #[arg(long, default_value_t = 2048)]
+        memory: u32,
+        /// Launch the official Minecraft demo without an account (no multiplayer).
+        #[arg(long)]
+        demo: bool,
+        /// Join this server on launch (Minecraft versions supporting Quick Play).
+        #[arg(long)]
+        connect: Option<String>,
+    },
+    /// Pin and download Minecraft, Fabric and a platform-specific Temurin JDK.
+    Prepare {
+        #[arg(long)]
+        locked: bool,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        update: bool,
+    },
     /// Create a shared client/server workspace.
     Init {
         #[arg(long)]
@@ -272,6 +306,39 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    if let Command::Login { client_id } = &cli.command {
+        ensure!(
+            !cli.json,
+            "login displays an interactive authorization code; --json is not supported"
+        );
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = cancelled.clone();
+        ctrlc::set_handler(move || {
+            signal.store(true, std::sync::atomic::Ordering::Relaxed);
+        })?;
+        let session = enderpin::auth::login(
+            client_id,
+            |prompt| {
+                eprintln!(
+                    "Open {} and enter {} (expires in {} seconds).",
+                    prompt.verification_uri, prompt.user_code, prompt.expires_in
+                );
+                Ok(())
+            },
+            || cancelled.load(std::sync::atomic::Ordering::Relaxed),
+        )?;
+        return cli.emit(
+            &serde_json::json!({"name": session.name, "uuid": session.uuid}),
+            format!(
+                "Signed in as {}. Credential saved in the OS credential store.",
+                session.name
+            ),
+        );
+    }
+    if matches!(cli.command, Command::Logout) {
+        enderpin::auth::logout()?;
+        return cli.emit(&serde_json::json!({"signed_out": true}), "Enderpin credential removed. Already running games keep their current session until they exit.");
+    }
     if let Command::Init { minecraft } = &cli.command {
         Workspace::init(&cli.directory, minecraft.clone())?;
         return cli.emit(
@@ -286,7 +353,119 @@ fn run(cli: &Cli) -> Result<()> {
         .unwrap_or_else(Cache::default_path)?;
     let mut ws = Workspace::open(&cli.directory, &cache)?;
     match &cli.command {
-        Command::Init { .. } => unreachable!(),
+        Command::Launch {
+            offline,
+            no_network,
+            accept_eula,
+            memory,
+            demo,
+            connect,
+        } => {
+            ensure!(
+                !cli.json,
+                "launch streams game output; --json is not supported"
+            );
+            let side = cli.target.single()?;
+            ensure!(!*demo || side == Side::Client, "--demo is only for clients");
+            ensure!(
+                !*accept_eula || side == Side::Server,
+                "--accept-eula is only for servers"
+            );
+            let stopping = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let signal = stopping.clone();
+            ctrlc::set_handler(move || {
+                signal.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })?;
+            let session = if side == Side::Client && !*demo {
+                Some(enderpin::auth::session()?)
+            } else {
+                None
+            };
+            let mut game = enderpin::launch::start(
+                ws,
+                side,
+                enderpin::launch::LaunchOptions {
+                    offline: *offline,
+                    network: !no_network,
+                    accept_eula: *accept_eula,
+                    memory_mib: *memory,
+                    connect: connect.clone(),
+                },
+                session.as_ref(),
+                *demo,
+                |message| eprintln!("{}: {}", side.name(), clean(message)),
+            )?;
+            eprintln!(
+                "Sandboxed {} started (PID {}). Press Ctrl-C to stop.",
+                side.name(),
+                game.id()
+            );
+            let (sender, receiver) = std::sync::mpsc::channel();
+            if side == Side::Server {
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    for line in io::stdin().lock().lines() {
+                        let Ok(line) = line else {
+                            break;
+                        };
+                        if sender.send(line).is_err() {
+                            return;
+                        }
+                    }
+                    let _ = sender.send("stop".into());
+                });
+            }
+            let mut stop_requested = false;
+            loop {
+                if let Some(status) = game.try_wait()? {
+                    ensure!(
+                        status.success() || (side == Side::Client && stop_requested),
+                        "{} exited with {status}",
+                        side.name()
+                    );
+                    return Ok(());
+                }
+                if stopping.load(std::sync::atomic::Ordering::Relaxed) > 0 && !stop_requested {
+                    game.stop(side)?;
+                    stop_requested = true;
+                    eprintln!("Waiting for shutdown (Ctrl-C again forces termination).");
+                }
+                while let Ok(line) = receiver.try_recv() {
+                    game.console(&line)?;
+                    if line.trim() == "stop" {
+                        stop_requested = true;
+                    }
+                }
+                if stopping.load(std::sync::atomic::Ordering::Relaxed) > 1 {
+                    game.kill()?;
+                    bail!("game was forcibly terminated after shutdown request");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        Command::Prepare {
+            locked,
+            offline,
+            update,
+        } => {
+            let prepared = ws.prepare_runtime(
+                &cli.target.sides(),
+                SyncOptions {
+                    locked: *locked,
+                    offline: *offline,
+                    ..Default::default()
+                },
+                *update,
+                |side, message| {
+                    if !cli.json {
+                        eprintln!("{}: {}", side.name(), clean(message));
+                    }
+                },
+            )?;
+            let summary: Vec<_> = prepared.iter().map(|(side, runtime)| serde_json::json!({"target": side, "java": runtime.java, "classpath_entries": runtime.classpath.len(), "assets": runtime.assets})).collect();
+            cli.emit(&summary, "Runtime prepared and pinned in enderpin.lock")
+        }
+        Command::Init { .. } | Command::Login { .. } | Command::Logout => unreachable!(),
         Command::Add(args) => add(cli, &mut ws, args),
         Command::Remove { name } => {
             identifier(name)?;

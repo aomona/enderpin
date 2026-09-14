@@ -123,6 +123,8 @@ impl Package {
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub loader: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_version: Option<String>,
     #[serde(default)]
     pub packages: BTreeMap<String, Package>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -146,6 +148,7 @@ impl Manifest {
     pub fn new(minecraft: String) -> Result<Self> {
         let target = Target {
             loader: "fabric".into(),
+            loader_version: None,
             packages: BTreeMap::new(),
             enabled: vec![],
             disabled: vec![],
@@ -202,6 +205,9 @@ impl Manifest {
         identifier(&self.minecraft)?;
         for side in Side::ALL {
             let target = self.target(side);
+            if let Some(version) = &target.loader_version {
+                identifier(version)?;
+            }
             ensure!(
                 ["fabric", "paper", "neoforge"].contains(&target.loader.as_str()),
                 "unsupported loader {}",
@@ -389,12 +395,15 @@ pub struct Lockfile {
     pub format: u32,
     #[serde(default)]
     pub targets: BTreeMap<Side, TargetLock>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtimes: BTreeMap<Side, crate::runtime::RuntimeLock>,
 }
 impl Default for Lockfile {
     fn default() -> Self {
         Self {
             format: FORMAT,
             targets: BTreeMap::new(),
+            runtimes: BTreeMap::new(),
         }
     }
 }
@@ -403,6 +412,9 @@ impl Lockfile {
         ensure!(self.format == FORMAT, "unsupported lock format");
         for target in self.targets.values() {
             target.validate()?;
+        }
+        for runtime in self.runtimes.values() {
+            runtime.validate()?;
         }
         Ok(())
     }
