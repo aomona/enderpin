@@ -34,6 +34,7 @@ public class Probe {
     throw new AssertionError("unexpected permission: " + label);
   }
   public static void main(String[] args) throws Exception {
+    System.out.println("probe started");
     Path game=Path.of(args[0]), tmp=Path.of(args[1]), ro=Path.of(args[2]), secret=Path.of(args[3]);
     Files.writeString(game.resolve("allowed.txt"), "ok");
     Files.writeString(tmp.resolve("allowed.txt"), "ok");
@@ -45,9 +46,17 @@ public class Probe {
       denied("child process", () -> new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "-version").start());
     }
     if (args[4].equals("allow")) {
+      System.out.println("testing allowed loopback");
       try (ServerSocket server=new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
-           Socket client=new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort());
-           Socket accepted=server.accept()) { client.getOutputStream().write(42); if (accepted.getInputStream().read()!=42) throw new AssertionError(); }
+           Socket client=new Socket()) {
+        server.setSoTimeout(5000);
+        client.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), server.getLocalPort()), 5000);
+        try (Socket accepted=server.accept()) {
+          accepted.setSoTimeout(5000);
+          client.getOutputStream().write(42);
+          if (accepted.getInputStream().read()!=42) throw new AssertionError();
+        }
+      }
     } else {
       if (!System.getProperty("os.name").startsWith("Windows")) {
         denied("network bind", () -> { try (ServerSocket s=new ServerSocket(0)) {} });
@@ -66,6 +75,7 @@ public class Probe {
         "bin/java"
     });
     for network in [false, true] {
+        println!("starting sandbox probe: network={network}");
         let policy = Policy {
             game: game.clone(),
             temporary: temporary.clone(),

@@ -563,8 +563,20 @@ pub fn output(
         let mut bytes = vec![];
         stderr.read_to_end(&mut bytes).map(|_| bytes)
     });
-    let status = process.wait()?;
-    Ok(std::process::Output {
+    let started = std::time::Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = process.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            timed_out = true;
+            process.kill()?;
+            break process.wait()?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let output = std::process::Output {
         status,
         stdout: out
             .join()
@@ -572,5 +584,12 @@ pub fn output(
         stderr: err
             .join()
             .map_err(|_| anyhow::anyhow!("stderr worker failed"))??,
-    })
+    };
+    ensure!(
+        !timed_out,
+        "sandbox probe timed out:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
 }
