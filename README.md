@@ -22,7 +22,7 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.1/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.1/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
 
 パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
