@@ -164,7 +164,7 @@ pub struct Plan {
 impl Plan {
     pub fn fingerprint(&self) -> Result<String> {
         // Version the approval contract independently of the package lock format.
-        Ok(hash_bytes(&serde_json::to_vec(&(1, self))?))
+        Ok(hash_bytes(&serde_json::to_vec(&(2, self))?))
     }
 }
 

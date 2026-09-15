@@ -81,11 +81,11 @@ def main():
             from urllib.request import urlopen
             with urlopen("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json", timeout=30) as response:
                 version = json.load(response)["latest"]["release"]
-        root = base / "server" / version if args.quick else base
+        root = base
         if not args.quick:
             for name in ["enderpin.toml", "enderpin.lock"]:
                 shutil.copyfile(args.workspace / name, root / name)
-        game = root / ".enderpin/server/game"
+        game = root / "server"
         game.mkdir(parents=True)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -99,7 +99,7 @@ def main():
             command += ["--cache-dir", str(args.cache_dir.resolve())]
         offline = ["--offline"] if args.offline else []
         if args.quick:
-            launch = [str(args.binary.resolve()), "-C", str(base), "--no-interactive",
+            launch = [str(args.binary.resolve()), "--no-interactive",
                       "quick", "--server", "--accept-eula", "--memory", "1024", "--port", str(port),
                       "--version", version]
             if args.no_sandbox:
@@ -116,7 +116,7 @@ def main():
             subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
             launch = command + ["launch", "--accept-eula", "--memory", "1024"] + offline
         process = subprocess.Popen(launch, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                   stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=base)
         messages = queue.Queue()
         threading.Thread(target=lambda: [messages.put(line) for line in process.stdout], daemon=True).start()
         recent = []
@@ -157,6 +157,11 @@ def main():
                     time.sleep(0.2)
             assert observed["players"]["online"] == 0
             if args.quick:
+                assert (base / "client").is_dir()
+                assert (base / "server").is_dir()
+                assert (base / "enderpin.toml").is_file()
+                assert not (base / "server" / version).exists()
+                assert not (base / ".enderpin/server/game").exists()
                 assert observed["version"]["name"] == version
                 assert "online-mode=true" in (game / "server.properties").read_text()
                 assert "eula=true" in (game / "eula.txt").read_text()

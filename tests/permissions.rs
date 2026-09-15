@@ -60,7 +60,7 @@ fn requests_are_hash_bound_local_and_rechecked_before_approval() -> Result<()> {
         incompatible: vec![],
         optional: vec![],
     });
-    let game_mods = storage::directory(&ws.root, ".enderpin/client/game/mods")?;
+    let game_mods = storage::directory(&ws.root, "client/mods")?;
     fs::write(game_mods.join("example.jar"), &bytes)?;
     assert!(
         permissions::plan(&ws, Side::Client).is_err(),

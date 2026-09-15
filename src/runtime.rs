@@ -1089,7 +1089,7 @@ mod tests {
         }))?;
         assert!(bad.release().is_err());
         for side in Side::ALL {
-            let mut manifest = crate::Workspace::quick_manifest_for("26.2".into(), side)?;
+            let mut manifest = crate::Workspace::quick_manifest("26.2".into())?;
             manifest.target_mut(side).packages.insert(
                 "mod".into(),
                 crate::Package::modrinth("mod", crate::Kind::Mod),

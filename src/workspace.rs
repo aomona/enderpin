@@ -107,22 +107,16 @@ impl Workspace {
         Self::init_manifest(root, Manifest::new(minecraft)?, &Side::ALL)
     }
 
-    pub fn init_vanilla_client(root: &Path, minecraft: String) -> Result<()> {
-        Self::init_quick(root, minecraft, Side::Client)
-    }
-
-    pub fn init_quick(root: &Path, minecraft: String, side: Side) -> Result<()> {
-        Self::init_manifest(root, Self::quick_manifest_for(minecraft, side)?, &[side])
+    pub fn init_quick(root: &Path, minecraft: String) -> Result<()> {
+        Self::init_manifest(root, Self::quick_manifest(minecraft)?, &Side::ALL)
     }
 
     pub fn quick_manifest(minecraft: String) -> Result<Manifest> {
-        Self::quick_manifest_for(minecraft, Side::Client)
-    }
-
-    pub fn quick_manifest_for(minecraft: String, side: Side) -> Result<Manifest> {
         let mut manifest = Manifest::new(minecraft)?;
-        manifest.target_mut(side).loader = "vanilla".into();
-        manifest.target_mut(side).sandbox.account_authentication = false;
+        for side in Side::ALL {
+            manifest.target_mut(side).loader = "vanilla".into();
+            manifest.target_mut(side).sandbox.account_authentication = false;
+        }
         manifest.validate()?;
         Ok(manifest)
     }
@@ -140,6 +134,9 @@ impl Workspace {
             storage::read_optional(&root, "enderpin.lock")?.is_none(),
             "enderpin.lock already exists"
         );
+        for &side in sides {
+            storage::directory(&root, side.name())?;
+        }
         let mut lock = Lockfile::default();
         for &side in sides {
             lock.targets.insert(
@@ -305,6 +302,7 @@ impl Workspace {
             if options.lock_only {
                 continue;
             }
+            storage::directory(&self.root, side.name())?;
             let state_path = format!(".enderpin/{}/state.toml", side.name());
             let old: InstalledState = storage::read_optional(&self.root, &state_path)?
                 .map(|s| toml::from_str(&s))
@@ -319,7 +317,7 @@ impl Workspace {
             for (path, record) in &old.files {
                 storage::valid_destination(path)?;
                 ensure!(
-                    path.starts_with(&format!(".enderpin/{}/game/", side.name())),
+                    path.starts_with(&format!("{}/", side.name())),
                     "installed state contains a different target"
                 );
                 validate_hash(&record.sha512)?;
@@ -430,10 +428,40 @@ impl Workspace {
 mod tests {
     use super::*;
     #[test]
+    fn sync_creates_game_directories_from_shared_config() -> Result<()> {
+        let origin = tempfile::tempdir()?;
+        let clone = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        Workspace::init_quick(origin.path(), "26.2".into())?;
+        for file in ["enderpin.toml", "enderpin.lock"] {
+            fs::copy(origin.path().join(file), clone.path().join(file))?;
+        }
+        let mut ws = Workspace::open(clone.path(), cache.path())?;
+        for side in Side::ALL {
+            ws.sync(
+                ws.manifest.clone(),
+                &[side],
+                SyncOptions {
+                    locked: true,
+                    offline: true,
+                    ..Default::default()
+                },
+                |_| (),
+            )?;
+            assert!(clone.path().join(side.name()).is_dir());
+        }
+        assert!(!clone.path().join(".enderpin/client/game").exists());
+        assert!(!clone.path().join(".enderpin/server/game").exists());
+        Ok(())
+    }
+    #[test]
     fn running_target_blocks_its_sync_but_not_the_other_target() -> Result<()> {
         let root = tempfile::tempdir()?;
         let cache = tempfile::tempdir()?;
         Workspace::init(root.path(), "1.21.1".into())?;
+        assert!(root.path().join("client").is_dir());
+        assert!(root.path().join("server").is_dir());
+        assert!(!root.path().join(".enderpin/client/game").exists());
         let mut ws = Workspace::open(root.path(), cache.path())?;
         let running = storage::target_lock(&ws.root, Side::Server)?;
         let options = SyncOptions {
@@ -492,8 +520,32 @@ mod tests {
             ..Default::default()
         };
         ws.apply(manifest.clone(), lock, &Side::ALL, options, |_| ())?;
-        let client = root.path().join(".enderpin/client/game/mods/example.jar");
-        let server = root.path().join(".enderpin/server/game/mods/example.jar");
+        let client = root.path().join("client/mods/example.jar");
+        let server = root.path().join("server/mods/example.jar");
+        let mut wrong_target: InstalledState = toml::from_str(&fs::read_to_string(
+            root.path().join(".enderpin/client/state.toml"),
+        )?)?;
+        let original_state = toml::to_string(&wrong_target)?;
+        let record = wrong_target
+            .files
+            .remove("client/mods/example.jar")
+            .context("missing client state")?;
+        wrong_target
+            .files
+            .insert("server/mods/example.jar".into(), record);
+        fs::write(
+            root.path().join(".enderpin/client/state.toml"),
+            toml::to_string(&wrong_target)?,
+        )?;
+        assert!(
+            ws.sync(manifest.clone(), &[Side::Client], options, |_| ())
+                .is_err()
+        );
+        assert_eq!(fs::read(&server)?, b"test artifact");
+        fs::write(
+            root.path().join(".enderpin/client/state.toml"),
+            original_state,
+        )?;
         fs::write(&client, b"manual edit")?;
         let locked = SyncOptions {
             locked: true,

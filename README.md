@@ -48,15 +48,15 @@ enderpin quick --server --version 26.2 --port 25566 --accept-eula
 
 `--server`・`--version`・`--port` はv0.1.1以降で利用できます。
 
-実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
+新規ワークスペースでは公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。既存ワークスペースでは固定済みの版を再利用します。準備と公式メタデータの確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
 
 サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
 
-保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーは `--server` で選択し、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+保存先はコマンドを実行したディレクトリ直下です。`client/` と `server/` を作成し、共通の `enderpin.toml`・`enderpin.lock` を使います。別の版で遊ぶ場合は `-C` で別ディレクトリを指定してください。同じ保存先の版は自動変更しません。`-C DIRECTORY` を付けると、そのディレクトリ直下に作成します。既存のMOD用ワークスペースは読み込みません。サーバーは `--server` で選択し、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
 
 `quick --server` はバニラの専用サーバーを起動します。初回はMinecraft EULAへの同意を確認します。非対話環境では、EULAを読んで同意した場合に `--accept-eula` を指定してください。`--yes` ではEULAに同意しません。保存済みの同意は同じサーバーで再利用します。
 
-サーバー保存先は `quick/server/<Minecraft版>/`、`-C DIRECTORY` 指定時は `DIRECTORY/server/<Minecraft版>/` です。`online-mode=true` を含むMinecraft標準設定を使います。クライアント側のオフライン `Player` では参加できません。`--port 25566` は起動時のポート指定で、省略時は `server.properties` の設定（初期値25565）を使います。`--no-sandbox` も併用できます。Ctrl-Cで保存して停止します。
+サーバー保存先は `server/`、`-C DIRECTORY` 指定時は `DIRECTORY/server/` です。`online-mode=true` を含むMinecraft標準設定を使います。クライアント側のオフライン `Player` では参加できません。`--port 25566` は起動時のポート指定で、省略時は `server.properties` の設定（初期値25565）を使います。`--no-sandbox` も併用できます。Ctrl-Cで保存して停止します。
 
 ## MOD用ワークスペースを試す
 
@@ -122,7 +122,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 ## 構成
 
 ```toml
-format = 1
+format = 2
 minecraft = "1.21.1"
 
 [common.lithium]
@@ -197,8 +197,21 @@ example-mod
 
 ## ファイルと保護
 
+以下の構成は開発版の仕様です（v0.1.1以前は旧構成）。形式は `format = 2` とし、旧形式の移行・互換対応は行いません。
+
+```text
+workspace/
+├── client/          # mods/、saves/、options.txt など
+├── server/          # mods/、world/、server.properties など
+├── enderpin.toml
+├── enderpin.lock
+└── .enderpin/       # 内部管理用
+```
+
 - `enderpin.toml` と `enderpin.lock` はGitへ追加します。
-- `.enderpin/client/game/` と `.enderpin/server/game/` に対象ごとに配置します。
+- `client/` がクライアントの `.minecraft` 相当、`server/` がサーバーのゲームディレクトリです。
+- `.enderpin/` は権限・実行ロック・復旧用ファイルなどの内部管理専用です。
+- `client/`・`server/` のGit管理範囲は利用者が `.gitignore` で設定します。Enderpinはこれらの除外設定を自動追加しません。
 - `.enderpin/` と `.enderpinignore` はGit管理外です。
 - ダウンロード済みファイルはOS標準のキャッシュディレクトリにハッシュで保存します。
 - 管理外ファイルとの衝突、管理対象の手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。

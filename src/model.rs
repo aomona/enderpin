@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
@@ -301,7 +301,7 @@ impl LockedPackage {
     }
     pub fn relative_path(&self, side: Side) -> String {
         format!(
-            ".enderpin/{}/game/{}/{}",
+            "{}/{}/{}",
             side.name(),
             self.kind.directory(),
             self.filename
@@ -555,6 +555,9 @@ mod tests {
         let m = Manifest::new("1.21.1".into())?;
         assert_eq!(Manifest::parse(&toml::to_string(&m)?)?.minecraft, "1.21.1");
         assert!(Manifest::parse(&(toml::to_string(&m)? + "\n[unknown]\na = 1\n")).is_err());
+        let mut old = m.clone();
+        old.format = 1;
+        assert!(Manifest::parse(&toml::to_string(&old)?).is_err());
         assert_eq!(
             parse_ignores(
                 "# mine\nclient:sodium\nserver:example\ncommon-mod",

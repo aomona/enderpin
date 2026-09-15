@@ -2,6 +2,17 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## 直下のclient/server構成（開発版、2026-09-15）
+
+通常ワークスペースとquickのゲーム保存先を `client/`・`server/` に変更。quickは実行ディレクトリ（または `-C` 指定先）に共通の設定・ロックを作り、両側のゲームディレクトリを使う。内部状態は `.enderpin/` に残す。新形式は `format = 2`、旧形式の自動移行は行わない。
+
+- macOS Apple Siliconで `cargo test --locked` 46件成功、実JVM用4件はignored。Clippy（警告をエラー扱い）、fmt、releaseビルド成功。
+- 新配置のMOD同期・復元、反対側のファイルを指定した状態の拒否、許可された同期先以外の拒否、設定だけ複製した空ワークスペースでのディレクトリ作成を検証。
+- `tests/live_server.py --quick --version 26.2 --accept-eula --binary target/release/enderpin`：`-C` なしで一時ディレクトリをcwdにして起動。`client/`・`server/`・設定ファイルの直下配置、ポート応答、コンソール操作、実行中sync拒否、`server/world/level.dat` の保存と正常終了を確認。
+- 一時ディレクトリで `quick --version 26.2 --no-interactive` を実行。Seatbelt内でクライアントを起動し、`client/logs/latest.log`、音声初期化・アトラス生成ログ、反対側のファイル保持、Ctrl-Cによる終了を確認。画面とプレイは確認していない。
+- CodeRabbitの軽微な指摘1件（設定だけ複製したワークスペースのゲームディレクトリ不足）は、共通の同期処理で作成する変更と、その回帰テストで対応。
+- この配置変更についてWindows/Linuxの実ゲームは未検証。公開済みv0.1.1には含まれない。
+
 ## quickサーバー・ポート・版指定と公開後インストール（2026-09-15）
 
 v0.1.1に含むサーバー・版指定・ポート指定を、`codex/quick-server` でmacOS / Apple Siliconにて確認した。
