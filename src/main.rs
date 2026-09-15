@@ -52,7 +52,7 @@ impl Scope {
         match self {
             Self::Client => Ok(Side::Client),
             Self::Server => Ok(Side::Server),
-            Self::All => bail!("search requires --target client or server"),
+            Self::All => bail!("this command requires --target client or server"),
         }
     }
 }
@@ -74,10 +74,10 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         mods: Vec<String>,
     },
-    /// Inspect, approve, revoke or bind this PC's sandbox permissions.
+    /// Edit game permissions interactively, or inspect and approve them.
     Permissions {
         #[command(subcommand)]
-        action: PermissionCommand,
+        action: Option<PermissionCommand>,
     },
     /// Sign in using the default Microsoft public-client application or your own.
     Login {
@@ -159,16 +159,20 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PermissionCommand {
-    /// Show the complete plan and its approval fingerprint. Run sync first.
+    /// Show a readable summary; --json includes the complete plan and fingerprint.
     Show,
-    /// Approve exactly the inspected plan; --yes never approves permissions.
-    Approve { fingerprint: String },
+    /// Review and confirm in a terminal, or approve an exact fingerprint in automation.
+    Approve { fingerprint: Option<String> },
     /// Forget approval; already running games must be stopped first.
     Revoke,
-    /// Bind a logical folder slot to an existing local directory; clears approval.
-    Bind { name: String, path: PathBuf },
-    /// Remove a local folder binding and its approval.
-    Unbind { name: String },
+    /// Allow an existing external folder; read-only unless --write is given. Clears approval.
+    AllowFolder {
+        path: PathBuf,
+        #[arg(long)]
+        write: bool,
+    },
+    /// Remove an external folder and its approval (the folder itself is kept).
+    RemoveFolder { path: PathBuf },
 }
 
 #[derive(Args)]
@@ -233,12 +237,390 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
-fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> Result<String> {
-    Ok(serde_json::to_string_pretty(plan)?
-        .lines()
-        .map(clean)
-        .collect::<Vec<_>>()
-        .join("\n"))
+fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
+    let settings = &plan.effective;
+    let access = |allowed| if allowed { "allowed" } else { "denied" };
+    let mut lines = vec![
+        format!(
+            "{} — Minecraft {} / {}{}",
+            plan.side.name(),
+            clean(&plan.minecraft),
+            clean(&plan.loader),
+            plan.loader_version
+                .as_ref()
+                .map(|v| format!(" {}", clean(v)))
+                .unwrap_or_default()
+        ),
+        format!(
+            "Workspace: {}",
+            clean(&plan.workspace.display().to_string())
+        ),
+        format!(
+            "Network (internet, LAN, listening): {}",
+            access(settings.network)
+        ),
+        format!(
+            "Game folder: {}",
+            if settings.game_write {
+                "read/write"
+            } else {
+                "read-only"
+            }
+        ),
+    ];
+    if settings.game_write && !settings.read_only.is_empty() {
+        lines.push(format!(
+            "Read-only game folders: {}",
+            settings
+                .read_only
+                .iter()
+                .map(|d| d.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if plan.side == Side::Client {
+        lines.push(format!(
+            "Account authentication via host: {} (independent of game network)",
+            access(settings.account_authentication)
+        ));
+        lines.push(format!(
+            "Audio: {}; narrator: {}; skin cache: {}",
+            access(settings.audio),
+            access(settings.narrator),
+            access(settings.skin_cache)
+        ));
+        lines.push(format!(
+            "Desktop integration: {}; graphics cache: {}",
+            access(settings.desktop_integration),
+            access(settings.graphics_cache)
+        ));
+        if plan.platform == "macos" {
+            lines.push(format!(
+                "Microphone: {}; clipboard: {}",
+                access(settings.microphone == Some(true)),
+                access(settings.clipboard == Some(true))
+            ));
+        }
+    }
+    lines.push(format!("External folders: {}", plan.folders.len()));
+    for folder in &plan.folders {
+        lines.push(format!(
+            "  {} — {}",
+            clean(&folder.path.display().to_string()),
+            if folder.write {
+                "read/write"
+            } else {
+                "read-only"
+            }
+        ));
+    }
+    lines.push(format!(
+        "Packages: {} (adding or updating one requires approval again)",
+        plan.packages.len()
+    ));
+    for package in &plan.packages {
+        lines.push(format!(
+            "  {}{} [file {}]",
+            clean(&package.name),
+            package
+                .version
+                .as_ref()
+                .map(|v| format!(" {}", clean(v)))
+                .unwrap_or_default(),
+            &package.sha512[..12]
+        ));
+    }
+    lines.extend(plan.limitations.iter().map(|note| clean(note)));
+    lines.join("\n")
+}
+
+fn approve_permissions(
+    cli: &Cli,
+    ws: &Workspace,
+    side: Side,
+    fingerprint: Option<&str>,
+) -> Result<()> {
+    use enderpin::sandbox::permissions::{self, Local};
+    let plan = permissions::plan(ws, side)?;
+    let current = plan.fingerprint()?;
+    if let Some(fingerprint) = fingerprint {
+        ensure!(
+            fingerprint == current,
+            "permission plan changed; inspect permissions show again"
+        );
+    } else {
+        ensure!(
+            cli.interactive(),
+            "permission approval needs a terminal; for automation use permissions show --json, then permissions approve <fingerprint>; --yes does not approve permissions"
+        );
+        eprintln!("{}", permission_text(&plan));
+        ensure!(
+            Confirm::new()
+                .with_prompt("Approve this game and these packages on this PC?")
+                .default(false)
+                .interact()?,
+            "permissions were not approved"
+        );
+    }
+    // Recheck after the prompt, in case an installed file changed while it was displayed.
+    ensure!(
+        permissions::plan(ws, side)?.fingerprint()? == current,
+        "permission plan changed; review it again"
+    );
+    let mut local = Local::load(ws, side)?;
+    local.approved = Some(current);
+    local.save(ws, side)
+}
+
+fn edit_switches(switches: &mut [(&str, &mut bool)]) -> Result<()> {
+    let selected = MultiSelect::new()
+        .with_prompt("Allowed access — Space to toggle, Enter to keep, Esc to cancel")
+        .items(switches.iter().map(|(label, _)| *label).collect::<Vec<_>>())
+        .defaults(
+            &switches
+                .iter()
+                .map(|(_, value)| **value)
+                .collect::<Vec<_>>(),
+        )
+        .interact_opt()?;
+    if let Some(selected) = selected {
+        for (index, (_, value)) in switches.iter_mut().enumerate() {
+            **value = selected.contains(&index);
+        }
+    }
+    Ok(())
+}
+
+fn allow_folder(
+    ws: &Workspace,
+    local: &mut enderpin::sandbox::permissions::Local,
+    path: &std::path::Path,
+    write: bool,
+) -> Result<()> {
+    use enderpin::sandbox::permissions::{FolderGrant, validate_folders};
+    let path = path.canonicalize().context("folder must already exist")?;
+    let mut folders = local.folders.clone();
+    folders.retain(|folder| folder.path != path);
+    folders.push(FolderGrant { path, write });
+    folders.sort_by(|a, b| a.path.cmp(&b.path));
+    validate_folders(ws, &folders)?;
+    local.folders = folders;
+    local.approved = None;
+    Ok(())
+}
+
+fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
+    use enderpin::sandbox::permissions::{GameDirectory, Local};
+    ensure!(
+        cli.interactive(),
+        "permissions editor needs a terminal; use permissions show --json to inspect or edit enderpin.toml"
+    );
+    let mut manifest = ws.manifest.clone();
+    let settings = &mut manifest.target_mut(side).sandbox;
+    let mut local = Local::load(ws, side)?;
+    eprintln!(
+        "Editing {} permissions. All mods share these permissions. Cancel from the main menu discards unsaved changes.",
+        side.name()
+    );
+    loop {
+        let mut items = vec![
+            "Save and review",
+            "Game permissions",
+            "Read-only game folders",
+            "External folders",
+        ];
+        if side == Side::Client {
+            items.push("Advanced desktop permissions");
+            if settings.validate_for(std::env::consts::OS, true).is_err() {
+                items.push("Reset unsupported desktop settings to defaults");
+            }
+        }
+        items.extend(["Save without approving", "Cancel"]);
+        let choice = Select::new()
+            .with_prompt("Permissions")
+            .items(&items)
+            .default(1)
+            .interact_opt()?;
+        match choice.map(|index| items[index]) {
+            None | Some("Cancel") => {
+                return cli.emit(
+                    &serde_json::json!({"updated": false}),
+                    "Permissions editing cancelled; no changes saved",
+                );
+            }
+            Some("Game permissions") => {
+                let mut switches = vec![
+                    ("Network (internet, LAN, listening)", &mut settings.network),
+                    ("Write to game folder", &mut settings.game_write),
+                ];
+                if side == Side::Client {
+                    switches.push((
+                        "Account authentication via host (even when game network is denied)",
+                        &mut settings.account_authentication,
+                    ));
+                    if std::env::consts::OS != "windows" {
+                        switches.push((
+                            if cfg!(target_os = "linux") {
+                                "Audio (includes recording via PulseAudio)"
+                            } else {
+                                "Audio"
+                            },
+                            &mut settings.audio,
+                        ));
+                    }
+                }
+                edit_switches(&mut switches)?;
+                if !settings.audio && settings.microphone == Some(true) {
+                    settings.microphone = None;
+                }
+            }
+            Some("Read-only game folders") => {
+                let folders = [
+                    GameDirectory::Saves,
+                    GameDirectory::Screenshots,
+                    GameDirectory::Resourcepacks,
+                    GameDirectory::Shaderpacks,
+                    GameDirectory::Mods,
+                    GameDirectory::Config,
+                    GameDirectory::Logs,
+                    GameDirectory::Plugins,
+                    GameDirectory::World,
+                ];
+                if let Some(selected) = MultiSelect::new()
+                    .with_prompt("Read-only folders — Space to toggle, Enter to keep")
+                    .items(
+                        folders
+                            .iter()
+                            .map(|folder| folder.name())
+                            .collect::<Vec<_>>(),
+                    )
+                    .defaults(
+                        &folders
+                            .iter()
+                            .map(|folder| settings.read_only.contains(folder))
+                            .collect::<Vec<_>>(),
+                    )
+                    .interact_opt()?
+                {
+                    settings.read_only = selected.into_iter().map(|index| folders[index]).collect();
+                }
+            }
+            Some("External folders") => {
+                let mut folders = vec!["Add external folder".to_owned()];
+                folders.extend(local.folders.iter().map(|folder| {
+                    format!(
+                        "Remove {} ({})",
+                        clean(&folder.path.display().to_string()),
+                        if folder.write {
+                            "read/write"
+                        } else {
+                            "read-only"
+                        }
+                    )
+                }));
+                if let Some(selected) = Select::new()
+                    .with_prompt("External folders — Esc to return")
+                    .items(&folders)
+                    .default(0)
+                    .interact_opt()?
+                {
+                    if selected == 0 {
+                        let path: String = Input::new()
+                            .with_prompt("Existing folder path (empty to cancel)")
+                            .allow_empty(true)
+                            .interact_text()?;
+                        if !path.is_empty()
+                            && let Some(access) = Select::new()
+                                .with_prompt("Folder access")
+                                .items(["Read-only", "Read/write"])
+                                .default(0)
+                                .interact_opt()?
+                            && let Err(error) = allow_folder(
+                                ws,
+                                &mut local,
+                                std::path::Path::new(&path),
+                                access == 1,
+                            )
+                        {
+                            eprintln!("{}", clean(&format!("{error:#}")));
+                        }
+                    } else {
+                        local.folders.remove(selected - 1);
+                    }
+                }
+            }
+            Some("Advanced desktop permissions") => {
+                let mut microphone = settings.microphone == Some(true);
+                let mut clipboard = settings.clipboard == Some(true);
+                let mut switches = vec![
+                    ("Narrator via host", &mut settings.narrator),
+                    ("Write skin cache", &mut settings.skin_cache),
+                ];
+                if std::env::consts::OS != "windows" {
+                    switches.push(("Write graphics cache", &mut settings.graphics_cache));
+                }
+                if cfg!(target_os = "macos") {
+                    switches.extend([
+                        ("Desktop integration", &mut settings.desktop_integration),
+                        ("Microphone (also needs audio)", &mut microphone),
+                        ("Clipboard", &mut clipboard),
+                    ]);
+                }
+                edit_switches(&mut switches)?;
+                if cfg!(target_os = "macos") {
+                    if microphone != (settings.microphone == Some(true)) {
+                        settings.microphone = Some(microphone);
+                    }
+                    if clipboard != (settings.clipboard == Some(true)) {
+                        settings.clipboard = Some(clipboard);
+                    }
+                }
+                eprintln!(
+                    "Only controls supported by this OS are shown. OS limitations also appear before approval."
+                );
+            }
+            Some("Reset unsupported desktop settings to defaults") => {
+                settings.reset_unsupported_desktop(std::env::consts::OS);
+                eprintln!(
+                    "Unsupported desktop settings reset. Review the permissions before approving."
+                );
+            }
+            Some(action @ ("Save and review" | "Save without approving")) => {
+                if let Err(error) = settings
+                    .validate_for(std::env::consts::OS, side == Side::Client)
+                    .and_then(|_| {
+                        enderpin::sandbox::permissions::validate_folders(ws, &local.folders)
+                    })
+                {
+                    eprintln!("Cannot save: {}", clean(&format!("{error:#}")));
+                    continue;
+                }
+                // Saving never grants access. A later review explicitly authorizes the new plan.
+                local.approved = None;
+                local.save(ws, side)?;
+                ws.apply(
+                    manifest,
+                    ws.lockfile.clone(),
+                    &[side],
+                    SyncOptions {
+                        locked: true,
+                        offline: true,
+                        lock_only: true,
+                        ..Default::default()
+                    },
+                    |_| {},
+                )?;
+                eprintln!("Permissions saved; approval is pending.");
+                if action == "Save and review" {
+                    approve_permissions(cli, ws, side, None)?;
+                    println!("Permissions approved");
+                }
+                return Ok(());
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn packages_mut(manifest: &mut Manifest, scope: Scope) -> &mut BTreeMap<String, Package> {
@@ -663,33 +1045,32 @@ fn run(cli: &Cli) -> Result<()> {
             let side = cli.target.single()?;
             let mut local = Local::load(&ws, side)?;
             match action {
-                PermissionCommand::Show => {
+                None => return edit_permissions(cli, &mut ws, side),
+                Some(PermissionCommand::Show) => {
                     let plan = permissions::plan(&ws, side)?;
                     let fingerprint = plan.fingerprint()?;
-                    return cli.emit(&serde_json::json!({"fingerprint": fingerprint, "approved": local.approved.as_deref() == Some(&fingerprint), "plan": plan}), format!("{}\nFingerprint: {fingerprint}\nApprove with: enderpin --target {} permissions approve {fingerprint}", permission_text(&plan)?, side.name()));
+                    let approved = local.approved.as_deref() == Some(&fingerprint);
+                    return cli.emit(&serde_json::json!({"fingerprint": fingerprint, "approved": approved, "plan": plan}), format!("{}\nApproval: {}{}", permission_text(&plan), if approved { "current" } else { "needed" }, if approved { String::new() } else { format!("\nReview and approve: enderpin --target {} permissions approve", side.name()) }));
                 }
-                PermissionCommand::Approve { fingerprint } => {
-                    let plan = permissions::plan(&ws, side)?;
-                    ensure!(
-                        fingerprint == &plan.fingerprint()?,
-                        "permission plan changed; inspect permissions show again"
+                Some(PermissionCommand::Approve { fingerprint }) => {
+                    approve_permissions(cli, &ws, side, fingerprint.as_deref())?;
+                    return cli.emit(
+                        &serde_json::json!({"updated": true, "approved": true}),
+                        "Permissions approved",
                     );
-                    local.approved = Some(fingerprint.clone());
                 }
-                PermissionCommand::Revoke => local.approved = None,
-                PermissionCommand::Bind { name, path } => {
-                    identifier(name)?;
-                    let path = path.canonicalize().context("folder must already exist")?;
+                Some(PermissionCommand::Revoke) => local.approved = None,
+                Some(PermissionCommand::AllowFolder { path, write }) => {
+                    allow_folder(&ws, &mut local, path, *write)?
+                }
+                Some(PermissionCommand::RemoveFolder { path }) => {
+                    // Also permit removing a saved absolute path after its directory disappeared.
+                    let path = path.canonicalize().unwrap_or_else(|_| path.clone());
                     ensure!(
-                        path.is_dir() && !ws.root.starts_with(&path) && !path.starts_with(&ws.root),
-                        "binding must be an external directory, separate from the workspace"
+                        local.folders.iter().any(|folder| folder.path == path),
+                        "folder is not granted; inspect permissions or use its saved absolute path"
                     );
-                    enderpin::sandbox::validate_data_tree(&path)?;
-                    local.bindings.insert(name.clone(), path);
-                    local.approved = None;
-                }
-                PermissionCommand::Unbind { name } => {
-                    local.bindings.remove(name);
+                    local.folders.retain(|folder| folder.path != path);
                     local.approved = None;
                 }
             }
@@ -734,25 +1115,9 @@ fn run(cli: &Cli) -> Result<()> {
                 |_| {},
             )?;
             let plan = enderpin::sandbox::permissions::plan(&ws, side)?;
-            let mut local = enderpin::sandbox::permissions::Local::load(&ws, side)?;
-            let fingerprint = plan.fingerprint()?;
-            if !no_sandbox && local.approved.as_deref() != Some(&fingerprint) {
-                ensure!(
-                    cli.interactive(),
-                    "sandbox permissions need approval; run permissions show, then permissions approve <fingerprint>"
-                );
-                eprintln!("{}", permission_text(&plan)?);
-                ensure!(
-                    Confirm::new()
-                        .with_prompt(
-                            "Approve these permissions for the entire Minecraft process on this PC?"
-                        )
-                        .default(false)
-                        .interact()?,
-                    "permissions were not approved"
-                );
-                local.approved = Some(fingerprint);
-                local.save(&ws, side)?;
+            let local = enderpin::sandbox::permissions::Local::load(&ws, side)?;
+            if !no_sandbox && local.approved.as_deref() != Some(&plan.fingerprint()?) {
+                approve_permissions(cli, &ws, side, None)?;
             }
             let stopping = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let signal = stopping.clone();

@@ -33,7 +33,6 @@ def main():
             result = subprocess.run(cmd + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
             plan = json.loads(result.stdout)
             assert not plan["plan"]["folders"]
-            assert all(not p["embedded"] and not p["repository"] for p in plan["plan"]["packages"])
             subprocess.run(cmd + ["permissions", "approve", plan["fingerprint"]], check=True, capture_output=True, timeout=30)
         game = root / "server"
         with socket.socket() as reservation:

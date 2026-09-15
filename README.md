@@ -143,7 +143,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 
 ## サンドボックスと対応範囲
 
-フォルダ別の書き込み禁止、MODの権限宣言、PCごとの承認と外部フォルダの割り当てに対応しています。[設定例とOSごとの制約](docs/sandbox.md) を参照してください。初回起動や権限・MODの変更時は起動前に確認し、非対話実行では `permissions show` → `permissions approve <fingerprint>` で事前承認します。
+`enderpin permissions` で、ゲーム全体の通信・書き込み・認証・外部フォルダの許可を対話的に編集できます。`permissions approve` または初回の `launch` で一覧を確認して承認します。権限変更やMODの追加・更新時は再確認し、変更がなければ確認を省略します。[設定例・自動化・OSごとの制約](docs/sandbox.md) を参照してください。
 
 - macOSはSeatbelt、Linuxはbubblewrapとseccomp、WindowsはAppContainerとJob Objectを使います。通常起動への自動切り替えはありません。
 - 対象のゲームディレクトリと専用一時ディレクトリを書込可能にし、共有Java・ライブラリ・キャッシュを読取専用にします。クライアントのassetsは検証して対象別キャッシュへ複製し、スキンの書き込み許可も分離します。
@@ -224,7 +224,7 @@ example-mod
 | `list` | ロックされたパッケージとロックの更新要否を表示 |
 | `prepare [--locked] [--update]` | Minecraft・Fabric・Javaを固定して準備 |
 | `login --client-id ID` / `logout` | OS資格情報ストアを使ったログイン・削除 |
-| `permissions show / approve / revoke / bind / unbind` | 権限の確認・ローカル承認・外部フォルダの割り当て |
+| `permissions [show / approve / revoke / allow-folder / remove-folder]` | 対話編集・権限の確認と承認・外部フォルダの許可 |
 | `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
 共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`quick`・`login`・`launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。

@@ -43,6 +43,9 @@ jobs:
           python tests/bun_install.py target/bun/*.tgz
           python scripts/package_npm.py --allow-partial
           python tests/npm_install.py target/npm/*.tgz
+      - name: Verify permissions editor
+        if: runner.os != 'Windows'
+        run: python -B tests/permissions_tui.py --binary target/debug/enderpin
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
         run: |

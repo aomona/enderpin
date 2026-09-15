@@ -109,9 +109,9 @@ def main():
         subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
         inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
         permission_plan = json.loads(inspected.stdout)
-        # Only authorize a baseline with no mod requests or host folders.
+        # Only authorize a vanilla server with no managed mods or host folders.
         assert not permission_plan["plan"]["folders"]
-        assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
+        assert not permission_plan["plan"]["packages"]
         subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
         launch = command + ["launch", "--accept-eula", "--memory", "1024", "--port", str(port)] + offline
         if args.no_sandbox:

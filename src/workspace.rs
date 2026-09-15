@@ -169,7 +169,7 @@ impl Workspace {
             vec![
                 Change {
                     path: "enderpin.toml".into(),
-                    content: Content::Bytes(toml::to_string_pretty(&manifest)?.into_bytes()),
+                    content: Content::Bytes(manifest.to_toml()?.into_bytes()),
                 },
                 Change {
                     path: "enderpin.lock".into(),
@@ -401,7 +401,7 @@ impl Workspace {
         {
             self.original_manifest.clone()
         } else {
-            toml::to_string_pretty(&manifest)?
+            manifest.to_toml()?
         };
         let lock_text = toml::to_string_pretty(&lock)?;
         if manifest_text != self.original_manifest {

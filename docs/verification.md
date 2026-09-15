@@ -2,6 +2,17 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## ゲーム単位の権限編集（開発版、2026-09-15）
+
+- `enderpin permissions` の対話編集、ハッシュ入力不要の `permissions approve`、権限とパッケージの要約表示を追加。共有設定は標準値と異なる項目だけを出力する。
+- MODの権限宣言の合算と論理フォルダ名を廃止。外部フォルダはPCごとの絶対パスと読み書き許可で指定する。MOD追加・更新、設定・フォルダ変更による再承認、実ファイル検査、起動直前の照合を維持する。
+- macOS ARM64 / Java 21で `cargo test --locked -- --include-ignored`（`ENDERPIN_TEST_JAVA_HOME` 指定）52件成功。実JVMでのファイル・通信の隔離と認証・ナレーターのブリッジ用テストを含む。fmt・Clippy（警告をエラー扱い）成功。
+- `python3 -B tests/permissions_tui.py --binary target/debug/enderpin`：擬似端末でキャンセル時の未保存、コンパクトな設定の保存、ハッシュ不要の承認、外部フォルダ追加、サーバー用の項目、保存のみ、初期値での承認拒否を確認。外部フォルダ選択の初期選択不足もこの検証で修正した。
+- `tests/permissions_cli.rs`：`--yes` のみの承認拒否、指定ハッシュの一致・不一致、外部フォルダの読み取り／書き込みと取り消しを検証。`tests/permissions.rs` は同じ権限でのMOD追加・更新時にも承認が失効し、埋め込み宣言がゲーム設定を拡張しないことを確認する。
+- `python3 tests/live_server.py --quick --version 26.2 --accept-eula`：macOSで実サーバーをサンドボックス有効で起動。指定ポートの応答、コンソール、実行中のsync拒否、ワールド保存、正常終了を確認。認証済みプレイヤーの参加は検証していない。
+- CodeRabbitは13ファイルを確認し、非対応OS設定を編集画面から修正できない軽微な問題を1件指摘。自動緩和はせず、利用者が明示的に選ぶリセット項目を追加し、3 OSそれぞれの設定検証で確認した。
+- npm公開済み0.1.3にはこの変更を含まない。Linux/Windowsの実ゲーム画面は今回も未検証。
+
 ## pnpm対応のバイナリ同梱パッケージ（v0.1.3、2026-09-15）
 
 - pnpm 12.4.2で `blockExoticSubdeps: true` を指定し、公開済み0.1.2の `ERR_PNPM_EXOTIC_SUBDEP` を再現。GitHub URLをoptional dependencyにしていたことが原因。

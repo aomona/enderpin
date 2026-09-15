@@ -133,8 +133,6 @@ pub struct Target {
     pub disabled: Vec<String>,
     #[serde(default)]
     pub sandbox: crate::sandbox::permissions::Settings,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub permissions: BTreeMap<String, Vec<crate::sandbox::permissions::Request>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +155,6 @@ impl Manifest {
             enabled: vec![],
             disabled: vec![],
             sandbox: Default::default(),
-            permissions: BTreeMap::new(),
         };
         let manifest = Self {
             format: FORMAT,
@@ -168,6 +165,26 @@ impl Manifest {
         };
         manifest.validate()?;
         Ok(manifest)
+    }
+    /// Keep shared configuration small; omitted sandbox keys use Settings::default().
+    pub fn to_toml(&self) -> Result<String> {
+        let mut value = toml::Value::try_from(self)?;
+        let defaults = toml::Value::try_from(crate::sandbox::permissions::Settings::default())?;
+        for side in Side::ALL {
+            let target = value
+                .get_mut(side.name())
+                .and_then(toml::Value::as_table_mut)
+                .context("missing target settings")?;
+            let sandbox = target
+                .get_mut("sandbox")
+                .and_then(toml::Value::as_table_mut)
+                .context("missing sandbox settings")?;
+            sandbox.retain(|key, value| defaults.get(key) != Some(value));
+            if sandbox.is_empty() {
+                target.remove("sandbox");
+            }
+        }
+        Ok(toml::to_string_pretty(&value)?)
     }
     pub fn parse(text: &str) -> Result<Self> {
         let result: Self = toml::from_str(text).context("invalid enderpin.toml")?;
@@ -211,11 +228,6 @@ impl Manifest {
         identifier(&self.minecraft)?;
         for side in Side::ALL {
             let target = self.target(side);
-            for requests in target.permissions.values() {
-                for request in requests {
-                    request.validate()?;
-                }
-            }
             if let Some(version) = &target.loader_version {
                 identifier(version)?;
             }
