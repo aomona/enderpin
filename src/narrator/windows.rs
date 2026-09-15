@@ -1,9 +1,6 @@
 #![allow(unsafe_code)]
-use crate::narrator::{NarratorCommand, PlaybackState};
-use std::sync::{
-    Arc,
-    mpsc::{Receiver, SyncSender},
-};
+use crate::narrator::NarratorCommand;
+use std::sync::mpsc::{Receiver, SyncSender};
 use windows::Win32::Media::Speech::{
     ISpVoice, SPF_ASYNC, SPF_IS_NOT_XML, SPF_PURGEBEFORESPEAK, SPRS_DONE, SPVOICESTATUS, SpVoice,
 };
@@ -15,7 +12,6 @@ use windows::core::PCWSTR;
 pub(crate) fn run_worker(
     receiver: Receiver<NarratorCommand>,
     ready_sender: SyncSender<Result<(), String>>,
-    _playback: Arc<PlaybackState>,
 ) {
     let initialized = initialize_voice();
     let _ = ready_sender.send(

@@ -12,18 +12,6 @@ mod windows;
 #[cfg(windows)]
 use windows::run_worker;
 
-#[derive(Default)]
-pub(crate) struct PlaybackState {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub started: std::sync::atomic::AtomicUsize,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub completed: std::sync::atomic::AtomicUsize,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub stopped: std::sync::atomic::AtomicUsize,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub speaking: std::sync::atomic::AtomicBool,
-}
-
 use std::sync::Mutex;
 use std::sync::mpsc::{self, SyncSender};
 use std::time::{Duration, Instant};
@@ -48,8 +36,6 @@ pub(crate) enum NarratorCommand {
 }
 
 pub struct NarratorBroker {
-    #[cfg_attr(windows, allow(dead_code))]
-    playback: std::sync::Arc<PlaybackState>,
     expected_token: String,
     sender: SyncSender<NarratorCommand>,
     limits: Mutex<BrokerLimits>,
@@ -70,15 +56,12 @@ impl NarratorBroker {
         }
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        let playback = std::sync::Arc::new(PlaybackState::default());
-        let observed = std::sync::Arc::clone(&playback);
-        std::thread::spawn(move || run_worker(receiver, ready_sender, observed));
+        std::thread::spawn(move || run_worker(receiver, ready_sender));
 
         ready_receiver
             .recv_timeout(INITIALIZATION_TIMEOUT)
             .map_err(|_| "narrator broker initialization timed out".to_owned())??;
         Ok(Self {
-            playback,
             expected_token,
             sender,
             limits: Mutex::new(BrokerLimits {
@@ -87,29 +70,6 @@ impl NarratorBroker {
                 last_text: None,
             }),
         })
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub fn playback_counts(&self) -> (usize, usize) {
-        use std::sync::atomic::Ordering;
-        (
-            self.playback.started.load(Ordering::Relaxed),
-            self.playback.completed.load(Ordering::Relaxed),
-        )
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub fn stopped_count(&self) -> usize {
-        self.playback
-            .stopped
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub fn is_speaking(&self) -> bool {
-        self.playback
-            .speaking
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Consumes launcher narrator protocol lines and returns true when the line is protocol data.
@@ -206,7 +166,6 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         (
             NarratorBroker {
-                playback: Default::default(),
                 expected_token: TOKEN.to_owned(),
                 sender,
                 limits: Mutex::new(BrokerLimits {

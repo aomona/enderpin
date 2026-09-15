@@ -1,27 +1,20 @@
 //! Host-side eSpeak NG worker. Game text is stdin data, never a command or filename.
-use crate::narrator::{NarratorCommand, PlaybackState, QUEUE_CAPACITY};
+use crate::narrator::{NarratorCommand, QUEUE_CAPACITY};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
-use std::sync::{
-    Arc,
-    atomic::Ordering,
-    mpsc::{Receiver, RecvTimeoutError, SyncSender},
-};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
-fn stop(child: &mut Option<(Child, Instant)>, state: &PlaybackState) {
+fn stop(child: &mut Option<(Child, Instant)>) {
     if let Some((mut process, _)) = child.take() {
         let _ = process.kill();
         let _ = process.wait();
-        state.stopped.fetch_add(1, Ordering::Relaxed);
     }
-    state.speaking.store(false, Ordering::Relaxed);
 }
 pub(crate) fn run_worker(
     receiver: Receiver<NarratorCommand>,
     ready: SyncSender<Result<(), String>>,
-    state: Arc<PlaybackState>,
 ) {
     if !std::path::Path::new("/usr/bin/espeak-ng").is_file() {
         let _ = ready.send(Err("Linux narrator requires espeak-ng".into()));
@@ -36,7 +29,7 @@ pub(crate) fn run_worker(
         match receiver.recv_timeout(Duration::from_millis(20)) {
             Ok(NarratorCommand::Clear) => {
                 queue.clear();
-                stop(&mut active, &state);
+                stop(&mut active);
             }
             Ok(NarratorCommand::Say {
                 text,
@@ -45,29 +38,25 @@ pub(crate) fn run_worker(
             }) => {
                 if interrupt {
                     queue.clear();
-                    stop(&mut active, &state);
+                    stop(&mut active);
                 }
                 if queue.len() < QUEUE_CAPACITY && volume > 0.0 {
                     queue.push_back((text, volume));
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                stop(&mut active, &state);
+                stop(&mut active);
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
         if let Some((process, started)) = &mut active {
             match process.try_wait() {
-                Ok(Some(status)) => {
-                    if status.success() {
-                        state.completed.fetch_add(1, Ordering::Relaxed);
-                    }
+                Ok(Some(_)) => {
                     active = None;
-                    state.speaking.store(false, Ordering::Relaxed);
                 }
                 Ok(None) if started.elapsed() < Duration::from_secs(60) => {}
-                _ => stop(&mut active, &state),
+                _ => stop(&mut active),
             }
         }
         if active.is_none()
@@ -86,8 +75,6 @@ pub(crate) fn run_worker(
                     .take()
                     .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
                 if written {
-                    state.started.fetch_add(1, Ordering::Relaxed);
-                    state.speaking.store(true, Ordering::Relaxed);
                     active = Some((child, Instant::now()));
                 } else {
                     let _ = child.kill();

@@ -12,12 +12,6 @@ final class LauncherNarrator implements Narrator {
         return Boolean.parseBoolean(System.getProperty("monalauncher.narrator.enabled", "true"));
     }
 
-    LauncherNarrator() {
-        if (Boolean.getBoolean("monalauncher.narrator.smoke")) {
-            say("MonaLauncher narrator smoke test", true, 0.5f);
-        }
-    }
-
     @Override
     public void say(String text, boolean interrupt, float volume) {
         if (!active()) return;
