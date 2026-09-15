@@ -63,15 +63,14 @@ pub(super) fn command(java: &Path, policy: &Policy) -> Result<Command> {
         "--dir",
         "/run/enderpin",
     ]);
-    for path in policy
-        .readonly
-        .iter()
-        .chain(std::iter::once(&policy.java_home))
-    {
-        command.arg("--ro-bind").arg(path).arg(path);
+    for grant in policy.grants() {
+        command
+            .arg(if grant.write { "--bind" } else { "--ro-bind" })
+            .arg(&grant.path)
+            .arg(&grant.path);
     }
-    for path in [&policy.game, &policy.temporary] {
-        command.arg("--bind").arg(path).arg(path);
+    for path in policy.read_only_game()? {
+        command.arg("--ro-bind").arg(&path).arg(&path);
     }
     command
         .env("XDG_RUNTIME_DIR", "/run/enderpin")
@@ -79,7 +78,7 @@ pub(super) fn command(java: &Path, policy: &Policy) -> Result<Command> {
         .env("MESA_SHADER_CACHE_DISABLE", "true")
         .env("__GL_SHADER_DISK_CACHE", "0");
     if policy.desktop {
-        desktop(&mut command)?;
+        desktop(&mut command, policy.permissions.audio)?;
     }
     // bwrap's synthetic root/tmp are otherwise writable. Remount their own mounts
     // read-only; the explicit game/tmp bind mounts remain independently writable.
@@ -92,6 +91,19 @@ pub(super) fn command(java: &Path, policy: &Policy) -> Result<Command> {
     filter.write_all(&seccomp(policy.network)?)?;
     use std::io::Seek;
     filter.rewind()?;
+    // Keep the seccomp descriptor out of the broker's fixed child slot. bwrap
+    // inherits non-CLOEXEC descriptors without an extra command-line option.
+    if filter.as_raw_fd() == crate::auth::broker::channel::CHILD_FD {
+        use std::os::fd::FromRawFd;
+        // SAFETY: fcntl duplicates the live file into a separately owned descriptor.
+        let duplicate = unsafe { libc::fcntl(filter.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4) };
+        ensure!(
+            duplicate >= 0,
+            "cannot reserve broker descriptor: {}",
+            std::io::Error::last_os_error()
+        );
+        filter = unsafe { std::fs::File::from_raw_fd(duplicate) };
+    }
     let fd = filter.as_raw_fd();
     command
         .arg("--seccomp")
@@ -129,15 +141,16 @@ fn bind_socket(command: &mut Command, source: &Path, destination: &Path) -> Resu
         .arg(destination);
     Ok(())
 }
-fn desktop(command: &mut Command) -> Result<()> {
+fn desktop(command: &mut Command, audio: bool) -> Result<()> {
     ensure!(
         std::env::var_os("WAYLAND_SOCKET").is_none(),
         "inherited WAYLAND_SOCKET is unsupported; use a named display socket"
     );
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    if std::env::var_os("DISPLAY").is_none()
-        && let Some(display) = std::env::var_os("WAYLAND_DISPLAY")
+    if std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland")
     {
+        let display = std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
         let name = PathBuf::from(display);
         let socket = if name.is_absolute() {
             name
@@ -193,18 +206,20 @@ fn desktop(command: &mut Command) -> Result<()> {
             .env("XAUTHORITY", "/run/enderpin/Xauthority")
             .env("XDG_SESSION_TYPE", "x11");
     }
-    let pulse = match std::env::var("PULSE_SERVER") {
-        Ok(server) => Some(PathBuf::from(
-            server
-                .strip_prefix("unix:")
-                .context("audio requires a local unix: PULSE_SERVER")?,
-        )),
-        Err(_) => runtime
-            .map(|p| p.join("pulse/native"))
-            .filter(|p| p.exists()),
-    };
-    if let Some(pulse) = pulse {
-        bind_socket(command, &pulse, Path::new("/run/enderpin/pulse"))?;
+    if audio {
+        let pulse = match std::env::var("PULSE_SERVER") {
+            Ok(server) => Some(PathBuf::from(
+                server
+                    .strip_prefix("unix:")
+                    .context("audio requires a local unix: PULSE_SERVER")?,
+            )),
+            Err(_) => runtime
+                .map(|p| p.join("pulse/native"))
+                .filter(|p| p.exists()),
+        };
+        if let Some(pulse) = pulse {
+            bind_socket(command, &pulse, Path::new("/run/enderpin/pulse"))?;
+        }
     }
     command
         .env("PULSE_SERVER", "unix:/run/enderpin/pulse")

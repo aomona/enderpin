@@ -1,0 +1,3 @@
+(allow mach-lookup (global-name "com.apple.audio.audiohald")
+    (global-name "com.apple.audio.AudioComponentRegistrar"))
+(allow ipc-posix-shm-read* ipc-posix-shm-write-data (ipc-posix-name-regex #"^AudioIO"))

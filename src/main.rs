@@ -59,6 +59,11 @@ impl Scope {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect, approve, revoke or bind this PC's sandbox permissions.
+    Permissions {
+        #[command(subcommand)]
+        action: PermissionCommand,
+    },
     /// Sign in using your registered Microsoft public-client application.
     Login {
         #[arg(long)]
@@ -131,6 +136,20 @@ enum Command {
     List,
 }
 
+#[derive(Subcommand)]
+enum PermissionCommand {
+    /// Show the complete plan and its approval fingerprint. Run sync first.
+    Show,
+    /// Approve exactly the inspected plan; --yes never approves permissions.
+    Approve { fingerprint: String },
+    /// Forget approval; already running games must be stopped first.
+    Revoke,
+    /// Bind a logical folder slot to an existing local directory; clears approval.
+    Bind { name: String, path: PathBuf },
+    /// Remove a local folder binding and its approval.
+    Unbind { name: String },
+}
+
 #[derive(Args)]
 struct Add {
     source: String,
@@ -186,6 +205,14 @@ fn clean(text: &str) -> String {
                 && !('\u{2066}'..='\u{2069}').contains(c)
         })
         .collect()
+}
+
+fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> Result<String> {
+    Ok(serde_json::to_string_pretty(plan)?
+        .lines()
+        .map(clean)
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 fn packages_mut(manifest: &mut Manifest, scope: Scope) -> &mut BTreeMap<String, Package> {
@@ -337,7 +364,7 @@ fn run(cli: &Cli) -> Result<()> {
     }
     if matches!(cli.command, Command::Logout) {
         enderpin::auth::logout()?;
-        return cli.emit(&serde_json::json!({"signed_out": true}), "Enderpin credential removed. Already running games keep their current session until they exit.");
+        return cli.emit(&serde_json::json!({"signed_out": true}), "Enderpin credential removed and broker access revoked. Existing server connections are not disconnected.");
     }
     if let Command::Init { minecraft } = &cli.command {
         Workspace::init(&cli.directory, minecraft.clone())?;
@@ -353,6 +380,47 @@ fn run(cli: &Cli) -> Result<()> {
         .unwrap_or_else(Cache::default_path)?;
     let mut ws = Workspace::open(&cli.directory, &cache)?;
     match &cli.command {
+        Command::Permissions { action } => {
+            use enderpin::sandbox::permissions::{self, Local};
+            let side = cli.target.single()?;
+            let mut local = Local::load(&ws, side)?;
+            match action {
+                PermissionCommand::Show => {
+                    let plan = permissions::plan(&ws, side)?;
+                    let fingerprint = plan.fingerprint()?;
+                    return cli.emit(&serde_json::json!({"fingerprint": fingerprint, "approved": local.approved.as_deref() == Some(&fingerprint), "plan": plan}), format!("{}\nFingerprint: {fingerprint}\nApprove with: enderpin --target {} permissions approve {fingerprint}", permission_text(&plan)?, side.name()));
+                }
+                PermissionCommand::Approve { fingerprint } => {
+                    let plan = permissions::plan(&ws, side)?;
+                    ensure!(
+                        fingerprint == &plan.fingerprint()?,
+                        "permission plan changed; inspect permissions show again"
+                    );
+                    local.approved = Some(fingerprint.clone());
+                }
+                PermissionCommand::Revoke => local.approved = None,
+                PermissionCommand::Bind { name, path } => {
+                    identifier(name)?;
+                    let path = path.canonicalize().context("folder must already exist")?;
+                    ensure!(
+                        path.is_dir() && !ws.root.starts_with(&path) && !path.starts_with(&ws.root),
+                        "binding must be an external directory, separate from the workspace"
+                    );
+                    enderpin::sandbox::validate_data_tree(&path)?;
+                    local.bindings.insert(name.clone(), path);
+                    local.approved = None;
+                }
+                PermissionCommand::Unbind { name } => {
+                    local.bindings.remove(name);
+                    local.approved = None;
+                }
+            }
+            local.save(&ws, side)?;
+            cli.emit(
+                &serde_json::json!({"updated": true, "approved": local.approved.is_some()}),
+                "Local permissions updated",
+            )
+        }
         Command::Launch {
             offline,
             no_network,
@@ -371,12 +439,44 @@ fn run(cli: &Cli) -> Result<()> {
                 !*accept_eula || side == Side::Server,
                 "--accept-eula is only for servers"
             );
+            ws.sync(
+                ws.manifest.clone(),
+                &[side],
+                SyncOptions {
+                    locked: true,
+                    offline: *offline,
+                    ..Default::default()
+                },
+                |_| {},
+            )?;
+            let plan = enderpin::sandbox::permissions::plan(&ws, side)?;
+            let mut local = enderpin::sandbox::permissions::Local::load(&ws, side)?;
+            let fingerprint = plan.fingerprint()?;
+            if local.approved.as_deref() != Some(&fingerprint) {
+                ensure!(
+                    cli.interactive(),
+                    "sandbox permissions need approval; run permissions show, then permissions approve <fingerprint>"
+                );
+                eprintln!("{}", permission_text(&plan)?);
+                ensure!(
+                    Confirm::new()
+                        .with_prompt(
+                            "Approve these permissions for the entire Minecraft process on this PC?"
+                        )
+                        .default(false)
+                        .interact()?,
+                    "permissions were not approved"
+                );
+                local.approved = Some(fingerprint);
+                local.save(&ws, side)?;
+            }
             let stopping = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let signal = stopping.clone();
             ctrlc::set_handler(move || {
                 signal.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })?;
-            let session = if side == Side::Client && !*demo {
+            let session = if side == Side::Client && !*demo && plan.effective.account_authentication
+            {
                 Some(enderpin::auth::session()?)
             } else {
                 None

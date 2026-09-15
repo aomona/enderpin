@@ -83,6 +83,14 @@ def main():
         if args.cache_dir:
             command += ["--cache-dir", str(args.cache_dir.resolve())]
         offline = ["--offline"] if args.offline else []
+        subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
+        inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
+        permission_plan = json.loads(inspected.stdout)
+        # Only authorize the disposable server's baseline: never silently approve
+        # mod-supplied requests or host folders as part of this smoke test.
+        assert not permission_plan["plan"]["folders"]
+        assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
+        subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
         process = subprocess.Popen(command + ["launch", "--accept-eula", "--memory", "1024"] + offline,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    text=True, bufsize=1)

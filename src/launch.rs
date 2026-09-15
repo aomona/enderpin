@@ -39,6 +39,9 @@ pub struct RunningGame {
     child: Child,
     _target: File,
     _temporary: tempfile::TempDir,
+    _bridges: Option<tempfile::TempDir>,
+    _broker: Option<crate::auth::broker::channel::BrokerGuard>,
+    relay_threads: Vec<std::thread::JoinHandle<()>>,
     #[cfg(target_os = "linux")]
     parent_lifetime: Option<std::sync::mpsc::Sender<()>>,
     #[cfg(target_os = "linux")]
@@ -105,6 +108,13 @@ impl Drop for RunningGame {
             let _ = self.kill();
             let _ = self.child.wait();
         }
+        #[cfg(windows)]
+        let _ = self.kill();
+        // Game stdout/err close after child exit. Draining also drops the narrator
+        // sender, stopping host speech instead of leaving it alive after shutdown.
+        for thread in self.relay_threads.drain(..) {
+            let _ = thread.join();
+        }
         #[cfg(target_os = "linux")]
         {
             self.parent_lifetime.take();
@@ -126,10 +136,6 @@ pub fn start(
     ensure!(
         (256..=1_048_576).contains(&options.memory_mib),
         "memory must be between 256 and 1048576 MiB"
-    );
-    ensure!(
-        side != Side::Client || demo != session.is_some(),
-        "client needs either an authenticated session or explicit demo mode"
     );
     if let Some(server) = &options.connect {
         ensure!(
@@ -166,6 +172,31 @@ pub fn start(
     )?;
     let runtime: PreparedRuntime = runtimes.remove(&side).context("target runtime missing")?;
     let target = storage::target_lock(&workspace.root, side)?;
+    let plan = sandbox::permissions::plan_locked(&workspace, side)?;
+    ensure!(
+        side != Side::Client
+            || if demo {
+                session.is_none()
+            } else {
+                !plan.effective.account_authentication || session.is_some()
+            },
+        "client requires a current account session when authentication is enabled"
+    );
+    let approval = sandbox::permissions::Local::load(&workspace, side)?;
+    ensure!(
+        approval.approved.as_deref() == Some(&plan.fingerprint()?),
+        "sandbox permissions changed or are unapproved; run permissions show, then permissions approve <fingerprint>"
+    );
+    if !options.network {
+        ensure!(
+            !plan
+                .packages
+                .iter()
+                .flat_map(|p| p.embedded.iter().chain(&p.repository))
+                .any(|r| r.permission == sandbox::permissions::Capability::Network),
+            "a mod requires network access but --no-network was requested"
+        );
+    }
     if side == Side::Server && options.accept_eula {
         let path = storage::safe_path(&game, "eula.txt")?;
         let mut file = File::create(path)?;
@@ -182,23 +213,127 @@ pub fn start(
         .and_then(|p| p.parent())
         .context("invalid Java path")?
         .canonicalize()?;
-    let policy = Policy {
+    for directory in &plan.effective.read_only {
+        storage::directory(&game, directory.name())?;
+    }
+    let mut extra: Vec<_> = plan.folders.values().cloned().collect();
+    let bridge_files = if side == Side::Client {
+        let root = storage::directory(&workspace.root, ".enderpin/client/launch")?;
+        let files = tempfile::tempdir_in(root)?;
+        crate::bridges::write_files(files.path())?;
+        Some(files)
+    } else {
+        None
+    };
+    let broker = if side == Side::Client && !demo && plan.effective.account_authentication {
+        crate::bridges::clear_profile_keys(&game)?;
+        Some(crate::bridges::broker(
+            &runtime,
+            &workspace.lockfile.runtimes[&side],
+            session.context("missing session")?,
+        )?)
+    } else {
+        None
+    };
+    let mut narrator_random = [0; 32];
+    getrandom::fill(&mut narrator_random)
+        .map_err(|_| anyhow::anyhow!("secure randomness unavailable"))?;
+    let narrator_token: String = narrator_random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let narrator = if side == Side::Client && plan.effective.narrator {
+        Some(std::sync::Arc::new(
+            crate::narrator::NarratorBroker::start(narrator_token.clone())
+                .map_err(anyhow::Error::msg)?,
+        ))
+    } else {
+        None
+    };
+    let assets = if side == Side::Client {
+        progress("Preparing local assets and skin cache");
+        let caches =
+            storage::directory(&workspace.root, ".enderpin/client/cache")?.canonicalize()?;
+        let assets = runtime.game_assets(&caches)?.canonicalize()?;
+        let skins = storage::directory(&assets, "skins")?.canonicalize()?;
+        extra.push(sandbox::permissions::FolderGrant {
+            path: assets.clone(),
+            write: false,
+        });
+        extra.push(sandbox::permissions::FolderGrant {
+            path: skins,
+            write: plan.effective.skin_cache,
+        });
+        Some(assets)
+    } else {
+        None
+    };
+    for grant in &extra {
+        ensure!(
+            !grant.path.starts_with(&java_home) && !java_home.starts_with(&grant.path),
+            "folder grant overlaps the Java runtime"
+        );
+        for path in &runtime.readonly_roots {
+            ensure!(
+                !grant.path.starts_with(path) && !path.starts_with(&grant.path),
+                "folder grant overlaps the runtime cache"
+            );
+        }
+    }
+    let mut policy = Policy {
         game,
         temporary: temporary.path().canonicalize()?,
         java_home,
         readonly: runtime.readonly_roots.clone(),
-        network: options.network,
+        network: options.network && plan.effective.network,
         desktop: side == Side::Client,
+        permissions: plan.effective,
+        extra,
     };
+    if let Some(files) = &bridge_files {
+        policy.readonly.push(files.path().canonicalize()?);
+    }
+    ensure!(
+        options.connect.is_none() || (policy.network && broker.is_some()),
+        "--connect requires approved network and account authentication access"
+    );
+    let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
     #[cfg(not(windows))]
     let mut command = sandbox::command(&runtime.java, &policy)?;
     #[cfg(windows)]
     let mut command = sandbox::windows::configuration(&runtime.java, &policy)?;
+    if let Some(graphics) = graphics {
+        command
+            .env("XDG_CACHE_HOME", &graphics)
+            .env("MESA_SHADER_CACHE_DIR", &graphics)
+            .env("__GL_SHADER_DISK_CACHE_PATH", &graphics)
+            .env(
+                "MESA_SHADER_CACHE_DISABLE",
+                if policy.permissions.graphics_cache {
+                    "false"
+                } else {
+                    "true"
+                },
+            )
+            .env(
+                "__GL_SHADER_DISK_CACHE",
+                if policy.permissions.graphics_cache {
+                    "1"
+                } else {
+                    "0"
+                },
+            );
+    }
     #[cfg(target_os = "macos")]
     inherit_target_lock(&mut command, &target)?;
-    let classpath = std::env::join_paths(runtime.classpath.iter().map(|p| storage::java_path(p)))?
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("non-UTF8 classpath"))?;
+    let classpath = std::env::join_paths(
+        bridge_files
+            .iter()
+            .map(|files| storage::java_path(&files.path().join("narrator-bridge.jar")))
+            .chain(runtime.classpath.iter().map(|p| storage::java_path(p))),
+    )?
+    .into_string()
+    .map_err(|_| anyhow::anyhow!("non-UTF8 classpath"))?;
     let mut args = vec![
         format!("-Xmx{}M", options.memory_mib),
         format!(
@@ -212,6 +347,40 @@ pub fn start(
             storage::java_path(&runtime.game_jar).display()
         ),
     ];
+    if let Some(files) = &bridge_files {
+        args.push(format!(
+            "-Dmonalauncher.narrator.enabled={}",
+            narrator.is_some()
+        ));
+        args.push(format!("-Dmonalauncher.narrator.token={narrator_token}"));
+        if let Some(broker) = &broker {
+            // The JVM splits -javaagent at the first '='. Keep user-selected
+            // workspace paths out of the agent filename portion.
+            args.push(format!(
+                "-javaagent:{}={}",
+                std::path::Path::new("../launch")
+                    .join(
+                        files
+                            .path()
+                            .file_name()
+                            .context("bridge directory missing")?
+                    )
+                    .join("auth-bridge.jar")
+                    .display(),
+                storage::java_path(&crate::bridges::native(files.path())).display()
+            ));
+            #[cfg(unix)]
+            broker.configure(&mut command)?;
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawHandle;
+                args.push(format!(
+                    "-Dmonalauncher.auth.handle={}",
+                    broker.child_handle().as_raw_handle() as usize
+                ));
+            }
+        }
+    }
     args.extend(
         workspace.lockfile.runtimes[&side]
             .fabric_jvm
@@ -227,8 +396,7 @@ pub fn start(
             "nogui".into(),
         ]);
     } else {
-        progress("Preparing local assets and skin cache");
-        let game_assets = runtime.game_assets(&policy.game)?;
+        let game_assets = assets.context("client assets missing")?;
         let features = std::collections::BTreeMap::from([
             ("is_demo_user".into(), demo),
             (
@@ -253,7 +421,11 @@ pub fn start(
             ),
             (
                 "auth_access_token",
-                session.map_or("0".into(), |s| s.access_token.clone()),
+                if broker.is_some() {
+                    crate::auth::broker::protocol::GAME_TOKEN.into()
+                } else {
+                    "0".into()
+                },
             ),
             ("user_type", "msa".into()),
             ("user_properties", "{}".into()),
@@ -314,8 +486,8 @@ pub fn start(
             args.push(expand(&argument, &values)?);
         }
     }
-    // A private JVM argument file avoids exposing the short-lived game token in process listings.
-    // The game and its mods necessarily receive this token; Microsoft refresh credentials do not.
+    // Arguments contain only a placeholder token. Account credentials and signing
+    // keys are held by the host broker, never by this file or the game process.
     let mut argument_file = tempfile::NamedTempFile::new_in(&policy.temporary)?;
     for argument in &args {
         writeln!(argument_file, "{}", quote_argument(argument)?)?;
@@ -331,12 +503,12 @@ pub fn start(
         } else {
             Stdio::null()
         })
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // Retained inside the launch's TempDir until Java has read it and the process exits.
     argument_file.keep().map_err(|error| error.error)?;
     #[cfg(target_os = "linux")]
-    let (child, parent_lifetime, parent_thread) = {
+    let (mut child, parent_lifetime, parent_thread) = {
         let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
         let (parent_lifetime, receiver) = std::sync::mpsc::channel();
         // --die-with-parent follows the spawning Linux thread, including GUI workers.
@@ -361,18 +533,77 @@ pub fn start(
         (child, Some(parent_lifetime), Some(thread))
     };
     #[cfg(not(any(target_os = "linux", windows)))]
-    let child = command.spawn().context("sandboxed game could not start")?;
+    let mut child = command.spawn().context("sandboxed game could not start")?;
     #[cfg(windows)]
-    let child = sandbox::windows::spawn(&command, &policy)?;
+    let mut child = sandbox::windows::spawn_inner(
+        &command,
+        &policy,
+        &broker
+            .iter()
+            .map(|broker| broker.child_handle())
+            .collect::<Vec<_>>(),
+    )?;
+    let mut relay_threads = vec![];
+    if let Some(stdout) = child.stdout.take() {
+        relay_threads.push(relay(stdout, false, narrator.clone()));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        relay_threads.push(relay(stderr, true, narrator));
+    }
     drop(workspace);
     Ok(RunningGame {
         child,
         _target: target,
         _temporary: temporary,
+        _bridges: bridge_files,
+        _broker: broker.map(|broker| broker.into_guard()),
+        relay_threads,
         #[cfg(target_os = "linux")]
         parent_lifetime,
         #[cfg(target_os = "linux")]
         parent_thread,
+    })
+}
+
+fn relay(
+    reader: impl std::io::Read + Send + 'static,
+    stderr: bool,
+    narrator: Option<std::sync::Arc<crate::narrator::NarratorBroker>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        use std::io::{BufRead, Read};
+        let mut reader = std::io::BufReader::new(reader);
+        let mut discarded = false;
+        loop {
+            let mut bytes = vec![];
+            let Ok(count) = reader.by_ref().take(16385).read_until(b'\n', &mut bytes) else {
+                break;
+            };
+            if count == 0 {
+                break;
+            }
+            let ended = bytes.ends_with(b"\n") || count < 16385;
+            // ponytail: cap one log line at 16 KiB; stream structured logs if larger lines are needed.
+            if discarded || count > 16384 {
+                discarded = !ended;
+                continue;
+            }
+            let line = String::from_utf8_lossy(&bytes);
+            if narrator
+                .as_ref()
+                .is_some_and(|broker| broker.handle_line(line.trim_end_matches(['\r', '\n'])))
+            {
+                continue;
+            }
+            if line.contains("MONALAUNCHER_NARRATOR\t") {
+                continue;
+            }
+            if stderr {
+                let _ = std::io::stderr().lock().write_all(&bytes);
+            } else {
+                let _ = std::io::stdout().lock().write_all(&bytes);
+            }
+        }
     })
 }
 
@@ -408,10 +639,22 @@ fn quote_argument(argument: &str) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-fn inherit_target_lock(command: &mut std::process::Command, target: &File) -> Result<()> {
+pub(crate) fn inherit_target_lock(
+    command: &mut std::process::Command,
+    target: &File,
+) -> Result<()> {
     use nix::libc;
-    use std::os::{fd::AsRawFd, unix::process::CommandExt};
-    let lease = target.try_clone()?;
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::process::CommandExt,
+    };
+    // The broker replaces fd 3 in the child. Never put the retained lock there.
+    // SAFETY: fcntl creates a new owned descriptor for the live target file.
+    let duplicate = unsafe { libc::fcntl(target.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let lease = unsafe { File::from_raw_fd(duplicate) };
     // Keep the target locked in the JVM even if the macOS CLI is forcibly killed.
     // SAFETY: the closure owns the descriptor and uses only async-signal-safe fcntl;
     // flags change in the child, and no unrelated descriptor becomes inheritable.
@@ -455,6 +698,8 @@ mod tests {
             readonly: vec![],
             network: false,
             desktop: false,
+            permissions: Default::default(),
+            extra: vec![],
         };
         let mut command = sandbox::command(&java_home.join("bin/java"), &policy)?;
         inherit_target_lock(&mut command, &lease)?;

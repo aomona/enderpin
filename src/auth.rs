@@ -11,11 +11,48 @@ use std::{
 const DEVICE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const SCOPE: &str = "XboxLive.signin offline_access";
+pub mod broker;
 
+#[derive(Clone)]
 pub struct Session {
     pub name: String,
     pub uuid: String,
     pub(crate) access_token: String,
+    pub(crate) expires_at: Instant,
+    pub(crate) generation: Option<String>,
+}
+impl Session {
+    pub(crate) fn is_current(&self) -> bool {
+        Instant::now() < self.expires_at
+            && self.generation.as_ref().is_some_and(|generation| {
+                auth_generation().is_ok_and(|current| &current == generation)
+            })
+    }
+}
+
+pub(crate) fn state_root() -> Result<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "enderpin")
+        .context("OS application directory unavailable")?;
+    let root = dirs.data_local_dir();
+    std::fs::create_dir_all(root)?;
+    Ok(crate::storage::directory(&root.canonicalize()?, "auth")?.canonicalize()?)
+}
+fn auth_generation() -> Result<String> {
+    crate::storage::read_optional(&state_root()?, "generation")?
+        .context("authentication lease was revoked")
+}
+fn advance_generation() -> Result<String> {
+    let root = state_root()?;
+    let mut bytes = [0; 32];
+    getrandom::fill(&mut bytes).map_err(|_| anyhow::anyhow!("secure randomness unavailable"))?;
+    let generation: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new_in(&root)?;
+    file.write_all(generation.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(crate::storage::safe_path(&root, "generation")?)
+        .map_err(|error| error.error)?;
+    Ok(generation)
 }
 
 /// Safe fields to display to the person signing in. Never includes device/refresh tokens.
@@ -175,7 +212,9 @@ pub fn login(
                 .refresh_token
                 .context("Microsoft did not issue a refresh credential")?;
             token(&refresh_token)?;
-            let session = minecraft(&client, &tokens.access_token)?;
+            let mut session = minecraft(&client, &tokens.access_token)?;
+            let _guard = crate::storage::operation_lock(&state_root()?)?;
+            session.generation = Some(advance_generation()?);
             save(&Credential {
                 client_id: client_id.into(),
                 refresh_token,
@@ -200,6 +239,11 @@ pub fn login(
 }
 
 pub fn session() -> Result<Session> {
+    let _guard = crate::storage::operation_lock(&state_root()?)?;
+    let generation = match crate::storage::read_optional(&state_root()?, "generation")? {
+        Some(value) => value,
+        None => advance_generation()?,
+    };
     let text = entry()?
         .get_password()
         .context("no readable Enderpin login; run enderpin login first")?;
@@ -227,9 +271,13 @@ pub fn session() -> Result<Session> {
         // Save rotation before downstream requests, which may fail independently.
         save(&stored)?;
     }
-    minecraft(&client, &tokens.access_token)
+    let mut session = minecraft(&client, &tokens.access_token)?;
+    session.generation = Some(generation);
+    Ok(session)
 }
 pub fn logout() -> Result<()> {
+    let _guard = crate::storage::operation_lock(&state_root()?)?;
+    advance_generation()?;
     entry()?
         .delete_credential()
         .context("could not delete the Enderpin credential")
@@ -267,6 +315,7 @@ fn minecraft(client: &Client, access_token: &str) -> Result<Session> {
     #[derive(Deserialize)]
     struct MinecraftToken {
         access_token: String,
+        expires_in: u64,
     }
     let minecraft: MinecraftToken = success(
         client
@@ -276,6 +325,11 @@ fn minecraft(client: &Client, access_token: &str) -> Result<Session> {
         "Minecraft authentication",
     )?;
     token(&minecraft.access_token)?;
+    ensure!(
+        (60..=172800).contains(&minecraft.expires_in),
+        "invalid Minecraft token lifetime"
+    );
+    let expires_at = Instant::now() + Duration::from_secs(minecraft.expires_in);
     #[derive(Deserialize)]
     struct Entitlements {
         items: Vec<serde_json::Value>,
@@ -317,6 +371,8 @@ fn minecraft(client: &Client, access_token: &str) -> Result<Session> {
         name: profile.name,
         uuid: profile.id,
         access_token: minecraft.access_token,
+        expires_at,
+        generation: None,
     })
 }
 

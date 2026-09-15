@@ -14,9 +14,13 @@ fn jvm_file_and_network_isolation() -> Result<()> {
     let game = root_path.join("game");
     let temporary = root_path.join("tmp");
     let readonly = root_path.join("readonly");
-    for path in [&game, &temporary, &readonly] {
+    let external = root_path.join("external");
+    for path in [&game, &temporary, &readonly, &external] {
         std::fs::create_dir(path)?;
     }
+    std::fs::create_dir(game.join("mods"))?;
+    std::fs::write(game.join("mods/fixed.txt"), "mod")?;
+    std::fs::write(external.join("fixed.txt"), "external")?;
     let secret = root_path.join("secret.txt");
     std::fs::write(&secret, "private-test-data")?;
     std::fs::write(readonly.join("fixed.txt"), "immutable")?;
@@ -36,7 +40,21 @@ public class Probe {
   public static void main(String[] args) throws Exception {
     System.out.println("probe started");
     Path game=Path.of(args[0]), tmp=Path.of(args[1]), ro=Path.of(args[2]), secret=Path.of(args[3]);
-    Files.writeString(game.resolve("allowed.txt"), "ok");
+    if (args[6].equals("write")) Files.writeString(game.resolve("allowed.txt"), "ok");
+    else denied("game write", () -> Files.writeString(game.resolve("allowed.txt"), "changed"));
+    if (args[7].equals("readonly")) {
+      if (!Files.readString(game.resolve("mods/fixed.txt")).equals("mod")) throw new AssertionError();
+      denied("mod write", () -> Files.writeString(game.resolve("mods/fixed.txt"), "changed"));
+      denied("mod delete", () -> Files.delete(game.resolve("mods/fixed.txt")));
+      denied("mod rename", () -> Files.move(game.resolve("mods"), game.resolve("moved-mods")));
+    } else Files.writeString(game.resolve("mods/fixed.txt"), "mod");
+    Path external=Path.of(args[8]);
+    if (args[9].equals("none")) denied("revoked external read", () -> Files.readString(external.resolve("fixed.txt")));
+    else {
+      if (!Files.readString(external.resolve("fixed.txt")).equals("external")) throw new AssertionError();
+      if (args[9].equals("write")) Files.writeString(external.resolve("new.txt"), "ok");
+      else denied("external write", () -> Files.writeString(external.resolve("fixed.txt"), "changed"));
+    }
     Files.writeString(tmp.resolve("allowed.txt"), "ok");
     if (!Files.readString(ro.resolve("fixed.txt")).equals("immutable")) throw new AssertionError();
     denied("private read", () -> Files.readString(secret));
@@ -74,8 +92,17 @@ public class Probe {
     } else {
         "bin/java"
     });
-    for network in [false, true] {
-        println!("starting sandbox probe: network={network}");
+    for (network, game_write, mods_readonly, external_access) in [
+        (false, true, false, "write"),
+        (true, true, false, "write"),
+        (false, true, true, "read"),
+        (false, false, true, "none"),
+        // Restore after revocation: reusing the earlier policy must work too.
+        (false, true, false, "write"),
+    ] {
+        println!(
+            "starting sandbox probe: network={network}, game_write={game_write}, mods_readonly={mods_readonly}, external={external_access}"
+        );
         let policy = Policy {
             game: game.clone(),
             temporary: temporary.clone(),
@@ -83,6 +110,23 @@ public class Probe {
             readonly: vec![readonly.clone()],
             network,
             desktop: false,
+            permissions: sandbox::permissions::Settings {
+                game_write,
+                read_only: if mods_readonly {
+                    vec![sandbox::permissions::GameDirectory::Mods]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+            extra: if external_access == "none" {
+                vec![]
+            } else {
+                vec![sandbox::permissions::FolderGrant {
+                    path: external.clone(),
+                    write: external_access == "write",
+                }]
+            },
         };
         let args: Vec<std::ffi::OsString> = vec![
             "-XX:-UsePerfData".into(),
@@ -98,6 +142,10 @@ public class Probe {
             enderpin::storage::java_path(&secret).into(),
             if network { "allow" } else { "deny" }.into(),
             listener.local_addr()?.port().to_string().into(),
+            if game_write { "write" } else { "readonly" }.into(),
+            if mods_readonly { "readonly" } else { "write" }.into(),
+            enderpin::storage::java_path(&external).into(),
+            external_access.into(),
         ];
         #[cfg(not(windows))]
         let output = sandbox::command(&java, &policy)?.args(&args).output()?;

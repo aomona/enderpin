@@ -101,6 +101,10 @@ pub fn hash_file(path: &Path) -> Result<(String, u64)> {
         path.display()
     );
     let mut file = File::open(path)?;
+    hash_reader(&mut file)
+}
+
+pub(crate) fn hash_reader(file: &mut impl Read) -> Result<(String, u64)> {
     let mut hash = Sha512::new();
     let mut size = 0;
     let mut buffer = [0u8; 65536];

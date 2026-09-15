@@ -125,11 +125,19 @@ impl Drop for Local {
     }
 }
 
-fn identity(game: &Path) -> Result<(Sid, String)> {
-    let name = format!(
-        "Enderpin.{}",
-        &crate::model::hash_bytes(game.as_os_str().to_string_lossy().as_bytes())[..40]
-    );
+fn identity(policy: &Policy) -> Result<(Sid, String)> {
+    // Changed grants get a different token identity: old host ACLs cannot retain
+    // authority after a local permission is revoked or a folder binding changes.
+    let identity = serde_json::to_vec(&(
+        &policy.game,
+        &policy.java_home,
+        &policy.readonly,
+        &policy.extra,
+        &policy.permissions,
+        policy.network,
+        policy.desktop,
+    ))?;
+    let name = format!("Enderpin.{}", &crate::model::hash_bytes(&identity)[..40]);
     let name = wide(OsStr::new(&name))?;
     let mut sid = null_mut();
     // SAFETY: terminated name and valid output pointer; no capabilities at profile creation.
@@ -170,6 +178,22 @@ fn identity(game: &Path) -> Result<(Sid, String)> {
     let string = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) })?;
     drop(allocation);
     Ok((sid, string))
+}
+
+pub(super) fn validate_single_link(path: &Path) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let file = File::open(path)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: file owns the handle and info is a valid output buffer.
+    check(unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) })?;
+    ensure!(
+        info.nNumberOfLinks == 1,
+        "sandbox data contains a hard link: {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn validate_tree(root: &Path) -> Result<()> {
@@ -288,39 +312,39 @@ fn grant_traverse(path: &Path, sid: &Sid) -> Result<()> {
     Ok(())
 }
 
-fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
-    // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
-    // recurse through game-controlled junctions into the host's files.
-    for (path, writable) in policy
-        .readonly
-        .iter()
-        .chain(std::iter::once(&policy.java_home))
-        .map(|p| (p, false))
-        .chain([(&policy.game, true), (&policy.temporary, true)])
-    {
-        validate_tree(path)?;
-        for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
-            // Managed ancestors receive their declared RX/M tree grant; do not
-            // narrow them to traversal when preparing nested Java/tmp roots.
-            if policy
-                .readonly
-                .iter()
-                .chain([&policy.java_home, &policy.game, &policy.temporary])
-                .any(|root| ancestor.starts_with(root))
-            {
-                continue;
-            }
-            grant_traverse(ancestor, sid)?;
-        }
+fn grant_tree(path: &Path, sid: &str, rights: &str) -> Result<()> {
+    // An inheritance-only grant can miss files whose inheritance was disabled.
+    // Apply direct rights to every existing object, then add future-child rights.
+    for (mode, flags) in [("/grant:r", ""), ("/grant", "(OI)(CI)")] {
         icacls(
             path,
             &[
-                "/grant:r".into(),
-                format!("*{sid_text}:(OI)(CI){}", if writable { "M" } else { "RX" }),
+                mode.into(),
+                format!("*{sid}:{flags}{rights}"),
                 "/T".into(),
                 "/Q".into(),
             ],
         )?;
+    }
+    Ok(())
+}
+
+fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
+    // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
+    // recurse through game-controlled junctions into the host's files.
+    let grants = policy.grants();
+    for grant in &grants {
+        let (path, writable) = (&grant.path, grant.write);
+        validate_tree(path)?;
+        for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
+            // Managed ancestors receive their declared RX/M tree grant; do not
+            // narrow them to traversal when preparing nested Java/tmp roots.
+            if grants.iter().any(|grant| ancestor.starts_with(&grant.path)) {
+                continue;
+            }
+            grant_traverse(ancestor, sid)?;
+        }
+        grant_tree(path, sid_text, if writable { "M" } else { "RX" })?;
         if writable {
             icacls(
                 path,
@@ -332,6 +356,25 @@ fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
                 ],
             )?;
         }
+    }
+    for path in policy.read_only_game()? {
+        // Protect the boundary, preserving other principals' inherited entries.
+        // A parent Modify grant has no DELETE_CHILD; RX prevents replacing this
+        // subtree through rename/delete as well as writing its files.
+        icacls(
+            &path,
+            &["/inheritancelevel:d".into(), "/T".into(), "/Q".into()],
+        )?;
+        icacls(
+            &path,
+            &[
+                "/remove:g".into(),
+                format!("*{sid_text}"),
+                "/T".into(),
+                "/Q".into(),
+            ],
+        )?;
+        grant_tree(&path, sid_text, "RX")?;
     }
     Ok(())
 }
@@ -361,8 +404,8 @@ pub struct Process {
     job: OwnedHandle,
     id: u32,
     pub stdin: Option<File>,
-    stdout: Option<File>,
-    stderr: Option<File>,
+    pub(crate) stdout: Option<File>,
+    pub(crate) stderr: Option<File>,
 }
 impl Process {
     pub fn id(&self) -> u32 {
@@ -390,18 +433,6 @@ impl Process {
     }
     pub fn kill(&mut self) -> io::Result<()> {
         check(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
-    }
-    fn relay(&mut self) {
-        if let Some(mut output) = self.stdout.take() {
-            std::thread::spawn(move || {
-                let _ = io::copy(&mut output, &mut io::stdout().lock());
-            });
-        }
-        if let Some(mut output) = self.stderr.take() {
-            std::thread::spawn(move || {
-                let _ = io::copy(&mut output, &mut io::stderr().lock());
-            });
-        }
     }
 }
 impl Drop for Process {
@@ -443,15 +474,13 @@ impl Drop for Attributes {
     }
 }
 
-pub(crate) fn spawn(command: &Command, policy: &Policy) -> Result<Process> {
-    let mut process = spawn_inner(command, policy)?;
-    process.relay();
-    Ok(process)
-}
-
-fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
+pub(crate) fn spawn_inner(
+    command: &Command,
+    policy: &Policy,
+    inherited: &[std::os::windows::io::BorrowedHandle<'_>],
+) -> Result<Process> {
     policy.validate(Path::new(command.get_program()))?;
-    let (sid, sid_text) = identity(&policy.game)?;
+    let (sid, sid_text) = identity(policy)?;
     grants(policy, &sid, &sid_text)?;
     let mut allocations = vec![];
     let mut capabilities = vec![];
@@ -480,11 +509,12 @@ fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
     let (input_child, input) = pipe(true)?;
     let (output_child, output) = pipe(false)?;
     let (error_child, error) = pipe(false)?;
-    let handles = [
+    let mut handles = vec![
         input_child.as_raw_handle(),
         output_child.as_raw_handle(),
         error_child.as_raw_handle(),
     ];
+    handles.extend(inherited.iter().map(|handle| handle.as_raw_handle()));
     let attributes = Attributes::new()?;
     // SAFETY: payloads and inherited handles remain alive until CreateProcessW returns.
     check(unsafe {
@@ -504,7 +534,7 @@ fn spawn_inner(command: &Command, policy: &Policy) -> Result<Process> {
             0,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
             handles.as_ptr().cast(),
-            size_of_val(&handles),
+            size_of_val(handles.as_slice()),
             null_mut(),
             null(),
         )
@@ -633,10 +663,19 @@ pub fn output(
     policy: &Policy,
     args: &[std::ffi::OsString],
 ) -> Result<std::process::Output> {
+    output_inherited(java, policy, args, &[])
+}
+
+pub(crate) fn output_inherited(
+    java: &Path,
+    policy: &Policy,
+    arguments: &[std::ffi::OsString],
+    inherited: &[std::os::windows::io::BorrowedHandle<'_>],
+) -> Result<std::process::Output> {
     let mut command = configuration(java, policy)?;
-    command.args(args);
+    command.args(arguments);
     eprintln!("AppContainer probe: preparing process");
-    let mut process = spawn_inner(&command, policy)?;
+    let mut process = spawn_inner(&command, policy, inherited)?;
     eprintln!("AppContainer probe: process {} started", process.id());
     process.stdin.take();
     let mut stdout = process.stdout.take().context("stdout missing")?;

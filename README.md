@@ -51,21 +51,23 @@ enderpin login --client-id YOUR_REGISTERED_CLIENT_ID
 enderpin launch --target client --connect localhost:25565
 ```
 
-表示されたURLとコードを使ってブラウザでログインします。`--connect` はQuick Play対応版で利用でき、省略すると通常起動します。Microsoftの更新用資格情報はEnderpin専用のOS資格情報ストアへ保存し、構成・ロックには保存しません。`enderpin logout` で削除できます。起動中のゲームのセッションは終了まで残ります。
+表示されたURLとコードを使ってブラウザでログインします。`--connect` はQuick Play対応版で利用でき、省略すると通常起動します。Microsoftの更新用資格情報はEnderpin専用のOS資格情報ストアへ保存し、構成・ロックには保存しません。`enderpin logout` で削除し、起動中の認証仲介も失効させます。既に確立したサーバー接続を切断する操作ではありません。
 
-ゲームには短命なMinecraftアクセストークンを渡します。コマンドライン一覧に直接載せず専用一時ディレクトリの引数ファイルを利用しますが、同じJVMのMODからトークンを隠す認証brokerは初版の範囲に含みません。
+Minecraftのアクセストークンとチャット署名用秘密鍵はホスト側に保持し、ゲームにはプレースホルダーと用途を限定した認証ブリッジを渡します。対応するMinecraft・Java・authlibの組み合わせを検査し、未対応版では停止します。[認証とナレーターの対応範囲](docs/sandbox.md#認証とナレーター) を参照してください。
 
 起動は常に固定済みの構成を検証します。実行環境を更新する場合は `prepare --update`、Gitで戻したロックを再現する場合は `prepare --locked` を使います。Fabricの版を構成で指定するには各対象に `loader_version = "0.19.5"` のように記入します。
 
 ## サンドボックスと対応範囲
 
+フォルダ別の書き込み禁止、MODの権限宣言、PCごとの承認と外部フォルダの割り当てに対応しています。[設定例とOSごとの制約](docs/sandbox.md) を参照してください。初回起動や権限・MODの変更時は起動前に確認し、非対話実行では `permissions show` → `permissions approve <fingerprint>` で事前承認します。
+
 - macOSはSeatbelt、Linuxはbubblewrapとseccomp、WindowsはAppContainerとJob Objectを使います。通常起動への自動切り替えはありません。
-- 対象のゲームディレクトリと専用一時ディレクトリを書込可能にし、共有Java・ライブラリ・キャッシュを読取専用にします。クライアントのassetsは検証してゲーム内へ複製し、スキンの保存先も分離します。
+- 対象のゲームディレクトリと専用一時ディレクトリを書込可能にし、共有Java・ライブラリ・キャッシュを読取専用にします。クライアントのassetsは検証して対象別キャッシュへ複製し、スキンの書き込み許可も分離します。
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
-- `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新には別途ネットワークが必要です。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
+- `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
 - 初版の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
-- Windowsの実機起動、Linuxのゲーム画面は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
+- Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
 
@@ -137,6 +139,7 @@ example-mod
 | `list` | ロックされたパッケージとロックの更新要否を表示 |
 | `prepare [--locked] [--update]` | Minecraft・Fabric・Javaを固定して準備 |
 | `login --client-id ID` / `logout` | OS資格情報ストアを使ったログイン・削除 |
+| `permissions show / approve / revoke / bind / unbind` | 権限の確認・ローカル承認・外部フォルダの割り当て |
 | `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
 共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`login` と `launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
@@ -154,6 +157,8 @@ example-mod
 Enderpinで起動している対象への同期は拒否します。反対側は独立して操作できます。外部ランチャーで起動したゲームは検出しないため、終了してから同期してください。
 
 ## 検証
+
+開発ビルドにはRustに加えてJDK 17以上（`java` / `javac` / `jar`）とCコンパイラーが必要です。Java/JNIブリッジをビルドして同梱します。クロスコンパイル時は対象OSのJDKヘッダーを `ENDERPIN_TARGET_JDK` で指定します。ゲーム用のJavaは引き続き別途固定・自動取得します。
 
 ```sh
 cargo fmt --check
@@ -175,3 +180,7 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 通常テストは固定データと一時ディレクトリで実行します。実ネットワーク検証はModrinthの検索・導入、両側の配置、ハッシュ、キャッシュからの別環境再現、ignore、変更検出、URL導入を検証します。ゲームの起動やサンドボックスの強制を証明するテストではありません。
 
 GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](docs/verification.md) に今回実行した範囲を記載しています。
+
+## ライセンス
+
+[GPL-3.0-only](LICENSE)。[MonaLauncherからの再利用箇所](docs/third-party.md) を含みます。
