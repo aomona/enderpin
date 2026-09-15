@@ -121,7 +121,8 @@ impl Workspace {
         Ok(manifest)
     }
 
-    fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
+    pub fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
+        manifest.validate()?;
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
         let _guard = storage::operation_lock(&root)?;
@@ -139,6 +140,9 @@ impl Workspace {
         }
         let mut lock = Lockfile::default();
         for &side in sides {
+            if !manifest.requests(side).is_empty() {
+                continue;
+            }
             lock.targets.insert(
                 side,
                 crate::model::TargetLock {
@@ -427,6 +431,34 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_mod_requests_must_be_resolved_before_locking() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let mut manifest = Workspace::quick_manifest("1.21.1".into())?;
+        manifest.client.loader = "fabric".into();
+        manifest
+            .client
+            .packages
+            .insert("example".into(), Package::modrinth("example", Kind::Mod));
+        Workspace::init_manifest(root.path(), manifest, &Side::ALL)?;
+        let mut ws = Workspace::open(root.path(), cache.path())?;
+        assert!(!ws.lockfile.targets.contains_key(&Side::Client));
+        assert!(ws.lockfile.targets.contains_key(&Side::Server));
+        let manifest = ws.manifest.clone();
+        assert!(
+            ws.plan(
+                &manifest,
+                &[Side::Client],
+                SyncOptions {
+                    locked: true,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        Ok(())
+    }
     #[test]
     fn sync_creates_game_directories_from_shared_config() -> Result<()> {
         let origin = tempfile::tempdir()?;

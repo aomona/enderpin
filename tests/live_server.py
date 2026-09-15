@@ -2,6 +2,7 @@
 
 Run: python3 tests/live_server.py /path/to/workspace --accept-eula [--offline]
 Or: python3 tests/live_server.py --quick --accept-eula [--version 26.2] [--no-sandbox]
+--quick sets up a vanilla workspace before explicitly approving and launching the server.
 The explicit flag accepts https://aka.ms/MinecraftEULA for the disposable server.
 This verifies status/console/shutdown, not authenticated player participation.
 """
@@ -99,22 +100,22 @@ def main():
             command += ["--cache-dir", str(args.cache_dir.resolve())]
         offline = ["--offline"] if args.offline else []
         if args.quick:
-            launch = [str(args.binary.resolve()), "--no-interactive",
-                      "quick", "--server", "--accept-eula", "--memory", "1024", "--port", str(port),
-                      "--version", version]
-            if args.no_sandbox:
-                launch += ["--no-sandbox"]
+            setup = [str(args.binary.resolve()), "--no-interactive", "quick", "--server",
+                     "--version", version, "--loader", "vanilla"]
             if args.cache_dir:
-                launch += ["--cache-dir", str(args.cache_dir.resolve())]
-        else:
-            subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
-            inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
-            permission_plan = json.loads(inspected.stdout)
-            # Only authorize a baseline with no mod requests or host folders.
-            assert not permission_plan["plan"]["folders"]
-            assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
-            subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
-            launch = command + ["launch", "--accept-eula", "--memory", "1024"] + offline
+                setup += ["--cache-dir", str(args.cache_dir.resolve())]
+            subprocess.run(setup, cwd=base, check=True, capture_output=True, text=True, timeout=1800)
+            assert not (game / "eula.txt").exists(), "setup must not accept EULA or launch"
+        subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
+        inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
+        permission_plan = json.loads(inspected.stdout)
+        # Only authorize a baseline with no mod requests or host folders.
+        assert not permission_plan["plan"]["folders"]
+        assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
+        subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
+        launch = command + ["launch", "--accept-eula", "--memory", "1024", "--port", str(port)] + offline
+        if args.no_sandbox:
+            launch += ["--no-sandbox"]
         process = subprocess.Popen(launch, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=base)
         messages = queue.Queue()

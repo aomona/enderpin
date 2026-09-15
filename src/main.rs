@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use dialoguer::{Confirm, MultiSelect, Select};
+use dialoguer::{Confirm, FuzzySelect, Input, MultiSelect, Select};
 use enderpin::{
     Kind, Manifest, Package, Side, SyncOptions, Workspace,
     model::{Lockfile, hash_bytes, identifier},
@@ -59,25 +59,20 @@ impl Scope {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create or launch a vanilla workspace here; use --server for a dedicated server.
+    /// Set up Minecraft, a loader and mods here using searchable prompts; does not launch the game.
     Quick {
-        /// Launch a dedicated server with Minecraft's standard authentication settings.
+        /// Set up both client and server (default: client only).
         #[arg(long, conflicts_with = "target")]
         server: bool,
-        /// Exact Minecraft version; defaults to the workspace version, or latest for a new workspace.
+        /// Skip the Minecraft version prompt.
         #[arg(long = "version")]
         minecraft_version: Option<String>,
-        /// Server port for this launch (otherwise Minecraft uses server.properties).
-        #[arg(long, requires = "server", value_parser = clap::value_parser!(u16).range(1..))]
-        port: Option<u16>,
-        /// Explicit acceptance of https://aka.ms/MinecraftEULA for this local server.
-        #[arg(long, requires = "server")]
-        accept_eula: bool,
-        /// Run without OS sandbox isolation (only for this launch).
-        #[arg(long)]
-        no_sandbox: bool,
-        #[arg(long, default_value_t = 2048)]
-        memory: u32,
+        /// Skip the loader prompt.
+        #[arg(long, value_parser = ["vanilla", "fabric"])]
+        loader: Option<String>,
+        /// Modrinth project IDs or slugs; required dependencies are added automatically.
+        #[arg(long, value_delimiter = ',')]
+        mods: Vec<String>,
     },
     /// Inspect, approve, revoke or bind this PC's sandbox permissions.
     Permissions {
@@ -363,168 +358,258 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
     apply(cli, ws, manifest, plan, options)
 }
 
-fn quick_version(root: &std::path::Path, requested: Option<&str>) -> Result<String> {
-    if let Some(version) = requested {
+fn choose(prompt: &str, items: &[String], default: usize) -> Result<usize> {
+    FuzzySelect::new()
+        .with_prompt(format!(
+            "{prompt} (type to search, Enter: select, Esc: cancel)"
+        ))
+        .items(items)
+        .default(default)
+        .max_length(12)
+        .interact_opt()?
+        .context("setup cancelled")
+}
+
+fn setup_mod(
+    registry: &mut enderpin::registry::Modrinth,
+    id: &str,
+    minecraft: &str,
+    loader: &str,
+    scope: Scope,
+) -> Result<(String, Package)> {
+    let project = registry.project(id)?;
+    ensure!(
+        project.project_type == "mod",
+        "{} is not a mod",
+        clean(&project.title)
+    );
+    let version = registry
+        .versions(&project.id)?
+        .into_iter()
+        .find(|version| {
+            version.version_type == "release"
+                && version.compatible(minecraft, loader, Kind::Mod)
+                && scope
+                    .sides()
+                    .iter()
+                    .any(|&side| version.default_enabled(&project, side, Kind::Mod))
+        })
+        .context("no compatible released mod version for the selected target")?;
+    let mut package = Package::modrinth(project.id, Kind::Mod);
+    package.version = Some(version.id);
+    package.validate()?;
+    Ok((project.slug, package))
+}
+
+fn choose_mods(
+    registry: &mut enderpin::registry::Modrinth,
+    minecraft: &str,
+    loader: &str,
+    scope: Scope,
+    selected: &mut BTreeMap<String, Package>,
+) -> Result<()> {
+    let search = || -> Result<String> {
+        Ok(Input::<String>::new()
+            .with_prompt("Search Modrinth mods (empty: finish selection)")
+            .allow_empty(true)
+            .validate_with(|query: &String| -> Result<(), &str> {
+                if query.len() <= 400 {
+                    Ok(())
+                } else {
+                    Err("Use at most 400 bytes")
+                }
+            })
+            .interact_text()?)
+    };
+    let mut query = search()?;
+    let mut offset = 0;
+    while !query.is_empty() {
+        eprintln!("Searching Modrinth...");
+        let results = registry.search(&query, minecraft, loader, Kind::Mod, offset)?;
+        let next = offset + (results.hits.len() as u64);
+        let more = !results.hits.is_empty() && next < results.total_hits;
+        loop {
+            let mut rows: Vec<_> = results
+                .hits
+                .iter()
+                .map(|hit| {
+                    format!(
+                        "[{}] {} ({})",
+                        if selected.contains_key(&hit.slug) {
+                            "x"
+                        } else {
+                            " "
+                        },
+                        clean(&hit.title),
+                        clean(&hit.slug)
+                    )
+                })
+                .collect();
+            let count = rows.len();
+            rows.extend([
+                "Search again".into(),
+                format!("Finish selection ({} mods)", selected.len()),
+            ]);
+            if more {
+                rows.push("Next page".into());
+            }
+            let index = choose("Mods — select to add/remove", &rows, 0)?;
+            if index < count {
+                let hit = &results.hits[index];
+                if selected.remove(&hit.slug).is_none() {
+                    match setup_mod(registry, &hit.project_id, minecraft, loader, scope) {
+                        Ok((name, package)) => {
+                            selected.insert(name, package);
+                        }
+                        Err(error) => {
+                            eprintln!("{}: {}", clean(&hit.title), clean(&format!("{error:#}")))
+                        }
+                    }
+                }
+            } else if index == count {
+                query = search()?;
+                offset = 0;
+                break;
+            } else if index == count + 1 {
+                return Ok(());
+            } else {
+                offset = next;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn quick_setup(
+    cli: &Cli,
+    server: bool,
+    version: Option<&str>,
+    loader: Option<&str>,
+    mods: &[String],
+) -> Result<()> {
+    ensure!(
+        matches!(cli.target, Scope::Client),
+        "quick uses --server for both targets; do not use --target"
+    );
+    ensure!(!cli.json, "quick setup does not support --json");
+    ensure!(
+        cli.interactive() || (version.is_some() && loader.is_some()),
+        "quick needs a terminal for setup; use --version VERSION --loader vanilla|fabric in non-interactive mode"
+    );
+    let root = cli.workspace_directory();
+    ensure!(
+        enderpin::storage::read_optional(root, "enderpin.toml")?.is_none()
+            && enderpin::storage::read_optional(root, "enderpin.lock")?.is_none(),
+        "workspace already exists; use add, prepare or launch, or choose a new directory with -C"
+    );
+    let minecraft = if let Some(version) = version {
         identifier(version)?;
-        return Ok(version.into());
-    }
-    if let Some(text) = enderpin::storage::read_optional(root, "enderpin.toml")? {
-        return Ok(Manifest::parse(&text)?.minecraft);
-    }
-    eprintln!("Checking the latest stable Minecraft release");
-    enderpin::runtime::latest_release()
-}
-
-fn quick_workspace(
-    root: &std::path::Path,
-    cache: &std::path::Path,
-    version: String,
-    side: Side,
-) -> Result<Workspace> {
-    if enderpin::storage::read_optional(root, "enderpin.toml")?.is_none() {
-        Workspace::init_quick(root, version.clone())?;
-    }
-    let ws = Workspace::open(root, cache)?;
+        version.to_owned()
+    } else {
+        eprintln!("Loading Minecraft versions...");
+        let versions = enderpin::runtime::minecraft_versions()?;
+        ensure!(!versions.is_empty(), "no Minecraft versions available");
+        let rows: Vec<_> = versions
+            .iter()
+            .map(|v| format!("{} ({})", clean(&v.id), clean(&v.kind)))
+            .collect();
+        let default = versions
+            .iter()
+            .position(|v| v.kind == "release")
+            .unwrap_or(0);
+        versions[choose("Minecraft version", &rows, default)?]
+            .id
+            .clone()
+    };
+    let loader = if let Some(loader) = loader {
+        loader.to_owned()
+    } else {
+        let loaders = ["Vanilla (no mods)".to_owned(), "Fabric".to_owned()];
+        ["vanilla", "fabric"][choose("Mod loader", &loaders, 0)?].to_owned()
+    };
     ensure!(
-        ws.manifest.minecraft == version,
-        "this workspace uses Minecraft {}; choose a different directory with -C for Minecraft {version}",
-        ws.manifest.minecraft
-    );
-    let target = ws
-        .lockfile
-        .targets
-        .get(&side)
-        .context("quick target lock is missing")?;
-    ensure!(
-        serde_json::to_value(&ws.manifest)?
-            == serde_json::to_value(Workspace::quick_manifest(version.clone())?)?
-            && target.minecraft == version
-            && target.loader == "vanilla"
-            && target.fingerprint == ws.manifest.fingerprint(side)?
-            && target.requests.is_empty()
-            && target.packages.is_empty()
-            && ws.lockfile.targets.len() == 2,
-        "quick requires its original vanilla configuration; use launch for a customized workspace"
-    );
-    Ok(ws)
-}
-
-fn quick_eula(cli: &Cli, root: &std::path::Path, accept: bool) -> Result<bool> {
-    if accept {
-        return Ok(true);
-    }
-    let eula = enderpin::storage::read_optional(root, "server/eula.txt")?.unwrap_or_default();
-    if eula.lines().any(|line| line.trim() == "eula=true") {
-        return Ok(false);
-    }
-    ensure!(
-        cli.interactive(),
-        "Minecraft EULA acceptance is required: https://aka.ms/MinecraftEULA ; review it, then run quick --server --accept-eula"
+        ["vanilla", "fabric"].contains(&loader.as_str()),
+        "unsupported setup loader"
     );
     ensure!(
-        Confirm::new()
-            .with_prompt(
-                "Accept the Minecraft EULA (https://aka.ms/MinecraftEULA) for this server?"
-            )
-            .default(false)
-            .interact()?,
-        "Minecraft EULA was not accepted"
+        mods.is_empty() || loader != "vanilla",
+        "vanilla cannot load mods; select Fabric"
     );
-    Ok(true)
+    let scope = if server { Scope::All } else { Scope::Client };
+    let mut registry = enderpin::registry::Modrinth::default();
+    let mut selected = BTreeMap::new();
+    for id in mods {
+        let (name, package) = setup_mod(&mut registry, id, &minecraft, &loader, scope)?;
+        selected.insert(name, package);
+    }
+    if cli.interactive() && loader != "vanilla" {
+        choose_mods(&mut registry, &minecraft, &loader, scope, &mut selected)?;
+    }
+    eprintln!(
+        "\nMinecraft {minecraft} / {loader} / {}\nMods: {}\nDirectory: {}",
+        if server { "client + server" } else { "client" },
+        if selected.is_empty() {
+            "none".into()
+        } else {
+            selected.keys().cloned().collect::<Vec<_>>().join(", ")
+        },
+        root.display()
+    );
+    if cli.interactive() {
+        ensure!(
+            Confirm::new()
+                .with_prompt("Create workspace and download files?")
+                .default(true)
+                .interact()?,
+            "setup cancelled"
+        );
+    }
+    let mut manifest = Workspace::quick_manifest(minecraft)?;
+    for side in scope.sides() {
+        manifest.target_mut(side).loader = loader.clone();
+    }
+    *packages_mut(&mut manifest, scope) = selected;
+    Workspace::init_manifest(root, manifest, &Side::ALL)?;
+    let cache = cli
+        .cache_dir
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(Cache::default_path)?;
+    let mut ws = Workspace::open(root, &cache)?;
+    ws.registry = registry;
+    ws.prepare_runtime(
+        &scope.sides(),
+        SyncOptions::default(),
+        false,
+        |side, message| {
+            eprintln!("{}: {}", side.name(), clean(message));
+        },
+    )?;
+    eprintln!("Setup complete. Start the client with enderpin launch.");
+    if server {
+        eprintln!(
+            "Start the server with enderpin launch --target server (requires EULA acceptance)."
+        );
+    }
+    Ok(())
 }
 
 fn run(cli: &Cli) -> Result<()> {
     if let Command::Quick {
         server,
         minecraft_version,
-        port,
-        accept_eula,
-        no_sandbox,
-        memory,
+        loader,
+        mods,
     } = &cli.command
     {
-        ensure!(
-            matches!(cli.target, Scope::Client),
-            "quick uses --server to select a server; --target server/all is not supported"
+        return quick_setup(
+            cli,
+            *server,
+            minecraft_version.as_deref(),
+            loader.as_deref(),
+            mods,
         );
-        ensure!(
-            !cli.json,
-            "quick streams game output; --json is not supported"
-        );
-        ensure!(
-            (256..=1_048_576).contains(memory),
-            "memory must be between 256 and 1048576 MiB"
-        );
-        let version = quick_version(cli.workspace_directory(), minecraft_version.as_deref())?;
-        let side = if *server { Side::Server } else { Side::Client };
-        let root = cli.workspace_directory();
-        std::fs::create_dir_all(root)?;
-        let root = root.canonicalize()?;
-        let accept_eula = if *server {
-            quick_eula(cli, &root, *accept_eula)?
-        } else {
-            false
-        };
-        let cache = cli
-            .cache_dir
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(Cache::default_path)?;
-        let mut ws = quick_workspace(&root, &cache, version.clone(), side)?;
-        eprintln!(
-            "Minecraft {version}, vanilla {}\nWorkspace: {}",
-            if *server {
-                "server"
-            } else {
-                "client, offline player Player"
-            },
-            ws.root.display()
-        );
-        ws.prepare_runtime(
-            &[side],
-            SyncOptions::default(),
-            // Re-resolve from the official services before any auto-approval.
-            // An edited lock must not substitute a JVM or game distribution.
-            true,
-            |_, message| {
-                eprintln!("{}: {}", side.name(), clean(message));
-            },
-        )?;
-        if !no_sandbox {
-            // quick owns this fixed vanilla-only policy, with account access disabled.
-            // Never auto-approve a mod workspace or an edited quick configuration.
-            let plan = enderpin::sandbox::permissions::plan(&ws, side)?;
-            ensure!(
-                plan.packages.is_empty() && plan.folders.is_empty(),
-                "quick requires an unmodified vanilla workspace"
-            );
-            let mut local = enderpin::sandbox::permissions::Local::load(&ws, side)?;
-            local.approved = Some(plan.fingerprint()?);
-            local.save(&ws, side)?;
-        }
-        drop(ws);
-        return run(&Cli {
-            directory: Some(root),
-            cache_dir: cli.cache_dir.clone(),
-            target: if *server {
-                Scope::Server
-            } else {
-                Scope::Client
-            },
-            json: false,
-            no_interactive: cli.no_interactive,
-            yes: cli.yes,
-            command: Command::Launch {
-                port: *port,
-                no_sandbox: *no_sandbox,
-                offline: true,
-                no_network: false,
-                accept_eula,
-                memory: *memory,
-                demo: false,
-                connect: None,
-            },
-        });
     }
     if let Command::Login { client_id } = &cli.command {
         ensure!(
@@ -976,140 +1061,63 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
-    fn quick_server_options_workspace_and_eula() -> Result<()> {
+    fn setup_options_require_explicit_noninteractive_choices() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let directory = root.path().to_str().context("non-UTF8 temporary path")?;
+        for flags in [
+            vec![],
+            vec!["--version", "26.2"],
+            vec!["--loader", "vanilla"],
+            vec!["--version", "../bad", "--loader", "vanilla"],
+            vec![
+                "--version",
+                "26.2",
+                "--loader",
+                "vanilla",
+                "--mods",
+                "sodium",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(
+                [
+                    vec!["enderpin", "-C", directory, "--no-interactive", "quick"],
+                    flags,
+                ]
+                .concat(),
+            )?;
+            assert!(run(&cli).is_err());
+            assert!(!root.path().join("enderpin.toml").exists());
+        }
         let cli = Cli::try_parse_from([
             "enderpin",
             "quick",
             "--server",
-            "--port",
-            "25566",
             "--version",
             "26.2",
-            "--no-interactive",
-            "--yes",
+            "--loader",
+            "fabric",
+            "--mods",
+            "lithium,sodium",
         ])?;
-        assert!(matches!(&cli.command, Command::Quick {
-            server: true, port: Some(25566), minecraft_version: Some(v),
-            no_sandbox: false, accept_eula: false, ..
-        } if v == "26.2"));
-        for flags in [
-            vec!["--accept-eula"],
-            vec!["--port", "25566"],
-            vec!["--server", "--port", "0"],
-            vec!["--server", "--port", "65536"],
-            vec!["--server", "--target", "server"],
-        ] {
-            assert!(Cli::try_parse_from([vec!["enderpin", "quick"], flags].concat()).is_err());
-        }
-        let root = tempfile::tempdir()?;
-        let cache = tempfile::tempdir()?;
-        assert!(quick_eula(&cli, root.path(), false).is_err());
-        assert!(quick_eula(&cli, root.path(), true)?);
-        let ws = quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Server)?;
-        assert_eq!(ws.manifest.server.loader, "vanilla");
-        assert!(!ws.manifest.server.sandbox.account_authentication);
-        assert!(ws.lockfile.targets.contains_key(&Side::Server));
-        assert_eq!(ws.lockfile.targets.len(), 2);
-        assert!(root.path().join("client").is_dir());
-        assert!(root.path().join("server").is_dir());
-        assert_eq!(quick_version(root.path(), None)?, "26.2");
-        assert!(!root.path().join(".enderpin/client").exists());
-        let eula = root.path().join("server/eula.txt");
-        assert!(!eula.exists());
-        enderpin::storage::directory(root.path(), "server")?;
-        std::fs::write(&eula, "eula=false\n")?;
-        assert!(quick_eula(&cli, root.path(), false).is_err());
-        std::fs::write(&eula, "eula=true\n")?;
-        assert!(!quick_eula(&cli, root.path(), false)?);
-        drop(ws);
-        assert!(quick_workspace(root.path(), cache.path(), "1.21.1".into(), Side::Server).is_err());
-        drop(quick_workspace(
-            root.path(),
-            cache.path(),
-            "26.2".into(),
-            Side::Client,
-        )?);
-        let mut ws = quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Server)?;
-        ws.manifest.server.sandbox.account_authentication = true;
-        let changed = toml::to_string_pretty(&ws.manifest)?;
-        drop(ws);
-        std::fs::write(root.path().join("enderpin.toml"), changed)?;
-        assert!(quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Server).is_err());
+        assert!(matches!(cli.command, Command::Quick {server: true, mods, ..} if mods.len() == 2));
+        assert!(Cli::try_parse_from(["enderpin", "quick", "--no-sandbox"]).is_err());
+        Workspace::init_quick(root.path(), "26.2".into())?;
+        let original = std::fs::read(root.path().join("enderpin.toml"))?;
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "-C",
+            directory,
+            "--no-interactive",
+            "quick",
+            "--version",
+            "26.2",
+            "--loader",
+            "vanilla",
+        ])?;
+        assert!(run(&cli).is_err());
+        assert_eq!(std::fs::read(root.path().join("enderpin.toml"))?, original);
         Ok(())
     }
-
-    #[test]
-    fn quick_preserves_its_vanilla_client_workspace() -> Result<()> {
-        let cli = Cli::try_parse_from(["enderpin", "quick"])?;
-        assert!(matches!(
-            cli.command,
-            Command::Quick {
-                no_sandbox: false,
-                ..
-            }
-        ));
-        let cli = Cli::try_parse_from(["enderpin", "quick", "--no-sandbox"])?;
-        assert!(matches!(
-            cli.command,
-            Command::Quick {
-                no_sandbox: true,
-                ..
-            }
-        ));
-        for flags in [
-            vec!["--target", "server"],
-            vec!["--target", "all"],
-            vec!["--json"],
-            vec!["--memory", "0"],
-            vec!["--version", "../invalid"],
-        ] {
-            let cli = Cli::try_parse_from([vec!["enderpin", "quick"], flags].concat())?;
-            assert!(
-                run(&cli).is_err(),
-                "invalid quick options must fail before network access"
-            );
-        }
-        assert!(
-            Cli::try_parse_from(["enderpin", "launch", "--no-sandbox", "--no-network"]).is_err()
-        );
-
-        let root = tempfile::tempdir()?;
-        let cache = tempfile::tempdir()?;
-        let ws = quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Client)?;
-        assert_eq!(ws.manifest.client.loader, "vanilla");
-        assert!(!ws.manifest.client.sandbox.account_authentication);
-        assert!(ws.manifest.requests(Side::Client).is_empty());
-        assert_eq!(ws.lockfile.targets.len(), 2);
-        assert!(!root.path().join(".enderpin/server").exists());
-        drop(ws);
-        let saved = root.path().join("player-data.txt");
-        std::fs::write(&saved, "keep")?;
-        let mut ws = quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Client)?;
-        assert_eq!(std::fs::read_to_string(saved)?, "keep");
-        let original_lock = toml::to_string_pretty(&ws.lockfile)?;
-        ws.lockfile
-            .targets
-            .get_mut(&Side::Client)
-            .context("client lock missing")?
-            .loader = "fabric".into();
-        let changed_lock = toml::to_string_pretty(&ws.lockfile)?;
-        drop(ws);
-        std::fs::write(root.path().join("enderpin.lock"), changed_lock)?;
-        assert!(quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Client).is_err());
-        std::fs::write(root.path().join("enderpin.lock"), original_lock)?;
-        let mut ws = quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Client)?;
-        ws.manifest.client.sandbox.account_authentication = true;
-        let changed = toml::to_string_pretty(&ws.manifest)?;
-        drop(ws);
-        std::fs::write(root.path().join("enderpin.toml"), &changed)?;
-        assert!(quick_workspace(root.path(), cache.path(), "26.2".into(), Side::Client).is_err());
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("enderpin.toml"))?,
-            changed
-        );
-        Ok(())
-    }
-
     #[test]
     fn cli_parses_target_and_optional_dependencies() {
         let cli = Cli::try_parse_from([

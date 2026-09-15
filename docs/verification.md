@@ -2,6 +2,18 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## 検索付きquickセットアップ（開発版、2026-09-15）
+
+`quick` をゲーム起動から初期セットアップに変更。単体はクライアント、`--server` は両側のMinecraft・Java・ローダー・MODを準備する。Minecraft版とローダーは文字入力で絞り込む選択画面、MODはModrinth検索と選択・取り消し・ページ移動を使う。候補ローダーは現在Vanilla/Fabric。既存の設定は上書きしない。
+
+- macOS Apple Silicon：`cargo test --locked` 46件、Clippy（警告をエラー扱い）、fmt、releaseビルド成功。実JVM用4件はこのテストではignored。
+- `python3 tests/live_setup.py --binary target/release/enderpin`：擬似端末から版を検索し、1.21.1・Fabricを選択。Lithiumの検索・追加・取り消し・再追加とダウンロードを確認。クライアントのロックとMODの実ファイルを確認。
+- 同スクリプトで `--server --version 1.21.1 --loader fabric --mods lithium,sodium --no-interactive` を実行。両側のランタイムを固定し、Lithiumは両側、Sodiumはクライアントだけに配置。
+- セットアップでMinecraftを起動しないこと、権限を自動承認しないこと、EULA同意ファイルを作らないことを確認。Esc中止では空ディレクトリにファイルが残らない。
+- 更新した `tests/live_server.py --quick --version 26.2 --accept-eula --binary target/release/enderpin` では、セットアップ後に明示的に権限承認・`launch` を実行。サーバーの応答・コンソール・保存・正常終了を確認。
+- CodeRabbitの追跡済み変更7ファイルのレビューは軽微な指摘1件。両側の初回ダウンロードを検証するスクリプトの上限時間を600秒から1800秒へ延長した。
+- Windows/LinuxのTUI操作は未実測。公開済みv0.1.1にはこのセットアップ動作は含まれない。
+
 ## 直下のclient/server構成（開発版、2026-09-15）
 
 通常ワークスペースとquickのゲーム保存先を `client/`・`server/` に変更。quickは実行ディレクトリ（または `-C` 指定先）に共通の設定・ロックを作り、両側のゲームディレクトリを使う。内部状態は `.enderpin/` に残す。新形式は `format = 2`、旧形式の自動移行は行わない。

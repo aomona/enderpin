@@ -32,31 +32,44 @@ enderpin --version
 cargo install --path . --locked
 ```
 
-## ワンコマンドで起動
+## 対話で初期セットアップ
+
+このセットアップ動作は開発版の仕様です（公開済みv0.1.1の `quick` はゲーム起動コマンド）。
 
 ```sh
-enderpin quick
-# この起動だけサンドボックスを無効にする場合
-enderpin quick --no-sandbox
-# バージョンを指定（省略すると最新安定版）
-enderpin quick --version 26.2
-# 標準の認証必須サーバー
-enderpin quick --server
-# EULAを確認・同意した上で、版とポートを指定して起動
-enderpin quick --server --version 26.2 --port 25566 --accept-eula
+enderpin quick           # クライアントをセットアップ
+enderpin quick --server  # クライアントとサーバーの両方をセットアップ
 ```
 
-`--server`・`--version`・`--port` はv0.1.1以降で利用できます。
+1. Minecraftのバージョンを検索して選択します。文字入力で一覧を絞り込めます。
+2. ローダーを検索して選択します。現在の候補はVanillaとFabricです。
+3. Fabricの場合、ModrinthのMODをキーワード検索し、結果から追加・取り消しできます。追加済みは `[x]` と表示します。次のページ・再検索にも対応します。VanillaではMOD選択を省略します。
+4. 構成を確認すると、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。ゲームは起動しません。
 
-新規ワークスペースでは公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。既存ワークスペースでは固定済みの版を再利用します。準備と公式メタデータの確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
+MODの候補は選んだMinecraft版とローダーで絞り込み、選択時に対象側で利用できるリリースを確認します。`--server` では両側に対応するMODを対象ごとに配置します。任意依存は自動追加しません。古いMinecraftなど実行環境が未対応の場合は準備時に理由を示して停止します。
 
-サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
+保存先は実行ディレクトリ直下の `client/`・`server/` と、共通の `enderpin.toml`・`enderpin.lock` です。`-C DIRECTORY` で保存先を変更できます。初回に選んだ版を固定し、既存の設定は `quick` で上書きしません。MODの追加は `add`、準備の再実行は `prepare` を使います。別の版は別ディレクトリでセットアップしてください。
 
-保存先はコマンドを実行したディレクトリ直下です。`client/` と `server/` を作成し、共通の `enderpin.toml`・`enderpin.lock` を使います。別の版で遊ぶ場合は `-C` で別ディレクトリを指定してください。同じ保存先の版は自動変更しません。`-C DIRECTORY` を付けると、そのディレクトリ直下に作成します。既存のMOD用ワークスペースは読み込みません。サーバーは `--server` で選択し、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+選択を省略したり、非対話環境でセットアップする場合は引数で指定できます。
 
-`quick --server` はバニラの専用サーバーを起動します。初回はMinecraft EULAへの同意を確認します。非対話環境では、EULAを読んで同意した場合に `--accept-eula` を指定してください。`--yes` ではEULAに同意しません。保存済みの同意は同じサーバーで再利用します。
+```sh
+enderpin quick --no-interactive --version 1.21.1 --loader fabric --mods lithium,sodium
+enderpin -C my-server quick --server --no-interactive --version 26.2 --loader vanilla
+```
 
-サーバー保存先は `server/`、`-C DIRECTORY` 指定時は `DIRECTORY/server/` です。`online-mode=true` を含むMinecraft標準設定を使います。クライアント側のオフライン `Player` では参加できません。`--port 25566` は起動時のポート指定で、省略時は `server.properties` の設定（初期値25565）を使います。`--no-sandbox` も併用できます。Ctrl-Cで保存して停止します。
+`--version` と `--loader` は対応する選択画面を省略します。`--mods` はModrinthのIDまたはslugをカンマ区切りで指定します。非対話環境では版とローダーの指定が必須です。
+
+セットアップ後に起動するには、保存先で次を実行します。
+
+```sh
+enderpin launch
+# Minecraft EULAを確認し、同意した場合
+enderpin launch --target server --accept-eula --port 25566
+# バニラの起動でサンドボックスを無効にする場合
+enderpin launch --no-sandbox
+```
+
+サンドボックス権限は起動時に確認します。セットアップではMODの権限を自動承認しません。クライアントの初期設定はオフラインPlayerで、認証必須サーバーには参加できません。サーバーはMinecraft標準の認証設定を使い、EULA同意は起動時に行います。`--port`・`--memory`・`--no-sandbox`・`--accept-eula` は `launch` に指定してください。
 
 ## MOD用ワークスペースを試す
 
@@ -116,7 +129,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
 - `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
-- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントまたはサーバーを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はVanillaまたはFabricのセットアップに対応します。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
 - Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
@@ -178,7 +191,7 @@ example-mod
 
 | コマンド | 動作 |
 | --- | --- |
-| `quick [--server] [--version VERSION] [--port PORT] [--no-sandbox]` | バニラクライアント／サーバーを準備・起動。ポートはサーバー専用 |
+| `quick [--server] [--version VERSION] [--loader vanilla\|fabric] [--mods IDS]` | 検索付き初期セットアップ。`--server` は両側を準備。ゲームは起動しない |
 | `init --minecraft VERSION` | 共有構成・ロック・Git除外設定を作成 |
 | `add ID_OR_URL` | 追加して同期 |
 | `remove NAME` | 指定スコープから削除して同期 |
