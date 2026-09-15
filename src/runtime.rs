@@ -194,8 +194,8 @@ impl RuntimeLock {
         identifier(&self.minecraft)?;
         identifier(&self.loader_version)?;
         ensure!(
-            self.loader == "fabric",
-            "runtime preparation currently supports Fabric"
+            ["vanilla", "fabric"].contains(&self.loader.as_str()),
+            "unsupported runtime"
         );
         self.metadata.validate()?;
         ensure!(
@@ -205,10 +205,19 @@ impl RuntimeLock {
         for archive in self.java.platforms.values() {
             archive.validate()?;
         }
-        ensure!(
-            !self.fabric_libraries.is_empty() && self.fabric_libraries.len() <= 256,
-            "invalid Fabric library count"
-        );
+        if self.loader == "vanilla" {
+            ensure!(
+                self.loader_version == self.minecraft
+                    && self.fabric_libraries.is_empty()
+                    && self.fabric_jvm.is_empty(),
+                "vanilla runtime must not contain loader libraries or arguments"
+            );
+        } else {
+            ensure!(
+                !self.fabric_libraries.is_empty() && self.fabric_libraries.len() <= 256,
+                "invalid Fabric library count"
+            );
+        }
         for library in &self.fabric_libraries {
             library.validate()?;
         }
@@ -226,19 +235,47 @@ impl RuntimeLock {
 
 #[derive(Debug, Deserialize)]
 struct VersionList {
+    latest: LatestVersions,
     versions: Vec<VersionEntry>,
+}
+#[derive(Debug, Deserialize)]
+struct LatestVersions {
+    release: String,
 }
 #[derive(Debug, Deserialize)]
 struct VersionEntry {
     id: String,
     url: String,
     sha1: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+const VERSION_MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+
+pub fn latest_release() -> Result<String> {
+    let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
+    versions.release()
+}
+
+impl VersionList {
+    fn release(self) -> Result<String> {
+        identifier(&self.latest.release)?;
+        ensure!(
+            self.versions
+                .iter()
+                .any(|entry| entry.id == self.latest.release && entry.kind == "release"),
+            "latest stable Minecraft release is missing from the official manifest"
+        );
+        Ok(self.latest.release)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameMetadata {
     pub id: String,
+    pub main_class: String,
     pub downloads: BTreeMap<String, GameDownload>,
     pub libraries: Vec<Library>,
     pub asset_index: Option<AssetIndex>,
@@ -540,12 +577,11 @@ pub fn resolve(
         return Ok(previous.clone());
     }
     ensure!(
-        manifest.target(side).loader == "fabric",
-        "Fabric runtime is the first supported runtime; other runtimes follow later"
+        manifest.target(side).loader == "fabric"
+            || (manifest.target(side).loader == "vanilla" && side == Side::Client),
+        "runtime preparation supports Fabric and vanilla clients"
     );
-    let versions: VersionList = registry::json(&Url::parse(
-        "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
-    )?)?;
+    let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
     let entry = versions
         .versions
         .into_iter()
@@ -568,6 +604,20 @@ pub fn resolve(
         .as_ref()
         .map(|j| j.major_version)
         .context("Minecraft metadata does not declare its Java version")?;
+    if manifest.target(side).loader == "vanilla" {
+        let runtime = RuntimeLock {
+            fingerprint,
+            minecraft: manifest.minecraft.clone(),
+            loader: "vanilla".into(),
+            loader_version: manifest.minecraft.clone(),
+            metadata,
+            java: java_lock(major)?,
+            fabric_libraries: vec![],
+            fabric_jvm: vec![],
+        };
+        runtime.validate()?;
+        return Ok(runtime);
+    }
     let loaders: Vec<LoaderEntry> = registry::json(&Url::parse(&format!(
         "https://meta.fabricmc.net/v2/versions/loader/{}",
         manifest.minecraft
@@ -733,6 +783,10 @@ pub fn prepare(
     mut progress: impl FnMut(&str),
 ) -> Result<PreparedRuntime> {
     lock.validate()?;
+    ensure!(
+        lock.loader != "vanilla" || side == Side::Client,
+        "vanilla runtime is client-only"
+    );
     progress("Minecraft metadata");
     let metadata: GameMetadata = read_json(&lock.metadata.acquire(cache, offline)?)?;
     ensure!(
@@ -781,7 +835,9 @@ pub fn prepare(
     }
     let java = archive::java(&java_root)?;
     let mut classpath = vec![];
-    progress("Fabric libraries");
+    if lock.loader == "fabric" {
+        progress("Fabric libraries");
+    }
     for library in &lock.fabric_libraries {
         classpath.push(library.acquire(cache, offline)?);
     }
@@ -1022,6 +1078,29 @@ fn server_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn latest_uses_stable_release_and_vanilla_rejects_mods() -> Result<()> {
+        let list: VersionList = serde_json::from_value(serde_json::json!({
+            "latest": {"release": "26.2", "snapshot": "26.3-rc-3"},
+            "versions": [
+                {"id": "26.3-rc-3", "type": "snapshot", "url": "https://example.org/snapshot", "sha1": "0"},
+                {"id": "26.2", "type": "release", "url": "https://example.org/release", "sha1": "1"}
+            ]
+        }))?;
+        assert_eq!(list.release()?, "26.2");
+        let bad: VersionList = serde_json::from_value(serde_json::json!({
+            "latest": {"release": "26.3-rc-3"},
+            "versions": [{"id": "26.3-rc-3", "type": "snapshot", "url": "https://example.org/snapshot", "sha1": "0"}]
+        }))?;
+        assert!(bad.release().is_err());
+        let mut manifest = crate::Workspace::quick_manifest("26.2".into())?;
+        manifest.client.packages.insert(
+            "mod".into(),
+            crate::Package::modrinth("mod", crate::Kind::Mod),
+        );
+        assert!(manifest.validate().is_err());
+        Ok(())
+    }
     #[test]
     fn validates_coordinates_and_runtime_rules() -> Result<()> {
         assert_eq!(

@@ -17,8 +17,8 @@ use serde::Serialize;
 #[derive(Parser)]
 #[command(version, about = "Reproducible Minecraft client and server workspaces")]
 struct Cli {
-    #[arg(short = 'C', long, global = true, default_value = ".")]
-    directory: PathBuf,
+    #[arg(short = 'C', long, global = true)]
+    directory: Option<PathBuf>,
     #[arg(long, global = true)]
     cache_dir: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value = "client")]
@@ -59,6 +59,14 @@ impl Scope {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare and launch the latest stable vanilla client as offline player Player.
+    Quick {
+        /// Run without OS sandbox isolation (only for this launch).
+        #[arg(long)]
+        no_sandbox: bool,
+        #[arg(long, default_value_t = 2048)]
+        memory: u32,
+    },
     /// Inspect, approve, revoke or bind this PC's sandbox permissions.
     Permissions {
         #[command(subcommand)]
@@ -73,6 +81,9 @@ enum Command {
     Logout,
     /// Launch a pinned target in the OS sandbox; Ctrl-C stops the server gracefully.
     Launch {
+        /// Run a vanilla client without OS sandbox isolation.
+        #[arg(long, conflicts_with = "no_network")]
+        no_sandbox: bool,
         #[arg(long)]
         offline: bool,
         #[arg(long)]
@@ -180,6 +191,11 @@ struct Sync {
 }
 
 impl Cli {
+    fn workspace_directory(&self) -> &std::path::Path {
+        self.directory
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("."))
+    }
     fn interactive(&self) -> bool {
         !self.no_interactive
             && !self.json
@@ -332,7 +348,111 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
     apply(cli, ws, manifest, plan, options)
 }
 
+fn quick_workspace(
+    root: &std::path::Path,
+    cache: &std::path::Path,
+    version: String,
+) -> Result<Workspace> {
+    if enderpin::storage::read_optional(root, "enderpin.toml")?.is_none() {
+        Workspace::init_vanilla_client(root, version.clone())?;
+    }
+    let ws = Workspace::open(root, cache)?;
+    let client = ws
+        .lockfile
+        .targets
+        .get(&Side::Client)
+        .context("quick client lock is missing")?;
+    ensure!(
+        serde_json::to_value(&ws.manifest)?
+            == serde_json::to_value(Workspace::quick_manifest(version.clone())?)?
+            && client.minecraft == version
+            && client.loader == "vanilla"
+            && client.fingerprint == ws.manifest.fingerprint(Side::Client)?
+            && client.requests.is_empty()
+            && client.packages.is_empty()
+            && !ws.lockfile.targets.contains_key(&Side::Server)
+            && !ws.lockfile.runtimes.contains_key(&Side::Server),
+        "quick requires its original vanilla configuration; use launch for a customized workspace"
+    );
+    Ok(ws)
+}
+
 fn run(cli: &Cli) -> Result<()> {
+    if let Command::Quick { no_sandbox, memory } = &cli.command {
+        ensure!(
+            matches!(cli.target, Scope::Client),
+            "quick only supports the client target"
+        );
+        ensure!(
+            !cli.json,
+            "quick streams game output; --json is not supported"
+        );
+        ensure!(
+            (256..=1_048_576).contains(memory),
+            "memory must be between 256 and 1048576 MiB"
+        );
+        eprintln!("Checking the latest stable Minecraft release");
+        let version = enderpin::runtime::latest_release()?;
+        let base = match &cli.directory {
+            Some(path) => path.clone(),
+            None => directories::ProjectDirs::from("", "", "enderpin")
+                .context("OS application directory unavailable")?
+                .data_local_dir()
+                .join("quick"),
+        };
+        std::fs::create_dir_all(&base)?;
+        let root = enderpin::storage::directory(&base.canonicalize()?, &version)?;
+        let cache = cli
+            .cache_dir
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(Cache::default_path)?;
+        let mut ws = quick_workspace(&root, &cache, version.clone())?;
+        eprintln!(
+            "Minecraft {version}, vanilla, offline player Player\nWorkspace: {}",
+            ws.root.display()
+        );
+        ws.prepare_runtime(
+            &[Side::Client],
+            SyncOptions::default(),
+            // Re-resolve from the official services before any auto-approval.
+            // An edited lock must not substitute a JVM or game distribution.
+            true,
+            |_, message| {
+                eprintln!("client: {}", clean(message));
+            },
+        )?;
+        if !no_sandbox {
+            // quick owns this fixed vanilla-only policy, with account access disabled.
+            // Never auto-approve a mod workspace or an edited quick configuration.
+            let plan = enderpin::sandbox::permissions::plan(&ws, Side::Client)?;
+            ensure!(
+                plan.packages.is_empty() && plan.folders.is_empty(),
+                "quick requires an unmodified vanilla workspace"
+            );
+            let mut local = enderpin::sandbox::permissions::Local::load(&ws, Side::Client)?;
+            local.approved = Some(plan.fingerprint()?);
+            local.save(&ws, Side::Client)?;
+        }
+        drop(ws);
+        return run(&Cli {
+            directory: Some(root),
+            cache_dir: cli.cache_dir.clone(),
+            target: Scope::Client,
+            json: false,
+            no_interactive: cli.no_interactive,
+            yes: cli.yes,
+            command: Command::Launch {
+                no_sandbox: *no_sandbox,
+                offline: true,
+                no_network: false,
+                accept_eula: false,
+                memory: *memory,
+                demo: false,
+                connect: None,
+            },
+        });
+    }
     if let Command::Login { client_id } = &cli.command {
         ensure!(
             !cli.json,
@@ -367,7 +487,7 @@ fn run(cli: &Cli) -> Result<()> {
         return cli.emit(&serde_json::json!({"signed_out": true}), "Enderpin credential removed and broker access revoked. Existing server connections are not disconnected.");
     }
     if let Command::Init { minecraft } = &cli.command {
-        Workspace::init(&cli.directory, minecraft.clone())?;
+        Workspace::init(cli.workspace_directory(), minecraft.clone())?;
         return cli.emit(
             &serde_json::json!({"initialized": true, "minecraft": minecraft}),
             "Created enderpin.toml and enderpin.lock (client + server)",
@@ -378,7 +498,7 @@ fn run(cli: &Cli) -> Result<()> {
         .clone()
         .map(Ok)
         .unwrap_or_else(Cache::default_path)?;
-    let mut ws = Workspace::open(&cli.directory, &cache)?;
+    let mut ws = Workspace::open(cli.workspace_directory(), &cache)?;
     match &cli.command {
         Command::Permissions { action } => {
             use enderpin::sandbox::permissions::{self, Local};
@@ -422,6 +542,7 @@ fn run(cli: &Cli) -> Result<()> {
             )
         }
         Command::Launch {
+            no_sandbox,
             offline,
             no_network,
             accept_eula,
@@ -452,7 +573,7 @@ fn run(cli: &Cli) -> Result<()> {
             let plan = enderpin::sandbox::permissions::plan(&ws, side)?;
             let mut local = enderpin::sandbox::permissions::Local::load(&ws, side)?;
             let fingerprint = plan.fingerprint()?;
-            if local.approved.as_deref() != Some(&fingerprint) {
+            if !no_sandbox && local.approved.as_deref() != Some(&fingerprint) {
                 ensure!(
                     cli.interactive(),
                     "sandbox permissions need approval; run permissions show, then permissions approve <fingerprint>"
@@ -485,6 +606,7 @@ fn run(cli: &Cli) -> Result<()> {
                 ws,
                 side,
                 enderpin::launch::LaunchOptions {
+                    sandbox: !no_sandbox,
                     offline: *offline,
                     network: !no_network,
                     accept_eula: *accept_eula,
@@ -496,7 +618,12 @@ fn run(cli: &Cli) -> Result<()> {
                 |message| eprintln!("{}: {}", side.name(), clean(message)),
             )?;
             eprintln!(
-                "Sandboxed {} started (PID {}). Press Ctrl-C to stop.",
+                "{} {} started (PID {}). Press Ctrl-C to stop.",
+                if *no_sandbox {
+                    "Unconfined"
+                } else {
+                    "Sandboxed"
+                },
                 side.name(),
                 game.id()
             );
@@ -565,7 +692,9 @@ fn run(cli: &Cli) -> Result<()> {
             let summary: Vec<_> = prepared.iter().map(|(side, runtime)| serde_json::json!({"target": side, "java": runtime.java, "classpath_entries": runtime.classpath.len(), "assets": runtime.assets})).collect();
             cli.emit(&summary, "Runtime prepared and pinned in enderpin.lock")
         }
-        Command::Init { .. } | Command::Login { .. } | Command::Logout => unreachable!(),
+        Command::Quick { .. } | Command::Init { .. } | Command::Login { .. } | Command::Logout => {
+            unreachable!()
+        }
         Command::Add(args) => add(cli, &mut ws, args),
         Command::Remove { name } => {
             identifier(name)?;
@@ -767,6 +896,77 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quick_is_client_only_and_preserves_its_vanilla_workspace() -> Result<()> {
+        let cli = Cli::try_parse_from(["enderpin", "quick"])?;
+        assert!(matches!(
+            cli.command,
+            Command::Quick {
+                no_sandbox: false,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["enderpin", "quick", "--no-sandbox"])?;
+        assert!(matches!(
+            cli.command,
+            Command::Quick {
+                no_sandbox: true,
+                ..
+            }
+        ));
+        for flags in [
+            vec!["--target", "server"],
+            vec!["--target", "all"],
+            vec!["--json"],
+            vec!["--memory", "0"],
+        ] {
+            let cli = Cli::try_parse_from([vec!["enderpin", "quick"], flags].concat())?;
+            assert!(
+                run(&cli).is_err(),
+                "invalid quick options must fail before network access"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["enderpin", "launch", "--no-sandbox", "--no-network"]).is_err()
+        );
+
+        let root = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let ws = quick_workspace(root.path(), cache.path(), "26.2".into())?;
+        assert_eq!(ws.manifest.client.loader, "vanilla");
+        assert!(!ws.manifest.client.sandbox.account_authentication);
+        assert!(ws.manifest.requests(Side::Client).is_empty());
+        assert_eq!(ws.lockfile.targets.len(), 1);
+        assert!(!root.path().join(".enderpin/server").exists());
+        drop(ws);
+        let saved = root.path().join("player-data.txt");
+        std::fs::write(&saved, "keep")?;
+        let mut ws = quick_workspace(root.path(), cache.path(), "26.2".into())?;
+        assert_eq!(std::fs::read_to_string(saved)?, "keep");
+        let original_lock = toml::to_string_pretty(&ws.lockfile)?;
+        ws.lockfile
+            .targets
+            .get_mut(&Side::Client)
+            .context("client lock missing")?
+            .loader = "fabric".into();
+        let changed_lock = toml::to_string_pretty(&ws.lockfile)?;
+        drop(ws);
+        std::fs::write(root.path().join("enderpin.lock"), changed_lock)?;
+        assert!(quick_workspace(root.path(), cache.path(), "26.2".into()).is_err());
+        std::fs::write(root.path().join("enderpin.lock"), original_lock)?;
+        let mut ws = quick_workspace(root.path(), cache.path(), "26.2".into())?;
+        ws.manifest.client.sandbox.account_authentication = true;
+        let changed = toml::to_string_pretty(&ws.manifest)?;
+        drop(ws);
+        std::fs::write(root.path().join("enderpin.toml"), &changed)?;
+        assert!(quick_workspace(root.path(), cache.path(), "26.2".into()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("enderpin.toml"))?,
+            changed
+        );
+        Ok(())
+    }
+
     #[test]
     fn cli_parses_target_and_optional_dependencies() {
         let cli = Cli::try_parse_from([

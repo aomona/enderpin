@@ -4,13 +4,51 @@ Minecraftのクライアントとサーバーの構成を、同じGitリポジ�
 
 初版として、パッケージの固定・同期、JavaとFabricの自動準備、認証付きクライアントとサーバーのサンドボックス起動を実装しています。macOSで実際のワールド参加まで確認しました。OSごとの検証範囲は [検証記録](docs/verification.md)、後続の実装順序は [PLAN.md](PLAN.md) を参照してください。
 
-## 試す
+## インストール
 
-Rust 1.89以上が必要です。
+[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。初回リリース公開後に利用できます。
+
+```sh
+# macOS / Apple Siliconの例
+bun install -g https://github.com/aomona/enderpin/releases/latest/download/enderpin-darwin-arm64.tgz
+enderpin --version
+```
+
+| 環境 | ファイル名 |
+| --- | --- |
+| macOS / Apple Silicon | `enderpin-darwin-arm64.tgz` |
+| macOS / Intel | `enderpin-darwin-x64.tgz` |
+| Linux / x64（glibc 2.35以上） | `enderpin-linux-x64.tgz` |
+| Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
+| Windows / x64 | `enderpin-win32-x64.tgz` |
+
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.0/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。
+
+パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
+
+ソースからビルドする場合はRust 1.89以上、JDK 17以上、Cコンパイラーが必要です。
 
 ```sh
 cargo install --path . --locked
+```
 
+## ワンコマンドで起動
+
+```sh
+enderpin quick
+# この起動だけサンドボックスを無効にする場合
+enderpin quick --no-sandbox
+```
+
+実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
+
+サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
+
+保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーの準備・起動は行わず、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+
+## MOD用ワークスペースを試す
+
+```sh
 mkdir my-world
 cd my-world
 enderpin init --minecraft 1.21.1
@@ -66,7 +104,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
 - `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
-- 初版の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
 - Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
@@ -128,6 +166,7 @@ example-mod
 
 | コマンド | 動作 |
 | --- | --- |
+| `quick [--no-sandbox]` | 最新安定版のバニラクライアントをオフラインプレイヤーで準備・起動 |
 | `init --minecraft VERSION` | 共有構成・ロック・Git除外設定を作成 |
 | `add ID_OR_URL` | 追加して同期 |
 | `remove NAME` | 指定スコープから削除して同期 |
@@ -142,7 +181,7 @@ example-mod
 | `permissions show / approve / revoke / bind / unbind` | 権限の確認・ローカル承認・外部フォルダの割り当て |
 | `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
-共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`login` と `launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
+共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`quick`・`login`・`launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
 
 ## ファイルと保護
 
@@ -180,6 +219,22 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 通常テストは固定データと一時ディレクトリで実行します。実ネットワーク検証はModrinthの検索・導入、両側の配置、ハッシュ、キャッシュからの別環境再現、ignore、変更検出、URL導入を検証します。ゲームの起動やサンドボックスの強制を証明するテストではありません。
 
 GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](docs/verification.md) に今回実行した範囲を記載しています。
+
+### Bun配布パッケージ
+
+Python 3.11以上とBunを使って、現在のOS・CPU向けのパッケージを作成・検証できます。
+
+```sh
+cargo build --release --locked
+python3 scripts/package_bun.py target/release/enderpin
+python3 tests/bun_install.py target/bun/enderpin-darwin-arm64.tgz
+# 手元へインストールする場合
+bun install -g ./target/bun/enderpin-darwin-arm64.tgz
+```
+
+Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケージ名は上の表の環境に合わせて指定します。検証スクリプトは一時HTTPサーバーからBunで取得し、隔離したグローバル領域へインストールして、バージョン表示・ヘルプ・エラー終了・空白を含むパスでのワークスペース作成を確認します。普段のBunグローバル領域は変更しません。ゲーム起動の検証は含みません。
+
+`.github/workflows/release.yml` は5環境でビルドとBunインストール検証を行います。手動実行ではActionsの成果物だけを作成します。`Cargo.toml` と一致する `vVERSION` タグをpushすると、全環境の成功後に `.tgz` を添付したReleaseの下書きを作成します。内容を確認して公開すると上のURLからインストールできます。対応するソースは同じタグのGitHubソースアーカイブから取得できます。
 
 ## ライセンス
 
