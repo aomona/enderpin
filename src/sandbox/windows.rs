@@ -479,12 +479,26 @@ pub(crate) fn spawn_inner(
     policy: &Policy,
     inherited: &[std::os::windows::io::BorrowedHandle<'_>],
 ) -> Result<Process> {
-    policy.validate(Path::new(command.get_program()))?;
-    let (sid, sid_text) = identity(policy)?;
-    grants(policy, &sid, &sid_text)?;
+    spawn_configured(command, policy, inherited, true)
+}
+
+pub(crate) fn spawn_configured(
+    command: &Command,
+    policy: &Policy,
+    inherited: &[std::os::windows::io::BorrowedHandle<'_>],
+    sandbox: bool,
+) -> Result<Process> {
+    let sid = if sandbox {
+        policy.validate(Path::new(command.get_program()))?;
+        let (sid, sid_text) = identity(policy)?;
+        grants(policy, &sid, &sid_text)?;
+        Some(sid)
+    } else {
+        None
+    };
     let mut allocations = vec![];
     let mut capabilities = vec![];
-    if policy.network {
+    if sandbox && policy.network {
         for value in ["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"] {
             let value = wide(OsStr::new(value))?;
             let mut pointer = null_mut();
@@ -497,7 +511,7 @@ pub(crate) fn spawn_inner(
         }
     }
     let security = SECURITY_CAPABILITIES {
-        AppContainerSid: sid.0,
+        AppContainerSid: sid.as_ref().map_or(null_mut(), |sid| sid.0),
         Capabilities: if capabilities.is_empty() {
             null_mut()
         } else {
@@ -517,17 +531,19 @@ pub(crate) fn spawn_inner(
     handles.extend(inherited.iter().map(|handle| handle.as_raw_handle()));
     let attributes = Attributes::new()?;
     // SAFETY: payloads and inherited handles remain alive until CreateProcessW returns.
-    check(unsafe {
-        UpdateProcThreadAttribute(
-            attributes.pointer,
-            0,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-            (&security as *const SECURITY_CAPABILITIES).cast(),
-            size_of::<SECURITY_CAPABILITIES>(),
-            null_mut(),
-            null(),
-        )
-    })?;
+    if sandbox {
+        check(unsafe {
+            UpdateProcThreadAttribute(
+                attributes.pointer,
+                0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                (&security as *const SECURITY_CAPABILITIES).cast(),
+                size_of::<SECURITY_CAPABILITIES>(),
+                null_mut(),
+                null(),
+            )
+        })?;
+    }
     check(unsafe {
         UpdateProcThreadAttribute(
             attributes.pointer,

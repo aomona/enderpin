@@ -220,7 +220,7 @@ impl Manifest {
                 identifier(version)?;
             }
             ensure!(
-                ["fabric", "paper", "neoforge"].contains(&target.loader.as_str()),
+                ["vanilla", "fabric", "paper", "neoforge"].contains(&target.loader.as_str()),
                 "unsupported loader {}",
                 target.loader
             );
@@ -228,6 +228,19 @@ impl Manifest {
                 side != Side::Client || target.loader != "paper",
                 "Paper is a server runtime"
             );
+            if target.loader == "vanilla" {
+                ensure!(side == Side::Client, "vanilla runtime is client-only");
+                ensure!(
+                    target.loader_version.is_none(),
+                    "vanilla has no loader version"
+                );
+                ensure!(
+                    self.requests(side)
+                        .values()
+                        .all(|p| !matches!(p.kind, Kind::Mod | Kind::Plugin)),
+                    "vanilla cannot load mods or plugins"
+                );
+            }
             for (name, package) in self.requests(side) {
                 identifier(&name)?;
                 package

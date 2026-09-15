@@ -187,6 +187,32 @@ pub fn command(java: &Path, policy: &Policy) -> Result<Command> {
     Ok(command)
 }
 
+/// Explicit opt-out: a direct JVM process with the same clean launch environment.
+#[cfg(not(windows))]
+pub(crate) fn unconfined_command(java: &Path, policy: &Policy) -> Command {
+    let mut command = Command::new(java);
+    command.env_clear();
+    for key in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XAUTHORITY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "PULSE_SERVER",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    environment(&mut command, policy);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
 pub(crate) fn environment(command: &mut Command, policy: &Policy) {
     let game = crate::storage::java_path(&policy.game);
     let temporary = crate::storage::java_path(&policy.temporary);

@@ -32,7 +32,21 @@ enderpin --version
 cargo install --path . --locked
 ```
 
-## 試す
+## ワンコマンドで起動
+
+```sh
+enderpin quick
+# この起動だけサンドボックスを無効にする場合
+enderpin quick --no-sandbox
+```
+
+実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
+
+サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
+
+保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーの準備・起動は行わず、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+
+## MOD用ワークスペースを試す
 
 ```sh
 mkdir my-world
@@ -90,7 +104,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
 - `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
-- 初版の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
 - Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
@@ -152,6 +166,7 @@ example-mod
 
 | コマンド | 動作 |
 | --- | --- |
+| `quick [--no-sandbox]` | 最新安定版のバニラクライアントをオフラインプレイヤーで準備・起動 |
 | `init --minecraft VERSION` | 共有構成・ロック・Git除外設定を作成 |
 | `add ID_OR_URL` | 追加して同期 |
 | `remove NAME` | 指定スコープから削除して同期 |
@@ -166,7 +181,7 @@ example-mod
 | `permissions show / approve / revoke / bind / unbind` | 権限の確認・ローカル承認・外部フォルダの割り当て |
 | `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
-共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`login` と `launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
+共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`quick`・`login`・`launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
 
 ## ファイルと保護
 

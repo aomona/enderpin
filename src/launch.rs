@@ -16,6 +16,8 @@ use std::{
 };
 
 pub struct LaunchOptions {
+    /// Disable OS isolation only when explicitly requested for a vanilla client.
+    pub sandbox: bool,
     pub offline: bool,
     pub network: bool,
     pub accept_eula: bool,
@@ -25,6 +27,7 @@ pub struct LaunchOptions {
 impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
+            sandbox: true,
             offline: false,
             network: true,
             accept_eula: false,
@@ -134,6 +137,13 @@ pub fn start(
     mut progress: impl FnMut(&str),
 ) -> Result<RunningGame> {
     ensure!(
+        options.sandbox
+            || (side == Side::Client
+                && workspace.manifest.client.loader == "vanilla"
+                && options.network),
+        "unconfined launch is only supported for vanilla clients; network denial requires the sandbox"
+    );
+    ensure!(
         (256..=1_048_576).contains(&options.memory_mib),
         "memory must be between 256 and 1048576 MiB"
     );
@@ -182,11 +192,13 @@ pub fn start(
             },
         "client requires a current account session when authentication is enabled"
     );
-    let approval = sandbox::permissions::Local::load(&workspace, side)?;
-    ensure!(
-        approval.approved.as_deref() == Some(&plan.fingerprint()?),
-        "sandbox permissions changed or are unapproved; run permissions show, then permissions approve <fingerprint>"
-    );
+    if options.sandbox {
+        let approval = sandbox::permissions::Local::load(&workspace, side)?;
+        ensure!(
+            approval.approved.as_deref() == Some(&plan.fingerprint()?),
+            "sandbox permissions changed or are unapproved; run permissions show, then permissions approve <fingerprint>"
+        );
+    }
     if !options.network {
         ensure!(
             !plan
@@ -217,7 +229,11 @@ pub fn start(
         storage::directory(&game, directory.name())?;
     }
     let mut extra: Vec<_> = plan.folders.values().cloned().collect();
-    let bridge_files = if side == Side::Client {
+    let bridge_files = if side == Side::Client
+        && (workspace.manifest.client.loader != "vanilla"
+            || (!demo && plan.effective.account_authentication)
+            || plan.effective.narrator)
+    {
         let root = storage::directory(&workspace.root, ".enderpin/client/launch")?;
         let files = tempfile::tempdir_in(root)?;
         crate::bridges::write_files(files.path())?;
@@ -299,7 +315,11 @@ pub fn start(
     );
     let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
     #[cfg(not(windows))]
-    let mut command = sandbox::command(&runtime.java, &policy)?;
+    let mut command = if options.sandbox {
+        sandbox::command(&runtime.java, &policy)?
+    } else {
+        sandbox::unconfined_command(&runtime.java, &policy)
+    };
     #[cfg(windows)]
     let mut command = sandbox::windows::configuration(&runtime.java, &policy)?;
     if let Some(graphics) = graphics {
@@ -342,11 +362,13 @@ pub fn start(
         ),
         format!("-Duser.home={}", storage::java_path(&policy.game).display()),
         "-XX:-UsePerfData".into(),
-        format!(
+    ];
+    if workspace.manifest.target(side).loader == "fabric" {
+        args.push(format!(
             "-Dfabric.gameJarPath={}",
             storage::java_path(&runtime.game_jar).display()
-        ),
-    ];
+        ));
+    }
     if let Some(files) = &bridge_files {
         args.push(format!(
             "-Dmonalauncher.narrator.enabled={}",
@@ -415,7 +437,8 @@ pub fn start(
             ),
             (
                 "auth_uuid",
-                session.map_or("00000000000000000000000000000000".into(), |s| {
+                // UUID v3 (MD5) of "OfflinePlayer:Player", as used by Minecraft.
+                session.map_or("a01e3843e5213998958af459800e4d11".into(), |s| {
                     s.uuid.clone()
                 }),
             ),
@@ -472,7 +495,15 @@ pub fn start(
         for argument in crate::runtime::arguments(&runtime.metadata.arguments.jvm, &features)? {
             args.push(expand(&argument, &values)?);
         }
-        args.push("net.fabricmc.loader.impl.launch.knot.KnotClient".into());
+        if workspace.manifest.client.loader == "vanilla" {
+            ensure!(
+                runtime.metadata.main_class == "net.minecraft.client.main.Main",
+                "unsupported vanilla client main class"
+            );
+            args.push(runtime.metadata.main_class.clone());
+        } else {
+            args.push("net.fabricmc.loader.impl.launch.knot.KnotClient".into());
+        }
         let game_arguments =
             crate::runtime::arguments(&runtime.metadata.arguments.game, &features)?;
         ensure!(
@@ -529,19 +560,20 @@ pub fn start(
         let child = result_receiver
             .recv()
             .context("sandbox parent thread failed")?
-            .context("sandboxed game could not start")?;
+            .context("game could not start")?;
         (child, Some(parent_lifetime), Some(thread))
     };
     #[cfg(not(any(target_os = "linux", windows)))]
-    let mut child = command.spawn().context("sandboxed game could not start")?;
+    let mut child = command.spawn().context("game could not start")?;
     #[cfg(windows)]
-    let mut child = sandbox::windows::spawn_inner(
+    let mut child = sandbox::windows::spawn_configured(
         &command,
         &policy,
         &broker
             .iter()
             .map(|broker| broker.child_handle())
             .collect::<Vec<_>>(),
+        options.sandbox,
     )?;
     let mut relay_threads = vec![];
     if let Some(stdout) = child.stdout.take() {
@@ -674,6 +706,53 @@ pub(crate) fn inherit_target_lock(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires ENDERPIN_TEST_JAVA_HOME"]
+    fn explicit_unconfined_jvm_can_write_outside_game() -> Result<()> {
+        let java_home = std::path::PathBuf::from(
+            std::env::var_os("ENDERPIN_TEST_JAVA_HOME").context("set ENDERPIN_TEST_JAVA_HOME")?,
+        )
+        .canonicalize()?;
+        let root = tempfile::tempdir()?;
+        let game = storage::directory(root.path(), "game")?.canonicalize()?;
+        let temporary = storage::directory(root.path(), "tmp")?.canonicalize()?;
+        let outside = root.path().join("outside.txt");
+        std::fs::write(
+            game.join("Unconfined.java"),
+            "class Unconfined { public static void main(String[] args) throws Exception { java.nio.file.Files.writeString(java.nio.file.Path.of(args[0]), \"allowed\"); } }",
+        )?;
+        let policy = Policy {
+            game: game.clone(),
+            temporary,
+            java_home: java_home.clone(),
+            readonly: vec![],
+            network: true,
+            desktop: true,
+            permissions: Default::default(),
+            extra: vec![],
+        };
+        let java = java_home.join(if cfg!(windows) {
+            "bin/java.exe"
+        } else {
+            "bin/java"
+        });
+        #[cfg(not(windows))]
+        let mut command = sandbox::unconfined_command(&java, &policy);
+        #[cfg(windows)]
+        let mut command = sandbox::windows::configuration(&java, &policy)?;
+        command
+            .arg("-XX:-UsePerfData")
+            .arg(storage::java_path(&game.join("Unconfined.java")))
+            .arg(storage::java_path(&outside));
+        #[cfg(not(windows))]
+        let status = command.status()?;
+        #[cfg(windows)]
+        let status = sandbox::windows::spawn_configured(&command, &policy, &[], false)?.wait()?;
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(outside)?, "allowed");
+        Ok(())
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires ENDERPIN_TEST_JAVA_HOME and macOS sandbox-exec"]

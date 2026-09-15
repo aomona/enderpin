@@ -104,6 +104,22 @@ impl Workspace {
         Ok(prepared)
     }
     pub fn init(root: &Path, minecraft: String) -> Result<()> {
+        Self::init_manifest(root, Manifest::new(minecraft)?, &Side::ALL)
+    }
+
+    pub fn init_vanilla_client(root: &Path, minecraft: String) -> Result<()> {
+        Self::init_manifest(root, Self::quick_manifest(minecraft)?, &[Side::Client])
+    }
+
+    pub fn quick_manifest(minecraft: String) -> Result<Manifest> {
+        let mut manifest = Manifest::new(minecraft)?;
+        manifest.client.loader = "vanilla".into();
+        manifest.client.sandbox.account_authentication = false;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
         let _guard = storage::operation_lock(&root)?;
@@ -116,9 +132,8 @@ impl Workspace {
             storage::read_optional(&root, "enderpin.lock")?.is_none(),
             "enderpin.lock already exists"
         );
-        let manifest = Manifest::new(minecraft)?;
         let mut lock = Lockfile::default();
-        for side in Side::ALL {
+        for &side in sides {
             lock.targets.insert(
                 side,
                 crate::model::TargetLock {
