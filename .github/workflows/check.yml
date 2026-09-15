@@ -21,6 +21,20 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Verify Bun package installation
+        shell: bash
+        run: |
+          cargo build --locked
+          binary=target/debug/enderpin
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          python scripts/package_bun.py "$binary"
+          python tests/bun_install.py target/bun/*.tgz
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
         run: |

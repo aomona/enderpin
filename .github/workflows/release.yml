@@ -1,0 +1,60 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: cargo build --release --locked
+      - name: Package and verify Bun installation
+        shell: bash
+        run: |
+          binary=target/release/enderpin
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          args=()
+          if [ "$GITHUB_REF_TYPE" = tag ]; then args+=(--tag "$GITHUB_REF_NAME"); fi
+          python scripts/package_bun.py "$binary" "${args[@]}"
+          python tests/bun_install.py target/bun/*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bun-${{ matrix.os }}
+          path: target/bun/*.tgz
+          if-no-files-found: error
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bun-*
+          merge-multiple: true
+          path: packages
+      - name: Create release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" packages/*.tgz --verify-tag --draft --generate-notes
