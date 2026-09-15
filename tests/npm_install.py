@@ -37,7 +37,18 @@ def repack(source, destination, metadata):
 
 def main():
     entry = Path(sys.argv[1]).resolve(strict=True)
-    native = Path(sys.argv[2]).resolve(strict=True) if len(sys.argv) > 2 else None
+    registry_install = len(sys.argv) > 2 and sys.argv[2] == "--registry"
+    native = Path(sys.argv[2]).resolve(strict=True) if len(sys.argv) > 2 and not registry_install else None
+    # Invoke npm itself: version-manager shims may create global links even
+    # when --prefix points at our disposable directory (observed with Vite+).
+    node = Path(subprocess.check_output(
+        ["node", "-p", "process.execPath"], text=True).strip())
+    npm_cli = node.parent / ("node_modules/npm/bin/npm-cli.js" if os.name == "nt"
+                             else "../lib/node_modules/npm/bin/npm-cli.js")
+    if not npm_cli.is_file():
+        npm_cli = Path(shutil.which("npm") or "npm").resolve()
+        if npm_cli.name != "npm-cli.js" or not npm_cli.is_file():
+            raise RuntimeError("Put a standard Node.js/npm installation on PATH for this test")
     with tarfile.open(entry) as package:
         metadata = json.load(package.extractfile("package/package.json"))
         assert not metadata.get("scripts")
@@ -77,10 +88,12 @@ def main():
                        "BUN_INSTALL_BIN": str(prefix / "bin"),
                        "BUN_INSTALL_CACHE_DIR": str(prefix / "cache"),
                        "npm_config_cache": str(prefix / "cache")}
-                command = [manager, "install", "-g", "--ignore-scripts"]
+                command = ([str(node), str(npm_cli)] if manager == "npm" else [manager])
+                command += ["install", "-g", "--ignore-scripts"]
                 if manager == "npm":
                     command += ["--prefix", str(prefix), "--no-audit", "--no-fund"]
-                subprocess.run(command_line(command + [str(archive)]), cwd=prefix, env=env,
+                spec = f"enderpin@{metadata['version']}" if registry_install else str(archive)
+                subprocess.run(command_line(command + [spec]), cwd=prefix, env=env,
                                check=True, timeout=300)
                 bins = prefix if manager == "npm" and os.name == "nt" else prefix / "bin"
                 executable = shutil.which("enderpin", path=str(bins))

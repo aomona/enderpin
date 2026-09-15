@@ -297,6 +297,8 @@ python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz target/bun/enderpin-d
 python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz
 npm publish target/npm/enderpin-0.1.2.tgz --dry-run
 npm publish target/npm/enderpin-0.1.2.tgz --access public
+# npm公開後、パッケージ名から取得して確認
+python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz --registry
 ```
 
 バージョンはCargo.tomlから生成します。npmパッケージには起動用JavaScript・メタデータ・README・LICENSEだけを含めます。5種類のネイティブパッケージは同じタグのHTTPS URLへ固定し、テスト用URLは公開物に含めません。Releaseワークフローはnpm用アーカイブも下書きへ添付します。npmへの公開は、GitHub Releaseを先に公開してから、公開権限のあるnpmアカウントで上記コマンドを実行します。

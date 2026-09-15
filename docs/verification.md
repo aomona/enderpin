@@ -10,6 +10,12 @@
 - `npm publish --dry-run` で公開対象が起動用JavaScript・package.json・README・LICENSEの4ファイルであることを確認。実公開の完了を示すチェックではない。
 - Rust通常テスト46件、Clippy、fmt、releaseビルド成功。CodeRabbitによる8ファイルの配布差分レビューは指摘0件。その後、Bunだけで実行する検証とドキュメントを上記の実測結果へ修正した。
 
+- [v0.1.2 Release Actions](https://github.com/aomona/enderpin/actions/runs/34966610213)：Linux x64/ARM64、macOS ARM64/Intel、Windows x64の全5環境でビルドとnpm/Bun導入を確認。[Check Actions](https://github.com/aomona/enderpin/actions/runs/34966610639)も3 OSすべて成功。Windowsのテスト用cmd.exe引数の二重引用を修正した後の結果。
+- [GitHub Release v0.1.2](https://github.com/aomona/enderpin/releases/tag/v0.1.2)を公開し、そのアーカイブからnpm/Bun導入を再確認。[npm enderpin](https://www.npmjs.com/package/enderpin)へ0.1.2を公開、`latest = 0.1.2` と公開物のintegrityを確認した。
+- 公開後は `tests/npm_install.py target/npm-release/enderpin-0.1.2.tgz --registry` で、npm/Bunがパッケージ名から取得して起動することをmacOS ARM64で確認した。
+- このMacのVite Plus製npmラッパーは、`--prefix` 指定時もユーザーのbinにリンクを作った。そのテスト由来のリンクだけを削除し、検証スクリプトは実際のNode.js/npm CLIを直接呼ぶ形へ修正。再検証で追加リンクができないことと、元のBun版0.1.1が引き続き選ばれることを確認した。
+- npmの起動ラッパーを通した `tests/live_setup.py` も成功。実TUIの検索・MOD選択・ダウンロード・両側配置・中止・ゲーム未起動を確認した。今回npm版による実ゲームの起動は検証対象に含めていない。
+
 ## 検索付きquickセットアップ（開発版、2026-09-15）
 
 `quick` をゲーム起動から初期セットアップに変更。単体はクライアント、`--server` は両側のMinecraft・Java・ローダー・MODを準備する。Minecraft版とローダーは文字入力で絞り込む選択画面、MODはModrinth検索と選択・取り消し・ページ移動を使う。候補ローダーは現在Vanilla/Fabric。既存の設定は上書きしない。
