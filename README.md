@@ -6,7 +6,20 @@ Minecraftのクライアントとサーバーの構成を、同じGitリポジ�
 
 ## インストール
 
-[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。最新版はv0.1.1です。
+npm版（v0.1.2から）は、次のコマンドでインストールします。
+
+```sh
+bun install -g enderpin
+# または
+npm install -g enderpin
+enderpin --version
+```
+
+npmの入口パッケージが、同じ版の[GitHub Releases](https://github.com/aomona/enderpin/releases)から配布バイナリを取得して、OS・CPUに合うものを起動します。インストール用スクリプトや `bun pm trust` は不要です。optional dependenciesを有効にし、GitHubへ接続できる環境でインストールしてください。パッケージマネージャーによっては全OS分のアーカイブを取得します。
+
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bun --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
+
+ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 
 ```sh
 # macOS / Apple Siliconの例
@@ -22,9 +35,9 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.1/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.2/` のような公開済みタグのパスに置き換えます。URL版からnpm版への切り替えは `bun remove -g enderpin` の後に `bun install -g enderpin` を実行してください。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
 
-パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
+このOS別パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
 ソースからビルドする場合はRust 1.89以上、JDK 17以上、Cコンパイラーが必要です。
 
@@ -34,7 +47,7 @@ cargo install --path . --locked
 
 ## 対話で初期セットアップ
 
-このセットアップ動作は開発版の仕様です（公開済みv0.1.1の `quick` はゲーム起動コマンド）。
+v0.1.2からのセットアップ動作です（v0.1.1の `quick` はゲーム起動コマンド）。
 
 ```sh
 enderpin quick           # クライアントをセットアップ
@@ -273,6 +286,20 @@ bun install -g ./target/bun/enderpin-darwin-arm64.tgz
 Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケージ名は上の表の環境に合わせて指定します。検証スクリプトは一時HTTPサーバーからBunで取得し、隔離したグローバル領域へインストールして、バージョン表示・ヘルプ・エラー終了・空白を含むパスでのワークスペース作成を確認します。普段のBunグローバル領域は変更しません。ゲーム起動の検証は含みません。
 
 `.github/workflows/release.yml` は5環境でビルドとBunインストール検証を行います。手動実行ではActionsの成果物だけを作成します。`Cargo.toml` と一致する `vVERSION` タグをpushすると、全環境の成功後に `.tgz` を添付したReleaseの下書きを作成します。内容を確認して公開すると上のURLからインストールできます。対応するソースは同じタグのGitHubソースアーカイブから取得できます。
+
+### npm配布パッケージ
+
+```sh
+python3 scripts/package_npm.py --tag v0.1.2
+# 同じ版のローカルバイナリで、npmとBunの隔離インストールを検証
+python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz target/bun/enderpin-darwin-arm64.tgz
+# GitHub Release公開後、実際の公開URLからも検証
+python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz
+npm publish target/npm/enderpin-0.1.2.tgz --dry-run
+npm publish target/npm/enderpin-0.1.2.tgz --access public
+```
+
+バージョンはCargo.tomlから生成します。npmパッケージには起動用JavaScript・メタデータ・README・LICENSEだけを含めます。5種類のネイティブパッケージは同じタグのHTTPS URLへ固定し、テスト用URLは公開物に含めません。Releaseワークフローはnpm用アーカイブも下書きへ添付します。npmへの公開は、GitHub Releaseを先に公開してから、公開権限のあるnpmアカウントで上記コマンドを実行します。
 
 ## ライセンス
 

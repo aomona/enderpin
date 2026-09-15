@@ -27,6 +27,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Verify Bun package installation
         shell: bash
         run: |
@@ -35,6 +38,8 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
           python scripts/package_bun.py "$binary"
           python tests/bun_install.py target/bun/*.tgz
+          python scripts/package_npm.py
+          python tests/npm_install.py target/npm/*.tgz target/bun/*.tgz
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
         run: |

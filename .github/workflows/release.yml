@@ -25,6 +25,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - run: cargo build --release --locked
       - name: Package and verify Bun installation
         shell: bash
@@ -35,6 +38,8 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then args+=(--tag "$GITHUB_REF_NAME"); fi
           python scripts/package_bun.py "$binary" "${args[@]}"
           python tests/bun_install.py target/bun/*.tgz
+          python scripts/package_npm.py "${args[@]}"
+          python tests/npm_install.py target/npm/*.tgz target/bun/*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: bun-${{ matrix.os }}
@@ -47,11 +52,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           pattern: bun-*
           merge-multiple: true
           path: packages
+      - name: Package npm entry point
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/package_npm.py --tag "$RELEASE_TAG" --output packages
       - name: Create release draft
         env:
           GH_TOKEN: ${{ github.token }}
