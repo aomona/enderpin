@@ -99,8 +99,9 @@ def main():
                     installed = json.loads((prefix / "global/package.json").read_text())
                     assert set(installed["dependencies"]) == {"enderpin"}
                     # Bun can execute the entry point without a Node.js runtime.
-                    run_args = ["bun", str(prefix / "global/node_modules/enderpin/enderpin.cjs"), "--version"]
-                    subprocess.run(run_args, cwd=prefix, env=env, check=True, timeout=60)
+                    run_args = [shutil.which("bun"), "x", "--bun", "enderpin", "--version"]
+                    bun_env = {**env, "PATH": str(bins) + os.pathsep + os.defpath}
+                    subprocess.run(run_args, cwd=prefix, env=bun_env, check=True, timeout=60)
                 print(f"{manager}: isolated install, version, exit code and workspace checks passed")
         finally:
             server.shutdown()

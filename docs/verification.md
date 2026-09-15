@@ -2,6 +2,14 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## npm配布パッケージ（v0.1.2、2026-09-15）
+
+- macOS ARM64でnpm 11.19.0・Bun 1.4.2の隔離グローバルインストールを実行。インストール用スクリプトを無効にして、OS別バイナリの起動、0.1.2の版表示、CLIのエラー終了コード、空白を含むパスでの初期化を確認。
+- `tests/npm_install.py` はnpm/Bunのprefix・グローバル設定・キャッシュを一時領域に置く。ローカル検証用URLは一時コピーにだけ設定し、公開アーカイブは同じ版のGitHub HTTPS URLだけを含むことを検査する。
+- Node.jsのディレクトリをPATHから外し、Bunの `bunx --bun enderpin --version` でも実行を確認。`bun --bun enderpin` はこのグローバル配置では解決できなかったため、案内を修正した。
+- `npm publish --dry-run` で公開対象が起動用JavaScript・package.json・README・LICENSEの4ファイルであることを確認。実公開の完了を示すチェックではない。
+- Rust通常テスト46件、Clippy、fmt、releaseビルド成功。CodeRabbitによる8ファイルの配布差分レビューは指摘0件。その後、Bunだけで実行する検証とドキュメントを上記の実測結果へ修正した。
+
 ## 検索付きquickセットアップ（開発版、2026-09-15）
 
 `quick` をゲーム起動から初期セットアップに変更。単体はクライアント、`--server` は両側のMinecraft・Java・ローダー・MODを準備する。Minecraft版とローダーは文字入力で絞り込む選択画面、MODはModrinth検索と選択・取り消し・ページ移動を使う。候補ローダーは現在Vanilla/Fabric。既存の設定は上書きしない。

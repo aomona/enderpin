@@ -17,7 +17,7 @@ enderpin --version
 
 npmの入口パッケージが、同じ版の[GitHub Releases](https://github.com/aomona/enderpin/releases)から配布バイナリを取得して、OS・CPUに合うものを起動します。インストール用スクリプトや `bun pm trust` は不要です。optional dependenciesを有効にし、GitHubへ接続できる環境でインストールしてください。パッケージマネージャーによっては全OS分のアーカイブを取得します。
 
-入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bun --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
 
 ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 
