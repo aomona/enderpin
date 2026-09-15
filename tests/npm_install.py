@@ -18,7 +18,9 @@ def command_line(arguments):
     executable = shutil.which(arguments[0]) or arguments[0]
     args = [executable, *arguments[1:]]
     if os.name == "nt" and executable.lower().endswith(".cmd"):
-        return ["cmd.exe", "/d", "/c", subprocess.list2cmdline(args)]
+        # Pass cmd.exe a raw command line: a list would escape its inner quotes
+        # a second time, passing literal quotes/backslashes to npm.
+        return 'cmd.exe /d /s /c "' + subprocess.list2cmdline(args) + '"'
     return args
 
 
