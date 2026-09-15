@@ -24,28 +24,26 @@ def main():
     with tempfile.TemporaryDirectory(prefix="enderpin-bun-") as temp:
         root = Path(temp)
         bins = root / "bin"
-        config = root / "bunfig.toml"
-        config.write_text(
-            "[install]\n"
-            f"globalDir = {json.dumps(str(root / 'global'))}\n"
-            f"globalBinDir = {json.dumps(str(bins))}\n"
-        )
+        env = {**os.environ, "BUN_INSTALL_GLOBAL_DIR": str(root / "global"),
+               "BUN_INSTALL_BIN": str(bins), "BUN_INSTALL_CACHE_DIR": str(root / "cache")}
         handler = functools.partial(SimpleHTTPRequestHandler, directory=str(archive.parent))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             subprocess.run(
-                ["bun", "install", "-g", "--ignore-scripts", f"--config={config}",
+                ["bun", "install", "-g", "--ignore-scripts",
                  f"--cache-dir={root / 'cache'}",
                  f"http://127.0.0.1:{server.server_port}/{archive.name}"],
-                cwd=root, check=True, timeout=120,
+                cwd=root, env=env, check=True, timeout=120,
             )
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
 
+        installed = json.loads((root / "global/package.json").read_text())
+        assert set(installed["dependencies"]) == {"enderpin"}, "global install was not isolated"
         executable = shutil.which("enderpin", path=str(bins))
         assert executable, "Bun did not expose the enderpin command"
         env = {**os.environ, "PATH": str(bins) + os.pathsep + os.defpath}
