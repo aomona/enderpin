@@ -30,7 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Verify Bun package installation
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '12.4.2'
+      - name: Verify package installation
         shell: bash
         run: |
           cargo build --locked
@@ -38,8 +41,8 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
           python scripts/package_bun.py "$binary"
           python tests/bun_install.py target/bun/*.tgz
-          python scripts/package_npm.py
-          python tests/npm_install.py target/npm/*.tgz target/bun/*.tgz
+          python scripts/package_npm.py --allow-partial
+          python tests/npm_install.py target/npm/*.tgz
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
         run: |

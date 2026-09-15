@@ -15,7 +15,15 @@ npm install -g enderpin
 enderpin --version
 ```
 
-npmの入口パッケージが、同じ版の[GitHub Releases](https://github.com/aomona/enderpin/releases)から配布バイナリを取得して、OS・CPUに合うものを起動します。インストール用スクリプトや `bun pm trust` は不要です。optional dependenciesを有効にし、GitHubへ接続できる環境でインストールしてください。パッケージマネージャーによっては全OS分のアーカイブを取得します。
+v0.1.3からは全5環境のネイティブバイナリをnpmパッケージに同梱し、OS・CPUに合うものを起動します。外部URLへの依存やインストール用スクリプト、`bun pm trust` は不要です。pnpmの `blockExoticSubdeps` を有効にしたまま使えます。
+
+```sh
+pnpm dlx enderpin@latest quick
+# 版の確認
+pnpm dlx enderpin@latest --version
+```
+
+`pnpm dlx enderpin` 単体はCLIの使い方を表示します。初期セットアップは末尾に `quick` を付けてください。
 
 入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
 
@@ -35,7 +43,7 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.2/` のような公開済みタグのパスに置き換えます。URL版からnpm版への切り替えは `bun remove -g enderpin` の後に `bun install -g enderpin` を実行してください。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.3/` のような公開済みタグのパスに置き換えます。URL版からnpm版への切り替えは `bun remove -g enderpin` の後に `bun install -g enderpin` を実行してください。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
 
 このOS別パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
@@ -289,19 +297,19 @@ Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケー�
 
 ### npm配布パッケージ
 
+5環境のOS別アーカイブを同じ版で揃えてから作成します。
+
 ```sh
-python3 scripts/package_npm.py --tag v0.1.2
-# 同じ版のローカルバイナリで、npmとBunの隔離インストールを検証
-python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz target/bun/enderpin-darwin-arm64.tgz
-# GitHub Release公開後、実際の公開URLからも検証
-python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz
-npm publish target/npm/enderpin-0.1.2.tgz --dry-run
-npm publish target/npm/enderpin-0.1.2.tgz --access public
-# npm公開後、パッケージ名から取得して確認
-python3 tests/npm_install.py target/npm/enderpin-0.1.2.tgz --registry
+python3 scripts/package_npm.py --tag v0.1.3 --binaries packages
+python3 tests/npm_install.py target/npm/enderpin-0.1.3.tgz
+npm publish target/npm/enderpin-0.1.3.tgz --dry-run
+npm publish target/npm/enderpin-0.1.3.tgz --access public
+python3 tests/npm_install.py target/npm/enderpin-0.1.3.tgz --registry
 ```
 
-バージョンはCargo.tomlから生成します。npmパッケージには起動用JavaScript・メタデータ・README・LICENSEだけを含めます。5種類のネイティブパッケージは同じタグのHTTPS URLへ固定し、テスト用URLは公開物に含めません。Releaseワークフローはnpm用アーカイブも下書きへ添付します。npmへの公開は、GitHub Releaseを先に公開してから、公開権限のあるnpmアカウントで上記コマンドを実行します。
+バージョンはCargo.tomlから生成します。起動用JavaScript・メタデータ・README・LICENSEと、5種類の実行ファイルだけを同梱します。npm依存はありません。Releaseワークフローはビルド後に同梱版を5環境でnpm/Bun/pnpm検証し、全件成功後にアーカイブを下書きへ添付します。
+
+手元の1環境だけで検証する場合は `python3 scripts/package_npm.py --allow-partial` を使えます。このテスト用パッケージには `private: true` が入り、npmへ公開できません。検証は標準のNode.js/npm CLI、Bun、pnpmを使い、グローバル領域とキャッシュを一時ディレクトリへ分離します。
 
 ## ライセンス
 

@@ -3,19 +3,13 @@
 
 const { spawn } = require('node:child_process');
 const { constants } = require('node:os');
-const metadata = require('./package.json');
-const name = `enderpin-${process.platform}-${process.arch}`;
-if (!Object.hasOwn(metadata.optionalDependencies, name)) {
-  console.error(`Enderpin does not support ${process.platform}/${process.arch}.`);
-  process.exit(1);
-}
-
-let binary;
-try {
-  const executable = process.platform === 'win32' ? 'enderpin.exe' : 'enderpin';
-  binary = require.resolve(`${name}/bin/${executable}`);
-} catch {
-  console.error(`Missing ${name}. Reinstall enderpin with optional dependencies enabled and access to GitHub Releases.`);
+const { join } = require('node:path');
+const { existsSync } = require('node:fs');
+const platform = `${process.platform}-${process.arch}`;
+const executable = process.platform === 'win32' ? 'enderpin.exe' : 'enderpin';
+const binary = join(__dirname, 'native', platform, executable);
+if (!existsSync(binary)) {
+  console.error(`No Enderpin binary for ${platform}. Supported: macOS x64/ARM64, Linux x64/ARM64 (glibc), Windows x64.`);
   process.exit(1);
 }
 
