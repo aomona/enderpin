@@ -229,7 +229,6 @@ impl Manifest {
                 "Paper is a server runtime"
             );
             if target.loader == "vanilla" {
-                ensure!(side == Side::Client, "vanilla runtime is client-only");
                 ensure!(
                     target.loader_version.is_none(),
                     "vanilla has no loader version"

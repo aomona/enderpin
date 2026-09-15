@@ -16,13 +16,14 @@ use std::{
 };
 
 pub struct LaunchOptions {
-    /// Disable OS isolation only when explicitly requested for a vanilla client.
+    /// Disable OS isolation only when explicitly requested for a vanilla target.
     pub sandbox: bool,
     pub offline: bool,
     pub network: bool,
     pub accept_eula: bool,
     pub memory_mib: u32,
     pub connect: Option<String>,
+    pub port: Option<u16>,
 }
 impl Default for LaunchOptions {
     fn default() -> Self {
@@ -33,6 +34,7 @@ impl Default for LaunchOptions {
             accept_eula: false,
             memory_mib: 2048,
             connect: None,
+            port: None,
         }
     }
 }
@@ -137,15 +139,18 @@ pub fn start(
     mut progress: impl FnMut(&str),
 ) -> Result<RunningGame> {
     ensure!(
-        options.sandbox
-            || (side == Side::Client
-                && workspace.manifest.client.loader == "vanilla"
-                && options.network),
-        "unconfined launch is only supported for vanilla clients; network denial requires the sandbox"
+        options.sandbox || (workspace.manifest.target(side).loader == "vanilla" && options.network),
+        "unconfined launch is only supported for vanilla targets; network denial requires the sandbox"
     );
     ensure!(
         (256..=1_048_576).contains(&options.memory_mib),
         "memory must be between 256 and 1048576 MiB"
+    );
+    ensure!(
+        options
+            .port
+            .is_none_or(|port| side == Side::Server && port > 0),
+        "port requires a server and must be between 1 and 65535"
     );
     if let Some(server) = &options.connect {
         ensure!(
@@ -414,9 +419,17 @@ pub fn start(
             "-Djava.awt.headless=true".into(),
             "-cp".into(),
             classpath,
-            "net.fabricmc.loader.impl.launch.knot.KnotServer".into(),
+            if workspace.manifest.server.loader == "vanilla" {
+                "net.minecraft.server.Main"
+            } else {
+                "net.fabricmc.loader.impl.launch.knot.KnotServer"
+            }
+            .into(),
             "nogui".into(),
         ]);
+        if let Some(port) = options.port {
+            args.extend(["--port".into(), port.to_string()]);
+        }
     } else {
         let game_assets = assets.context("client assets missing")?;
         let features = std::collections::BTreeMap::from([

@@ -2,6 +2,23 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## quickサーバー・ポート・版指定と公開後インストール（2026-09-15）
+
+`codex/quick-server` の開発版をmacOS / Apple Siliconで確認。公開済みv0.1.0にはサーバー・版指定・ポート指定は含まれない。
+
+- `cargo test --locked`: 44件成功、実JVM用4件は既定でignored。
+- `cargo clippy --all-targets --locked -- -D warnings`、`cargo fmt --check` 成功。
+- `tests/live_server.py --quick --accept-eula --binary target/release/enderpin`: 最新安定版26.2をSeatbelt内で実起動。任意のポートを `--port` で指定し、状態取得、コンソールlist、実行中のsync拒否、stop、ワールド保存、終了後のsyncに成功。
+- 同スクリプトに `--version 1.21.1 --no-sandbox` を指定した経路も同じ検証に成功。
+- 検証用サーバーは一時ワールドとループバック接続を使用。両経路とも `online-mode=true`、明示同意後の `eula=true` を確認。認証済みプレイヤーの参加は未検証。製品の接続設定はMinecraft標準を保持する。
+- 26.2はDoneログ直後に状態取得接続を閉じる場合があったため、テストは最大10秒、状態情報の準備を待つ。
+- CodeRabbit CLI 0.7.6による変更差分レビューは軽微な指摘1件。テスト側で取得した最新バージョンを起動引数にも固定し、取得間の最新版変更による不一致を防いだ。修正後の実サーバー検証も成功。
+- Windows/Linuxでの新しいquickサーバーの実起動は未検証。
+
+v0.1.0は5環境のRelease Actions成功後に公開した。公開URLからmacOS ARM64パッケージを取得し、通常のグローバル領域と隔離領域の両方でインストール・バージョン表示を確認した。
+
+旧Bun検証は `--config` の `globalDir` だけではグローバル依存ファイルを隔離できず、このMacに一時HTTP URLを残していた。Enderpinの依存先のみ公開URLへ修復した。検証スクリプトは `BUN_INSTALL_GLOBAL_DIR` / `BUN_INSTALL_BIN` / `BUN_INSTALL_CACHE_DIR` を[Bun公式の環境変数](https://bun.sh/docs/runtime/bunfig)として明示し、一時領域のpackage.jsonにEnderpinだけが入ったことも確認する。下の旧記録にある「隔離」はこの修正前には不完全だった。
+
 ## quick起動の実測（2026-09-15）
 
 macOS / Apple Silicon / Rust 1.94 / Bun 1.4.2で確認した。

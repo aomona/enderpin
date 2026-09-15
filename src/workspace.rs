@@ -108,13 +108,21 @@ impl Workspace {
     }
 
     pub fn init_vanilla_client(root: &Path, minecraft: String) -> Result<()> {
-        Self::init_manifest(root, Self::quick_manifest(minecraft)?, &[Side::Client])
+        Self::init_quick(root, minecraft, Side::Client)
+    }
+
+    pub fn init_quick(root: &Path, minecraft: String, side: Side) -> Result<()> {
+        Self::init_manifest(root, Self::quick_manifest_for(minecraft, side)?, &[side])
     }
 
     pub fn quick_manifest(minecraft: String) -> Result<Manifest> {
+        Self::quick_manifest_for(minecraft, Side::Client)
+    }
+
+    pub fn quick_manifest_for(minecraft: String, side: Side) -> Result<Manifest> {
         let mut manifest = Manifest::new(minecraft)?;
-        manifest.client.loader = "vanilla".into();
-        manifest.client.sandbox.account_authentication = false;
+        manifest.target_mut(side).loader = "vanilla".into();
+        manifest.target_mut(side).sandbox.account_authentication = false;
         manifest.validate()?;
         Ok(manifest)
     }

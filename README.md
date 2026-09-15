@@ -6,7 +6,7 @@ Minecraftのクライアントとサーバーの構成を、同じGitリポジ�
 
 ## インストール
 
-[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。初回リリース公開後に利用できます。
+[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。v0.1.0を公開済みです。
 
 ```sh
 # macOS / Apple Siliconの例
@@ -38,13 +38,25 @@ cargo install --path . --locked
 enderpin quick
 # この起動だけサンドボックスを無効にする場合
 enderpin quick --no-sandbox
+# バージョンを指定（省略すると最新安定版）
+enderpin quick --version 26.2
+# 標準の認証必須サーバー
+enderpin quick --server
+# EULAを確認・同意した上で、版とポートを指定して起動
+enderpin quick --server --version 26.2 --port 25566 --accept-eula
 ```
+
+`--server`・`--version`・`--port` は開発版の機能です。公開済みv0.1.0にはまだ含まれません。
 
 実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
 
 サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
 
-保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーの準備・起動は行わず、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーは `--server` で選択し、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+
+`quick --server` はバニラの専用サーバーを起動します。初回はMinecraft EULAへの同意を確認します。非対話環境では、EULAを読んで同意した場合に `--accept-eula` を指定してください。`--yes` ではEULAに同意しません。保存済みの同意は同じサーバーで再利用します。
+
+サーバー保存先は `quick/server/<Minecraft版>/`、`-C DIRECTORY` 指定時は `DIRECTORY/server/<Minecraft版>/` です。`online-mode=true` を含むMinecraft標準設定を使います。クライアント側のオフライン `Player` では参加できません。`--port 25566` は起動時のポート指定で、省略時は `server.properties` の設定（初期値25565）を使います。`--no-sandbox` も併用できます。Ctrl-Cで保存して停止します。
 
 ## MOD用ワークスペースを試す
 
@@ -104,7 +116,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
 - `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
-- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントまたはサーバーを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
 - Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
@@ -166,7 +178,7 @@ example-mod
 
 | コマンド | 動作 |
 | --- | --- |
-| `quick [--no-sandbox]` | 最新安定版のバニラクライアントをオフラインプレイヤーで準備・起動 |
+| `quick [--server] [--version VERSION] [--port PORT] [--no-sandbox]` | バニラクライアント／サーバーを準備・起動。ポートはサーバー専用 |
 | `init --minecraft VERSION` | 共有構成・ロック・Git除外設定を作成 |
 | `add ID_OR_URL` | 追加して同期 |
 | `remove NAME` | 指定スコープから削除して同期 |

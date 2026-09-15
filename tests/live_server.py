@@ -1,6 +1,7 @@
-"""Opt-in real Fabric server smoke test, using a disposable copy of a locked workspace.
+"""Opt-in real server smoke test using a disposable workspace.
 
 Run: python3 tests/live_server.py /path/to/workspace --accept-eula [--offline]
+Or: python3 tests/live_server.py --quick --accept-eula [--version 26.2] [--no-sandbox]
 The explicit flag accepts https://aka.ms/MinecraftEULA for the disposable server.
 This verifies status/console/shutdown, not authenticated player participation.
 """
@@ -60,40 +61,62 @@ def status(port):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("workspace", type=Path)
+    parser.add_argument("workspace", type=Path, nargs="?")
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--version", help="quick Minecraft version (otherwise latest stable)")
+    parser.add_argument("--no-sandbox", action="store_true", help="quick vanilla server only")
     parser.add_argument("--accept-eula", action="store_true", required=True)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug" / ("enderpin.exe" if os.name == "nt" else "enderpin"))
     args = parser.parse_args()
+    if not args.quick and (args.workspace is None or args.version or args.no_sandbox):
+        parser.error("provide a workspace, or use --quick [--version VERSION] [--no-sandbox]")
+    if args.quick and args.offline:
+        parser.error("quick resolves official metadata online")
     with tempfile.TemporaryDirectory(prefix="enderpin-server-smoke-") as temporary:
-        root = Path(temporary)
-        for name in ["enderpin.toml", "enderpin.lock"]:
-            shutil.copyfile(args.workspace / name, root / name)
+        base = Path(temporary)
+        version = args.version
+        if args.quick and version is None:
+            from urllib.request import urlopen
+            with urlopen("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json", timeout=30) as response:
+                version = json.load(response)["latest"]["release"]
+        root = base / "server" / version if args.quick else base
+        if not args.quick:
+            for name in ["enderpin.toml", "enderpin.lock"]:
+                shutil.copyfile(args.workspace / name, root / name)
         game = root / ".enderpin/server/game"
         game.mkdir(parents=True)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
         (game / "server.properties").write_text(
-            f"server-ip=127.0.0.1\nserver-port={port}\nonline-mode=true\n"
+            f"server-ip=127.0.0.1\nserver-port={25565 if args.quick else port}\nonline-mode=true\n"
             "enforce-secure-profile=true\nview-distance=3\nsimulation-distance=3\n"
         )
         command = [str(args.binary.resolve()), "-C", str(root), "--target", "server"]
         if args.cache_dir:
             command += ["--cache-dir", str(args.cache_dir.resolve())]
         offline = ["--offline"] if args.offline else []
-        subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
-        inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
-        permission_plan = json.loads(inspected.stdout)
-        # Only authorize the disposable server's baseline: never silently approve
-        # mod-supplied requests or host folders as part of this smoke test.
-        assert not permission_plan["plan"]["folders"]
-        assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
-        subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
-        process = subprocess.Popen(command + ["launch", "--accept-eula", "--memory", "1024"] + offline,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, bufsize=1)
+        if args.quick:
+            launch = [str(args.binary.resolve()), "-C", str(base), "--no-interactive",
+                      "quick", "--server", "--accept-eula", "--memory", "1024", "--port", str(port),
+                      "--version", version]
+            if args.no_sandbox:
+                launch += ["--no-sandbox"]
+            if args.cache_dir:
+                launch += ["--cache-dir", str(args.cache_dir.resolve())]
+        else:
+            subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
+            inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
+            permission_plan = json.loads(inspected.stdout)
+            # Only authorize a baseline with no mod requests or host folders.
+            assert not permission_plan["plan"]["folders"]
+            assert all(not p["embedded"] and not p["repository"] for p in permission_plan["plan"]["packages"])
+            subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
+            launch = command + ["launch", "--accept-eula", "--memory", "1024"] + offline
+        process = subprocess.Popen(launch, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, bufsize=1)
         messages = queue.Queue()
         threading.Thread(target=lambda: [messages.put(line) for line in process.stdout], daemon=True).start()
         recent = []
@@ -109,7 +132,7 @@ def main():
                     assert process.poll() is None, "server exited: " + "".join(recent[-25:])
                     continue
                 recent.append(line)
-                match = re.fullmatch(r"Sandboxed server started \(PID (\d+)\)\. Press Ctrl-C to stop\.\n", line)
+                match = re.fullmatch(r"(?:Sandboxed|Unconfined) server started \(PID (\d+)\)\. Press Ctrl-C to stop\.\n", line)
                 if match and game_pid is None:
                     game_pid = int(match.group(1))
                 if fragment in line:
@@ -121,9 +144,22 @@ def main():
             process.stdin.flush()
 
         try:
-            until("Done (")
-            observed = status(port)
+            until("Done (", timeout=600)
+            # Newer servers publish their status after the initial Done message.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    observed = status(port)
+                    break
+                except (OSError, AssertionError):
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.2)
             assert observed["players"]["online"] == 0
+            if args.quick:
+                assert observed["version"]["name"] == version
+                assert "online-mode=true" in (game / "server.properties").read_text()
+                assert "eula=true" in (game / "eula.txt").read_text()
             rejected = subprocess.run(command + ["sync", "--locked"] + offline, capture_output=True, text=True, timeout=30)
             assert rejected.returncode and "server is running" in rejected.stderr
             console("list")
@@ -133,9 +169,12 @@ def main():
             assert (game / "world/level.dat").is_file(), "world was not saved"
             synced = subprocess.run(command + ["sync", "--locked"] + offline, capture_output=True, text=True, timeout=30)
             assert synced.returncode == 0, synced.stderr
-            print(json.dumps({"minecraft": observed["version"]["name"], "sandbox": True,
+            print(json.dumps({"minecraft": observed["version"]["name"], "sandbox": not args.no_sandbox, "quick": args.quick, "port": port,
                               "status": True, "console": True, "running_sync_rejected": True,
                               "world_saved": True, "shutdown": True, "authenticated_join": "not tested by this script"}, indent=2))
+        except Exception:
+            print("".join(recent[-40:]))
+            raise
         finally:
             if process.poll() is None:
                 try:

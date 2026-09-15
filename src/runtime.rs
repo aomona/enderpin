@@ -577,9 +577,8 @@ pub fn resolve(
         return Ok(previous.clone());
     }
     ensure!(
-        manifest.target(side).loader == "fabric"
-            || (manifest.target(side).loader == "vanilla" && side == Side::Client),
-        "runtime preparation supports Fabric and vanilla clients"
+        ["fabric", "vanilla"].contains(&manifest.target(side).loader.as_str()),
+        "runtime preparation supports Fabric and vanilla"
     );
     let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
     let entry = versions
@@ -783,10 +782,6 @@ pub fn prepare(
     mut progress: impl FnMut(&str),
 ) -> Result<PreparedRuntime> {
     lock.validate()?;
-    ensure!(
-        lock.loader != "vanilla" || side == Side::Client,
-        "vanilla runtime is client-only"
-    );
     progress("Minecraft metadata");
     let metadata: GameMetadata = read_json(&lock.metadata.acquire(cache, offline)?)?;
     ensure!(
@@ -1093,12 +1088,14 @@ mod tests {
             "versions": [{"id": "26.3-rc-3", "type": "snapshot", "url": "https://example.org/snapshot", "sha1": "0"}]
         }))?;
         assert!(bad.release().is_err());
-        let mut manifest = crate::Workspace::quick_manifest("26.2".into())?;
-        manifest.client.packages.insert(
-            "mod".into(),
-            crate::Package::modrinth("mod", crate::Kind::Mod),
-        );
-        assert!(manifest.validate().is_err());
+        for side in Side::ALL {
+            let mut manifest = crate::Workspace::quick_manifest_for("26.2".into(), side)?;
+            manifest.target_mut(side).packages.insert(
+                "mod".into(),
+                crate::Package::modrinth("mod", crate::Kind::Mod),
+            );
+            assert!(manifest.validate().is_err());
+        }
         Ok(())
     }
     #[test]
