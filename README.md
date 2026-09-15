@@ -6,7 +6,7 @@ Minecraftのクライアントとサーバーの構成を、同じGitリポジ�
 
 ## インストール
 
-[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。v0.1.0を公開済みです。
+[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。最新版はv0.1.1です。
 
 ```sh
 # macOS / Apple Siliconの例
@@ -22,7 +22,7 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.0/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.1/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。
 
 パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
@@ -46,7 +46,7 @@ enderpin quick --server
 enderpin quick --server --version 26.2 --port 25566 --accept-eula
 ```
 
-`--server`・`--version`・`--port` は開発版の機能です。公開済みv0.1.0にはまだ含まれません。
+`--server`・`--version`・`--port` はv0.1.1以降で利用できます。
 
 実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
 

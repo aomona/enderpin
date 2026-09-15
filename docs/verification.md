@@ -4,7 +4,7 @@
 
 ## quickサーバー・ポート・版指定と公開後インストール（2026-09-15）
 
-`codex/quick-server` の開発版をmacOS / Apple Siliconで確認。公開済みv0.1.0にはサーバー・版指定・ポート指定は含まれない。
+v0.1.1に含むサーバー・版指定・ポート指定を、`codex/quick-server` でmacOS / Apple Siliconにて確認した。
 
 - `cargo test --locked`: 44件成功、実JVM用4件は既定でignored。
 - `cargo clippy --all-targets --locked -- -D warnings`、`cargo fmt --check` 成功。
