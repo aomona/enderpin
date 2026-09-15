@@ -79,9 +79,9 @@ enum Command {
         #[command(subcommand)]
         action: PermissionCommand,
     },
-    /// Sign in using your registered Microsoft public-client application.
+    /// Sign in using the default Microsoft public-client application or your own.
     Login {
-        #[arg(long)]
+        #[arg(long, default_value = "f8d68570-e721-4aba-9c3e-1052d41e431a")]
         client_id: String,
     },
     /// Delete this CLI's credential from the OS credential store.

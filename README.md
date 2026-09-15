@@ -128,10 +128,10 @@ enderpin launch --target server --accept-eula
 
 同意はこのサーバーの `eula.txt` に保存します。ログを表示しながら `list`、`stop` 等のコンソール入力を使えます。Ctrl-Cは終了を要求し、2回目で強制停止します。保存完了まで自動的に待ち、時間だけを理由に強制終了しません。
 
-クライアントはMicrosoftの公開クライアントアプリケーションIDを指定してデバイスログインします。現在、Enderpinには配布用の既定IDを同梱していません。下記の値には、Minecraft認証で利用できる登録済みのIDが必要です。
+クライアントはMicrosoftの公開クライアントアプリケーションIDを使ってデバイスログインします。既定のIDは `f8d68570-e721-4aba-9c3e-1052d41e431a` です。別の登録済みIDを使う場合は `enderpin login --client-id YOUR_REGISTERED_CLIENT_ID` で上書きできます。
 
 ```sh
-enderpin login --client-id YOUR_REGISTERED_CLIENT_ID
+enderpin login
 enderpin launch --target client --connect localhost:25565
 ```
 
