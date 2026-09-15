@@ -2,6 +2,16 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## pnpm対応のバイナリ同梱パッケージ（v0.1.3、2026-09-15）
+
+- pnpm 12.4.2で `blockExoticSubdeps: true` を指定し、公開済み0.1.2の `ERR_PNPM_EXOTIC_SUBDEP` を再現。GitHub URLをoptional dependencyにしていたことが原因。
+- 0.1.3ではOS別バイナリ5種類を1つのnpmアーカイブへ同梱。依存・インストール用スクリプトは0件。公開物は9ファイル、圧縮後20,598,419バイト。
+- [Release Actions](https://github.com/aomona/enderpin/actions/runs/34969035608)：Linux x64/ARM64、macOS Intel/ARM64、Windows x64の全5環境で、ネイティブビルド後に同梱版のnpm/Bun導入とpnpm dlxを検証。すべて成功。
+- [Check Actions](https://github.com/aomona/enderpin/actions/runs/34969035671)：3 OSのRustテスト・fmt・Clippy・実JVMサンドボックス確認が成功。ローカルの通常テストも46件成功。
+- 全5環境のアーカイブがないと公開用パッケージの作成を拒否することを確認。`--allow-partial` のローカル検証用は `private: true` で生成。
+- CodeRabbitの変更8ファイルのレビューは指摘0件。
+- npm公開処理の完了後、`latest = 0.1.3` と配布アーカイブのintegrityを確認。`tests/npm_install.py target/npm-release-v0.1.3/enderpin-0.1.3.tgz --registry` で公開版を名前から取得し、npm/Bun導入とpnpm dlxが成功した。pnpmの `blockExoticSubdeps` は有効のまま検証した。
+
 ## npm配布パッケージ（v0.1.2、2026-09-15）
 
 - macOS ARM64でnpm 11.19.0・Bun 1.4.2の隔離グローバルインストールを実行。インストール用スクリプトを無効にして、OS別バイナリの起動、0.1.2の版表示、CLIのエラー終了コード、空白を含むパスでの初期化を確認。
