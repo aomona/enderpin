@@ -13,3 +13,7 @@ pub mod workspace;
 
 pub use model::{Kind, Manifest, Package, Side};
 pub use workspace::{SyncOptions, SyncReport, Workspace};
+
+mod desktop;
+
+mod imports;

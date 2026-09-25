@@ -17,6 +17,9 @@ pub struct Settings {
     pub microphone: Option<bool>,
     pub clipboard: Option<bool>,
     pub desktop_integration: bool,
+    pub open_links: bool,
+    pub open_folders: bool,
+    pub import_files: bool,
     pub skin_cache: bool,
     pub graphics_cache: bool,
     pub narrator: bool,
@@ -32,9 +35,12 @@ impl Default for Settings {
             microphone: None,
             clipboard: None,
             desktop_integration: true,
+            open_links: true,
+            open_folders: true,
+            import_files: true,
             skin_cache: true,
             graphics_cache: true,
-            narrator: false,
+            narrator: true,
             account_authentication: true,
         }
     }
@@ -237,6 +243,11 @@ pub fn validate_folders(ws: &Workspace, folders: &[FolderGrant]) -> Result<()> {
 }
 
 impl Settings {
+    /// Vanilla clipboard access is enabled unless explicitly denied.
+    pub fn clipboard_allowed(&self) -> bool {
+        self.clipboard.unwrap_or(true)
+    }
+
     /// Explicit editor action; never relax a saved denial merely by opening or saving it.
     pub fn reset_unsupported_desktop(&mut self, os: &str) {
         match os {
@@ -270,6 +281,12 @@ impl Settings {
             "unsupported sandbox OS"
         );
         if desktop {
+            if self.account_authentication {
+                notes.push("Account access includes vanilla multiplayer, Realms, player reports, friends and presence. Realms and social requests also require game network access.".into());
+            }
+            if self.import_files {
+                notes.push("File imports require a host file selection or confirmation. Selected data is copied read-only into the game's import cache (up to 2 GiB per request).".into());
+            }
             match os {
                 "macos" => {
                     ensure!(
@@ -304,7 +321,7 @@ impl Settings {
                     );
                     notes.push("Linux grants the selected display protocol; X11 can expose other clients, and Wayland access is not protocol-filtered.".into());
                     if self.audio {
-                        notes.push("PulseAudio grants the full service, including recording; output-only access is not enforced.".into());
+                        notes.push("Audio grants the selected local PulseAudio/PipeWire service or ALSA devices, including recording; output-only access is not enforced.".into());
                     }
                 }
                 "windows" => {

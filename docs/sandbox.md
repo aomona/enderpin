@@ -68,7 +68,10 @@ network = false
 ```
 
 標準では通信・ゲームフォルダへの書き込み・音声・デスクトップ連携・スキンキャッシュ・描画キャッシュを許可し、
-ナレーターを無効にします。`init` のアカウント認証は有効、`quick` は認証を無効にした設定を明示的に保存します。
+ナレーター・クリップボード・外部リンク・フォルダ表示・ファイル取り込みを許可します。
+`init` と `quick` はともにアカウント認証を有効にします。既存設定の明示的な禁止は変更しません。
+`open_links`, `open_folders`, `import_files`, `narrator` はそれぞれ `false` で禁止できます。
+ファイル取り込みの許可は、ホスト側の選択・確認画面を使う許可です。ホーム全体の読み取り許可ではありません。
 `game_write = false` はゲーム全体を書き込み禁止にします。
 `read_only` は `saves`, `screenshots`, `resourcepacks`, `shaderpacks`, `mods`, `config`, `logs`,
 `plugins`, `world` から選びます。標準以外のサーバーワールド名は `world` の制限に含まれません。
@@ -107,13 +110,14 @@ MODのパス設定は自動変更しません。必要に応じてMOD側にも�
 | --- | --- | --- | --- |
 | ゲーム・外部フォルダの読み書き | Seatbelt | bind mount | AppContainer ACL |
 | IP通信 | Seatbelt | network namespace + seccomp | AppContainer capabilities |
-| 音声出力の禁止 | CoreAudio許可を外す | PulseAudio socketを渡さない | 個別指定不可 |
+| 音声出力の禁止 | CoreAudio許可を外す | 音声socket・ALSA deviceを渡さない | 個別指定不可 |
 | マイクの個別指定 | 対応。別途OSの同意が必要 | 音声許可時は録音も含まれる | 個別指定不可 |
 | クリップボードの個別指定 | 対応 | display protocolから独立した禁止は不可 | 個別指定不可 |
 | IME・全画面の追加連携 | 個別指定可能 | 個別の禁止は不可 | 個別の禁止は不可 |
 | 描画キャッシュの禁止 | Java Metal cacheの許可を外す | 専用cacheを読み取り専用化 | 個別の禁止は不可 |
 
-`microphone` と `clipboard` を省略すると、macOSでは個別許可なし、Linux/WindowsではOS・デスクトップ接続の制約に従います。
+`microphone` を省略するとmacOSでは個別許可なしです。`clipboard` の省略時はmacOSで許可します。
+Linux/WindowsではどちらもOS・デスクトップ接続の制約に従います。
 Linux/Windowsで省略している項目を「拒否できている」とは表示しません。
 例えばLinuxで `audio = true` と `microphone = false` を組み合わせると停止します。
 Windowsでは `microphone` / `clipboard` の明示指定、`audio = false` / `desktop_integration = false` /
@@ -121,7 +125,8 @@ Windowsでは `microphone` / `clipboard` の明示指定、`audio = false` / `de
 
 LinuxはWaylandが指定された環境ではWaylandを優先し、失敗時にX11へ自動切り替えしません。
 X11は他クライアントへのアクセス、Waylandはcompositor protocolへのアクセスを伴います。
-PulseAudioも出力専用の接続ではありません。これらの制約を承認画面に表示します。
+音声は利用可能なローカルPulseAudio、PipeWire、ALSAの順に接続します。これらは出力専用の接続ではありません。
+NVIDIAの描画用デバイスも許可します。これらの制約を承認画面に表示します。
 WindowsにはAppContainer固有のプロファイル保存領域もあります。
 
 読み取り専用のMODディレクトリは書き込み・削除・名前変更を禁止します。
@@ -135,10 +140,12 @@ MonaLauncherの認証brokerとナレーターbridgeを [GPLv3で再利用](third
 `account_authentication = true` のクライアントはゲームへプレースホルダーだけを渡し、Minecraftのアクセストークンと
 チャット署名用の秘密鍵をホスト側に保持します。Microsoftの更新資格情報はOSストアだけに保持します。
 Unixは継承したsocket pair、Windowsは接続済みのpipe handleを使います。汎用HTTPプロキシや任意データの署名APIではありません。
-ゲームの `network` が無効でも、承認済みのアカウント認証はホスト側で実行できます。
+ゲームの `network` が無効でも、承認済みの従来のアカウント認証はホスト側で実行できます。
+Realms・通報・フレンド・プレゼンスの仲介には、アカウント認証と `network` の両方が必要です。
+宛先は公式Realms API、およびMinecraft Servicesの必要なパスに固定し、ゲーム指定の資格情報やリダイレクトは使いません。
 `logout` やアカウント変更で仲介を失効させます。既に確立したサーバー接続を切断する操作ではありません。
 
-アダプターはMinecraft 1.21.1 / 1.21.8（Java 21）、26.2（Java 25）、Fabric 0.19.5に限定し、
+アダプターはMinecraft 1.21.1 / 1.21.8（Java 21）、26.2 / 26.3（Java 25）、VanillaまたはFabric 0.19.5に限定し、
 公式authlibのハッシュを検査します。未対応版やブリッジ失敗では起動を停止し、生トークンへ戻しません。
 バージョン別・OS別の実測範囲は [検証記録](verification.md) を参照してください。
 旧方式の `profilekeys` キャッシュは仲介へ切り替える起動で削除し、バックアップしません。
@@ -147,10 +154,23 @@ Unixは継承したsocket pair、Windowsは接続済みのpipe handleを使い�
 `narrator = true` はゲームのナレーター要求だけをホストの音声エンジンへ渡します。
 WindowsはSAPI、macOSはAVSpeechSynthesizer、Linuxは `/usr/bin/espeak-ng` を使います。
 テキスト長・要求頻度・キューを制限し、ゲーム終了時に停止します。Linuxでは事前にespeak-ngの導入が必要です。
+音声エンジンが利用できなければ警告してナレーターだけを無効にし、ゲームの起動は続けます。
 この設定は他MOD独自の音声合成を識別して禁止する機能ではありません。
+
+## ホストとの連携
+
+外部リンクはHTTP/HTTPS、フォルダ表示はゲーム内または承認済み外部フォルダ内に限ります。
+スクリーンショットはPNG署名を検査したコピーを表示します。任意の実行ファイルやURI schemeは開きません。
+ファイル選択とリソースパックのドラッグ＆ドロップはホストの選択・確認画面で許可したデータだけを取り込みます。
+Linuxの選択画面には `zenity`、フォルダ表示には `org.freedesktop.FileManager1` 対応のファイルマネージャーが必要です。
+
+コピーは `.enderpin/client/imports/` に保存し、ゲームには読み取り専用で渡します。
+1回につき32項目、合計2 GiB・10万エントリまでです。リンクや特殊ファイルは取り込みません。
+コピーは起動をまたいで残るため、不要になった取り込みキャッシュはゲーム終了後に削除できます。
+これらの制限と未検証機能があり、現時点で全OS・全Vanilla操作の完全互換を保証するものではありません。
 
 ## 境界と次の段階
 
 権限は同じMinecraftプロセス全体に適用されます。MODごとの強制隔離は行いません。
 ファイル検査とハッシュによる承認の対象はロックで管理するパッケージです。手動配置した管理外MODはこの検査に含みません。
-実行中の追加要求・承認、ネットワークの宛先別制御、任意コードを実行するプラグイン機構は含めません。
+ファイル取り込み以外の実行中の追加要求・承認、ゲーム通信の宛先別制御、任意コードを実行するプラグイン機構は含めません。

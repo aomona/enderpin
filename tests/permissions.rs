@@ -218,11 +218,25 @@ fn unsupported_denials_and_aliases_fail_closed() -> Result<()> {
 fn compact_settings_roundtrip_and_legacy_requests_fail_closed() -> Result<()> {
     let mut manifest = enderpin::Manifest::new("1.21.1".into())?;
     assert!(!manifest.to_toml()?.contains("sandbox"));
+    let defaults = &manifest.client.sandbox;
+    assert!(defaults.account_authentication && defaults.narrator && defaults.clipboard_allowed());
+    assert!(defaults.open_links && defaults.open_folders && defaults.import_files);
     manifest.client.sandbox.network = false;
     manifest.client.sandbox.microphone = Some(false);
+    manifest.client.sandbox.clipboard = Some(false);
+    manifest.client.sandbox.narrator = false;
+    manifest.client.sandbox.open_links = false;
+    manifest.client.sandbox.open_folders = false;
+    manifest.client.sandbox.import_files = false;
     let text = manifest.to_toml()?;
     assert!(text.contains("network = false"));
     assert!(!text.contains("game_write"));
+    assert!(
+        !enderpin::Manifest::parse(&text)?
+            .client
+            .sandbox
+            .clipboard_allowed()
+    );
     assert_eq!(
         enderpin::Manifest::parse(&text)?.client.sandbox,
         manifest.client.sandbox

@@ -303,11 +303,20 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
             access(settings.desktop_integration),
             access(settings.graphics_cache)
         ));
+        lines.push(format!(
+            "Import files with host confirmation: {}",
+            access(settings.import_files)
+        ));
+        lines.push(format!(
+            "Open web links: {}; open folders/screenshots: {}",
+            access(settings.open_links),
+            access(settings.open_folders)
+        ));
         if plan.platform == "macos" {
             lines.push(format!(
                 "Microphone: {}; clipboard: {}",
                 access(settings.microphone == Some(true)),
-                access(settings.clipboard == Some(true))
+                access(settings.clipboard_allowed())
             ));
         }
     }
@@ -560,8 +569,17 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
             }
             Some("Advanced desktop permissions") => {
                 let mut microphone = settings.microphone == Some(true);
-                let mut clipboard = settings.clipboard == Some(true);
+                let mut clipboard = settings.clipboard_allowed();
                 let mut switches = vec![
+                    (
+                        "Import selected files via host confirmation",
+                        &mut settings.import_files,
+                    ),
+                    ("Open web links via host", &mut settings.open_links),
+                    (
+                        "Open game/approved folders and screenshots via host",
+                        &mut settings.open_folders,
+                    ),
                     ("Narrator via host", &mut settings.narrator),
                     ("Write skin cache", &mut settings.skin_cache),
                 ];
@@ -580,7 +598,7 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
                     if microphone != (settings.microphone == Some(true)) {
                         settings.microphone = Some(microphone);
                     }
-                    if clipboard != (settings.clipboard == Some(true)) {
+                    if clipboard != (settings.clipboard_allowed()) {
                         settings.clipboard = Some(clipboard);
                     }
                 }

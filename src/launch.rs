@@ -44,7 +44,6 @@ pub struct RunningGame {
     child: Child,
     _target: File,
     _temporary: tempfile::TempDir,
-    _bridges: Option<tempfile::TempDir>,
     _broker: Option<crate::auth::broker::channel::BrokerGuard>,
     relay_threads: Vec<std::thread::JoinHandle<()>>,
     #[cfg(target_os = "linux")]
@@ -223,24 +222,44 @@ pub fn start(
         storage::directory(&game, directory.name())?;
     }
     let mut extra: Vec<_> = plan.folders.clone();
-    let bridge_files = if side == Side::Client
-        && (workspace.manifest.client.loader != "vanilla"
-            || (!demo && plan.effective.account_authentication)
-            || plan.effective.narrator)
-    {
-        let root = storage::directory(&workspace.root, ".enderpin/client/launch")?;
-        let files = tempfile::tempdir_in(root)?;
-        crate::bridges::write_files(files.path())?;
-        Some(files)
+    let bridge_files = if side == Side::Client {
+        Some(crate::bridges::prepare(&workspace.root)?)
     } else {
         None
     };
-    let broker = if side == Side::Client && !demo && plan.effective.account_authentication {
+    let authenticated = side == Side::Client && !demo && plan.effective.account_authentication;
+    let account = if authenticated {
         crate::bridges::clear_profile_keys(&game)?;
-        Some(crate::bridges::broker(
+        Some(Box::new(crate::bridges::broker(
             &runtime,
             &workspace.lockfile.runtimes[&side],
             session.context("missing session")?,
+        )?)
+            as Box<dyn crate::auth::broker::service::Operations>)
+    } else {
+        None
+    };
+    let imports = if side == Side::Client {
+        let root =
+            storage::directory(&workspace.root, ".enderpin/client/imports")?.canonicalize()?;
+        sandbox::validate_data_tree(&root)?;
+        Some(root)
+    } else {
+        None
+    };
+    let broker = if side == Side::Client {
+        let mut settings = plan.effective.clone();
+        settings.network &= options.network;
+        Some(crate::auth::broker::channel::PreparedBroker::new(
+            Box::new(crate::desktop::HostOperations {
+                account,
+                settings,
+                game: game.clone(),
+                folders: plan.folders.clone(),
+                imports: imports.clone().context("client import directory missing")?,
+                last_open: None,
+            }),
+            true,
         )?)
     } else {
         None
@@ -253,10 +272,13 @@ pub fn start(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     let narrator = if side == Side::Client && plan.effective.narrator {
-        Some(std::sync::Arc::new(
-            crate::narrator::NarratorBroker::start(narrator_token.clone())
-                .map_err(anyhow::Error::msg)?,
-        ))
+        match crate::narrator::NarratorBroker::start(narrator_token.clone()) {
+            Ok(narrator) => Some(std::sync::Arc::new(narrator)),
+            Err(error) => {
+                progress(&format!("Narrator unavailable: {error}"));
+                None
+            }
+        }
     } else {
         None
     };
@@ -301,10 +323,13 @@ pub fn start(
         extra,
     };
     if let Some(files) = &bridge_files {
-        policy.readonly.push(files.path().canonicalize()?);
+        policy.readonly.push(files.as_path().canonicalize()?);
+    }
+    if let Some(imports) = imports {
+        policy.readonly.push(imports);
     }
     ensure!(
-        options.connect.is_none() || (policy.network && broker.is_some()),
+        options.connect.is_none() || (policy.network && authenticated),
         "--connect requires approved network and account authentication access"
     );
     let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
@@ -343,7 +368,7 @@ pub fn start(
     let classpath = std::env::join_paths(
         bridge_files
             .iter()
-            .map(|files| storage::java_path(&files.path().join("narrator-bridge.jar")))
+            .map(|files| storage::java_path(&files.as_path().join("narrator-bridge.jar")))
             .chain(runtime.classpath.iter().map(|p| storage::java_path(p))),
     )?
     .into_string()
@@ -356,6 +381,7 @@ pub fn start(
         ),
         format!("-Duser.home={}", storage::java_path(&policy.game).display()),
         "-XX:-UsePerfData".into(),
+        format!("-Denderpin.minecraft={}", workspace.manifest.minecraft),
     ];
     if workspace.manifest.target(side).loader == "fabric" {
         args.push(format!(
@@ -374,16 +400,16 @@ pub fn start(
             // workspace paths out of the agent filename portion.
             args.push(format!(
                 "-javaagent:{}={}",
-                std::path::Path::new("../launch")
+                std::path::Path::new("../../.enderpin/client/launch")
                     .join(
                         files
-                            .path()
+                            .as_path()
                             .file_name()
                             .context("bridge directory missing")?
                     )
                     .join("auth-bridge.jar")
                     .display(),
-                storage::java_path(&crate::bridges::native(files.path())).display()
+                storage::java_path(&crate::bridges::native(files.as_path())).display()
             ));
             #[cfg(unix)]
             broker.configure(&mut command)?;
@@ -446,7 +472,7 @@ pub fn start(
             ),
             (
                 "auth_access_token",
-                if broker.is_some() {
+                if authenticated {
                     crate::auth::broker::protocol::GAME_TOKEN.into()
                 } else {
                     "0".into()
@@ -589,7 +615,6 @@ pub fn start(
         child,
         _target: target,
         _temporary: temporary,
-        _bridges: bridge_files,
         _broker: broker.map(|broker| broker.into_guard()),
         relay_threads,
         #[cfg(target_os = "linux")]
