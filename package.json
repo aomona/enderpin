@@ -1,0 +1,21 @@
+{
+  "name": "enderpin-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:dev": "node scripts/docs-theme.mjs && vitepress dev docs --host 127.0.0.1",
+    "docs:build": "node scripts/docs-theme.mjs && vitepress build docs",
+    "docs:preview": "wrangler dev --ip 127.0.0.1",
+    "docs:deploy": "npm run docs:build && wrangler deploy"
+  },
+  "devDependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@fontsource-variable/noto-sans-jp": "5.3.0",
+    "vitepress": "1.6.4",
+    "wrangler": "4.140.0"
+  },
+  "overrides": {
+    "vite": "6.4.3"
+  }
+}
