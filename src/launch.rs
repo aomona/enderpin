@@ -166,7 +166,7 @@ pub fn start(
             "invalid server address"
         );
     }
-    let game = storage::directory(&workspace.root, side.name())?.canonicalize()?;
+    let game = storage::directory(&workspace.root, side.game_directory())?.canonicalize()?;
     if side == Side::Server {
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(

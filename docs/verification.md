@@ -161,3 +161,19 @@ CodeRabbitのレビューを実施し、権限表示の制御文字除去、無�
 - Paper、NeoForge/Sinytra Connector、MonaLauncherへの組込は後続段階。
 
 この記録は指定した条件・プローブの結果であり、OSの脆弱性やあらゆるデスクトップサービスを含む完全な隔離証明ではない。
+
+## 2026-09-25: 共有ファイルと実行環境の分離（format 3）
+
+`files/common/`・`files/client/`・`files/server/` を共有入力、`run/client/`・`run/server/` を実際のゲームディレクトリに変更。`run/` はワールドを含む永続データで、初期化時にGit除外する。共有ファイルは共通→対象別の順にファイル単位で反映し、最後の反映内容との比較でローカル編集を保持する。共有元とローカルが異なる内容へ変更された場合は、既存のトランザクションに入る前に停止する。旧形式は拒否し、READMEに別ディレクトリへの手動移行手順を記載。
+
+ローカルmacOSでの確認:
+
+- `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、`git diff --check`。
+- `cargo test --locked`: 55件成功、ネイティブ環境を必要とする4件は既定で除外。
+- Java 21を指定した `cargo test --locked -- --ignored --nocapture`: 4件成功。ファイル・ネットワーク隔離、認証ブリッジ、JVMの実行ロックを検証。
+- `cargo build --locked` と `python3 -B tests/permissions_tui.py --binary target/debug/enderpin`: 成功。
+- 新規7件の統合テスト: Git入力からの再現、対象別優先・片側同期、共有元の更新・削除、ワールド保持、三者比較による競合と全対象の未反映、restore、管理外ファイル保護、権限指紋、大小文字・ファイル/ディレクトリ競合、不正な対象の台帳、シンボリックリンク、旧形式拒否。既存パッケージ同期テストにも共有ファイルとの衝突を追加。
+- 一時ディレクトリでCLIの `init`・両側への `sync --locked --offline`・`permissions show --json` を実行し、共有設定の配置と承認対象への反映を確認。
+- Pythonの実ネットワーク/ゲーム起動スクリプトは新配置へ更新し、構文を確認。この変更ではMinecraftの実起動・認証接続は未実施。上記のネイティブ検証はJavaプローブであり、ゲーム起動の証明ではない。
+
+Linux・Windowsの検証結果は、この変更のCI実行結果を参照。

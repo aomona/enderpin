@@ -86,7 +86,7 @@ def main():
         if not args.quick:
             for name in ["enderpin.toml", "enderpin.lock"]:
                 shutil.copyfile(args.workspace / name, root / name)
-        game = root / "server"
+        game = root / "run" / "server"
         game.mkdir(parents=True)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -158,10 +158,10 @@ def main():
                     time.sleep(0.2)
             assert observed["players"]["online"] == 0
             if args.quick:
-                assert (base / "client").is_dir()
-                assert (base / "server").is_dir()
+                assert (base / "run" / "client").is_dir()
+                assert (base / "run" / "server").is_dir()
                 assert (base / "enderpin.toml").is_file()
-                assert not (base / "server" / version).exists()
+                assert not (base / "run" / "server" / version).exists()
                 assert not (base / ".enderpin/server/game").exists()
                 assert observed["version"]["name"] == version
                 assert "online-mode=true" in (game / "server.properties").read_text()

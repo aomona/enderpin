@@ -59,7 +59,7 @@ fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
         incompatible: vec![],
         optional: vec![],
     });
-    let game_mods = storage::directory(&ws.root, "client/mods")?;
+    let game_mods = storage::directory(&ws.root, "run/client/mods")?;
     fs::write(game_mods.join("example.jar"), &bytes)?;
     let original = permissions::plan(&ws, Side::Client)?;
     assert!(
@@ -159,7 +159,7 @@ fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
     for unsafe_path in [
         ws.root.clone(),
         ws.root.parent().context("no parent")?.to_owned(),
-        ws.root.join("client"),
+        ws.root.join("run/client"),
     ] {
         local.folders[0].path = unsafe_path;
         local.save(&ws, Side::Client)?;

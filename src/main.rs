@@ -268,6 +268,14 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
             }
         ),
     ];
+    if !plan.shared_files.is_empty() {
+        lines.push("Shared files (approval includes their installed contents):".into());
+        lines.extend(
+            plan.shared_files
+                .keys()
+                .map(|path| format!("  {}", clean(path))),
+        );
+    }
     if settings.game_write && !settings.read_only.is_empty() {
         lines.push(format!(
             "Read-only game folders: {}",

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
@@ -17,6 +17,12 @@ pub enum Side {
 
 impl Side {
     pub const ALL: [Self; 2] = [Self::Client, Self::Server];
+    pub fn game_directory(self) -> &'static str {
+        match self {
+            Self::Client => "run/client",
+            Self::Server => "run/server",
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Client => "client",
@@ -222,7 +228,7 @@ impl Manifest {
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.format == FORMAT,
-            "unsupported manifest format {}",
+            "unsupported manifest format {}; expected format 3 (see README manual migration)",
             self.format
         );
         identifier(&self.minecraft)?;
@@ -314,7 +320,7 @@ impl LockedPackage {
     pub fn relative_path(&self, side: Side) -> String {
         format!(
             "{}/{}/{}",
-            side.name(),
+            side.game_directory(),
             self.kind.directory(),
             self.filename
         )

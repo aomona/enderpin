@@ -69,7 +69,7 @@ enderpin quick --server  # クライアントとサーバーの両方をセッ�
 
 MODの候補は選んだMinecraft版とローダーで絞り込み、選択時に対象側で利用できるリリースを確認します。`--server` では両側に対応するMODを対象ごとに配置します。任意依存は自動追加しません。古いMinecraftなど実行環境が未対応の場合は準備時に理由を示して停止します。
 
-保存先は実行ディレクトリ直下の `client/`・`server/` と、共通の `enderpin.toml`・`enderpin.lock` です。`-C DIRECTORY` で保存先を変更できます。初回に選んだ版を固定し、既存の設定は `quick` で上書きしません。MODの追加は `add`、準備の再実行は `prepare` を使います。別の版は別ディレクトリでセットアップしてください。
+保存先は実行ディレクトリ内の `run/client/`・`run/server/` と、共通の `enderpin.toml`・`enderpin.lock` です。`-C DIRECTORY` で保存先を変更できます。初回に選んだ版を固定し、既存の設定は `quick` で上書きしません。MODの追加は `add`、準備の再実行は `prepare` を使います。別の版は別ディレクトリでセットアップしてください。
 
 選択を省略したり、非対話環境でセットアップする場合は引数で指定できます。
 
@@ -156,7 +156,7 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 ## 構成
 
 ```toml
-format = 2
+format = 3
 minecraft = "1.21.1"
 
 [common.lithium]
@@ -231,24 +231,69 @@ example-mod
 
 ## ファイルと保護
 
-以下の構成は開発版の仕様です（v0.1.1以前は旧構成）。形式は `format = 2` とし、旧形式の移行・互換対応は行いません。
+構成形式は `format = 3` です。共有する入力と、実際にゲームが読み書きする環境を分離します。
 
 ```text
 workspace/
-├── client/          # mods/、saves/、options.txt など
-├── server/          # mods/、world/、server.properties など
 ├── enderpin.toml
 ├── enderpin.lock
-└── .enderpin/       # 内部管理用
+├── files/                    # Git管理する共有ファイル
+│   ├── common/config/        # 両側へ反映
+│   ├── client/resourcepacks/ # クライアントだけへ反映
+│   └── server/server.properties
+├── run/                      # Git管理外。セーブデータも含む
+│   ├── client/               # mods/、config/、saves/、options.txt など
+│   └── server/               # mods/、config/、world/、server.properties など
+└── .enderpin/                # 権限・同期台帳・復旧用ファイル
 ```
 
-- `enderpin.toml` と `enderpin.lock` はGitへ追加します。
-- `client/` がクライアントの `.minecraft` 相当、`server/` がサーバーのゲームディレクトリです。
-- `.enderpin/` は権限・実行ロック・復旧用ファイルなどの内部管理専用です。
-- `client/`・`server/` のGit管理範囲は利用者が `.gitignore` で設定します。Enderpinはこれらの除外設定を自動追加しません。
-- `.enderpin/` と `.enderpinignore` はGit管理外です。
+- `enderpin.toml`・`enderpin.lock`・`files/` をGitへ追加します。空のディレクトリはGitに保存されませんが、同期に必要な場所は自動作成されます。
+- `run/client/` がクライアントの `.minecraft` 相当、`run/server/` がサーバーのゲームディレクトリです。`run/` はワールドも含むため、消して再生成できるキャッシュではありません。
+- 初期化時に `/run/`・`/.enderpin/`・`/.enderpinignore` を `.gitignore` へ追加します。認証資格情報はこれらとは別のOS資格情報ストアに保存します。
+
+### 共有設定を使う
+
+たとえば両側で使うMOD設定を `files/common/config/example.json` に置き、`enderpin sync --target all --locked` を実行します。`run/client/config/example.json` と `run/server/config/example.json` にコピーされます。サーバーだけ異なる設定にするには `files/server/config/example.json` を置きます。
+
+- 対象ごとに `files/common/` → `files/client/` または `files/server/` の順で反映し、同じ相対パスは対象側が優先されます。ファイル単位の置き換えで、JSONやTOMLのキーのマージはしません。
+- `sync`・`prepare`・`launch` の同期処理で反映します。`lock` はファイルを配置しません。`.enderpinignore` はパッケージ用で、共有ファイルには適用しません。
+- 取得するMODなどは従来どおり `enderpin.toml` と `enderpin.lock` で管理します。共有ファイルはGitのリビジョンで固定し、ロックファイルには追加しません。`--locked --offline` でも、現在チェックアウトしている `files/` の内容を反映します。
+- 管理パッケージと共有ファイルの配置先が重なる場合、大小文字だけが異なる共有パス、ファイルとディレクトリが重なる構成、シンボリックリンク・reparse pointは拒否します。
+- `files/` に認証情報・秘密鍵・個人のワールドを置かないでください。置いたファイルは共有・同期の対象になります。
+
+### ゲーム内で設定を変えたとき
+
+最後に反映した共有元・現在の共有元・ゲーム側のファイルを比較します。
+
+| 変更 | 通常の同期 |
+| --- | --- |
+| 共有元だけ変更 | ゲーム側へ反映 |
+| ゲーム側だけ変更・削除 | ローカルの変更を保持 |
+| 両側が同じ内容へ変更 | 解決済みとして記録 |
+| 両側が異なる内容へ変更 | 競合として停止。同期対象のファイル変更はまとめて見送る |
+| 共有元から削除 | ゲーム側が未変更なら削除。編集済みなら競合 |
+| 配置先に管理外ファイルが存在 | 内容が同じでも停止。勝手に取り込まない |
+
+ローカルの設定を共有するには、対象ファイルを `files/client/` などへコピーして再同期します。共有元の内容へ戻す場合は `enderpin restore --target client` を使います。`restore` はその対象の管理パッケージと共有ファイルのローカル変更・削除を破棄しますが、管理外ファイルは上書きしません。初めて共有管理に入れる既存設定は、バックアップして `files/` に置き、ゲーム側の同名ファイルを退避してから同期してください。
+
+対象側の上書きファイルを削除すると共通ファイルへ戻ります。共通ファイルもなければ削除になります。ディレクトリそのものや、共有管理していないワールド・ログなどは削除しません。
+
+権限承認には、共有管理下のゲーム側ファイルのパスと内容ハッシュも含めます。共有ファイル経由でMODを追加した場合や、共有設定をゲーム内で変更した場合も再承認が必要になることがあります。`permissions show` で対象ファイルを確認できます。
+
+### format = 2 から手動で移行する
+
+自動移動・旧形式との互換対応は行いません。ゲームを終了し、旧ワークスペース全体をバックアップしてから、別の空ディレクトリで移行します。
+
+1. 旧環境の `enderpin.toml` と `enderpin.lock` を新しいディレクトリへコピーし、**両ファイルのトップレベルの** `format = 2` を `format = 3` に変更します。旧 `.enderpin/` とゲームディレクトリはコピーしません。
+2. 新しいディレクトリに `files/common/`・`files/client/`・`files/server/` を作り、共有したい設定だけを旧 `client/`・`server/` から対応する `files/` へコピーします。
+3. `.gitignore` に `/run/`・`/.enderpin/`・`/.enderpinignore` を追加します。`enderpin sync --target all` を実行して、新形式の指紋と配置を生成します。この最初の同期は `--locked`・`--offline` を付けず、`update` は使いません。既存ロックの固定版を維持して解決するため、変更されたロックを確認してください。
+4. 旧 `client/saves/`・`server/world/` などの必要なプレイデータを、それぞれ新 `run/client/`・`run/server/` へコピーします。個人設定も必要に応じてコピーしますが、手順2で共有したファイルと生成済みの管理MODは上書きしません。サーバーの `level-name` を変えている場合は、そのワールドもコピーします。
+5. `enderpin prepare --target all --locked` で実行環境を準備し、必要な権限・外部フォルダを設定して再承認します。起動してワールドと設定を確認できるまで旧環境を残してください。新しい構成・ロック・`files/` をGitへ追加します。
+
+### ファイルの保護
+
 - ダウンロード済みファイルはOS標準のキャッシュディレクトリにハッシュで保存します。
-- 管理外ファイルとの衝突、管理対象の手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。
+- 管理外ファイルとの衝突、管理パッケージの手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。
 - 構成・ロック・ファイル変更をステージングし、復旧用ジャーナルを保存してから反映します。中断時は次の操作で元の状態へ戻します。復旧中に別の変更を見つけた場合はバックアップを保持して停止します。
 - 以前の構成とロックをGitで戻して `sync --locked` すれば、そのファイルへ戻せます。配布元またはキャッシュから取得できることが前提です。
 

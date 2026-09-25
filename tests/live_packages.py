@@ -36,7 +36,7 @@ def inspect(root, side):
     packages = lock["targets"][side]["packages"]
     directories = {"mod": "mods", "resourcepack": "resourcepacks", "shader": "shaderpacks", "plugin": "plugins"}
     for p in packages:
-        path = root / side / directories[p["kind"]] / p["filename"]
+        path = root / "run" / side / directories[p["kind"]] / p["filename"]
         assert hashlib.sha512(path.read_bytes()).hexdigest() == p["sha512"]
         assert path.stat().st_size == p["size"]
     return packages
@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     assert inspect(clone, "server") == server
 
     sodium = next(p for p in client if p["name"] == "sodium")
-    path = clone / "client/mods" / sodium["filename"]
+    path = clone / "run/client/mods" / sodium["filename"]
     path.write_bytes(b"manually modified")
     assert "modified" in run(clone, cache, "sync", "--locked", "--offline", success=False)
     run(clone, cache, "restore", "--offline")
@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     url_package = inspect(urls, "client")[0]
     assert url_package["sha512"] == sodium["sha512"]
     run(urls, cache, "remove", "custom-sodium")
-    assert not list((urls / "client/mods").iterdir())
+    assert not list((urls / "run/client/mods").iterdir())
     print(json.dumps({
         "search": "passed", "client_artifacts": len(client), "server_artifacts": len(server),
         "offline_clone": "passed", "manual_change_and_restore": "passed", "ignore_dependency_check": "passed",

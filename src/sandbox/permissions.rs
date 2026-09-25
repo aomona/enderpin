@@ -94,6 +94,7 @@ pub struct Plan {
     pub runtime_sha512: Option<String>,
     pub effective: Settings,
     pub packages: Vec<PackageIdentity>,
+    pub shared_files: std::collections::BTreeMap<String, String>,
     pub folders: Vec<FolderGrant>,
     pub limitations: Vec<String>,
 }
@@ -166,6 +167,7 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
             .transpose()?,
         effective: config.sandbox.clone(),
         packages: vec![],
+        shared_files: ws.shared_file_hashes(side)?,
         folders: Local::load(ws, side)?.folders,
         limitations: vec![
             "Grants apply to the entire Minecraft process, including every loaded mod.".into(),

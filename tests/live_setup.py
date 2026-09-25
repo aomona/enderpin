@@ -112,10 +112,10 @@ def main():
         assert 'lithium' in manifest['client']['packages']
         assert set(lock['runtimes']) == {'client'}
         assert any(package['name'] == 'lithium' for package in lock['targets']['client']['packages'])
-        assert list((root / 'client/mods').glob('*.jar'))
-        assert not (root / 'client/logs/latest.log').exists(), 'setup launched Minecraft'
+        assert list((root / 'run/client/mods').glob('*.jar'))
+        assert not (root / 'run/client/logs/latest.log').exists(), 'setup launched Minecraft'
         assert not (root / '.enderpin/client/permissions.toml').exists(), 'setup auto-approved permissions'
-        assert not (root / 'server/eula.txt').exists()
+        assert not (root / 'run/server/eula.txt').exists()
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-both-') as directory:
         root = Path(directory)
         result = subprocess.run([str(binary), 'quick', '--server', '--no-interactive',
@@ -128,8 +128,8 @@ def main():
         server_mods = {p['name'] for p in lock['targets']['server']['packages']}
         assert {'lithium', 'sodium'} <= client_mods
         assert 'lithium' in server_mods and 'sodium' not in server_mods
-        assert not (root / 'client/logs/latest.log').exists()
-        assert not (root / 'server/eula.txt').exists()
+        assert not (root / 'run/client/logs/latest.log').exists()
+        assert not (root / 'run/server/eula.txt').exists()
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-cancel-') as directory:
         root = Path(directory)
         terminal = Terminal(binary, root, ['quick', '--version', '26.2'])

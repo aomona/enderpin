@@ -34,12 +34,12 @@ def main():
             plan = json.loads(result.stdout)
             assert not plan["plan"]["folders"]
             subprocess.run(cmd + ["permissions", "approve", plan["fingerprint"]], check=True, capture_output=True, timeout=30)
-        game = root / "server"
+        game = root / "run" / "server"
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
         (game / "server.properties").write_text(f"server-ip=127.0.0.1\nserver-port={port}\nonline-mode=true\nenforce-secure-profile=true\nview-distance=3\nsimulation-distance=3\n")
-        (root / "client/options.txt").write_text("onboardAccessibility:false\n")
+        (root / "run/client/options.txt").write_text("onboardAccessibility:false\n")
         server = client = None
         with (root / "server.log").open("w") as server_log, (root / "client.log").open("w") as client_log:
             def until(path, fragment, process, timeout=300):
@@ -58,7 +58,7 @@ def main():
                 client = subprocess.Popen(base + ["--target", "client", "launch", "--offline", "--connect", f"127.0.0.1:{port}", "--memory", "2048"], stdin=subprocess.DEVNULL, stdout=client_log, stderr=subprocess.STDOUT, text=True)
                 until(root / "server.log", "joined the game", client)
                 # Minecraft must not persist a private signing key in its old cache.
-                for path in (root / "client/profilekeys").glob("**/*"):
+                for path in (root / "run/client/profilekeys").glob("**/*"):
                     if path.is_file():
                         assert b"PRIVATE KEY" not in path.read_bytes(), "game-visible private key cache"
                 print(json.dumps({"authenticated_join": True, "secure_profile_server": True, "game_private_key_cache": False, "player_chat_sent": False}))
