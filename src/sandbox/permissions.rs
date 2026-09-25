@@ -1,5 +1,5 @@
-//! Shared requests are proposals. Only a local approval of the complete plan authorizes launch.
-use std::{collections::BTreeMap, fs::File, io::Read, path::PathBuf};
+//! Game-wide settings and local folder grants. Approval is bound to the complete plan.
+use std::{fs::File, path::PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -69,75 +69,12 @@ impl GameDirectory {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Capability {
-    Narrator,
-    AccountAuthentication,
-    Network,
-    Audio,
-    Microphone,
-    Clipboard,
-    DesktopIntegration,
-    SkinCache,
-    GraphicsCache,
-    GameWrite,
-    DirectoryWrite,
-    FolderRead,
-    FolderWrite,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Request {
-    pub permission: Capability,
-    pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub directory: Option<GameDirectory>,
-    /// A logical slot; shared metadata may never choose an absolute host path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub folder: Option<String>,
-}
-impl Request {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.reason.trim().is_empty()
-                && self.reason.len() <= 2048
-                && !self.reason.chars().any(char::is_control),
-            "permission reason must be nonempty plain text (up to 2048 bytes)"
-        );
-        ensure!(
-            self.directory.is_some() == (self.permission == Capability::DirectoryWrite),
-            "directory is required only for directory-write"
-        );
-        ensure!(
-            self.folder.is_some()
-                == matches!(
-                    self.permission,
-                    Capability::FolderRead | Capability::FolderWrite
-                ),
-            "folder is required only for folder-read/folder-write"
-        );
-        if let Some(folder) = &self.folder {
-            crate::model::identifier(folder)?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Declaration {
-    format: u32,
-    requests: Vec<Request>,
-}
-
 #[derive(Debug, Clone, Serialize)]
-pub struct PackageRequests {
+pub struct PackageIdentity {
     pub key: String,
+    pub name: String,
+    pub version: Option<String>,
     pub sha512: String,
-    pub embedded: Vec<Request>,
-    pub repository: Vec<Request>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -151,27 +88,27 @@ pub struct Plan {
     pub workspace: PathBuf,
     pub side: Side,
     pub platform: String,
-    pub baseline: Settings,
     pub minecraft: String,
     pub loader: String,
     pub loader_version: Option<String>,
     pub runtime_sha512: Option<String>,
     pub effective: Settings,
-    pub packages: Vec<PackageRequests>,
-    pub folders: BTreeMap<String, FolderGrant>,
+    pub packages: Vec<PackageIdentity>,
+    pub shared_files: std::collections::BTreeMap<String, String>,
+    pub folders: Vec<FolderGrant>,
     pub limitations: Vec<String>,
 }
 impl Plan {
     pub fn fingerprint(&self) -> Result<String> {
         // Version the approval contract independently of the package lock format.
-        Ok(hash_bytes(&serde_json::to_vec(&(1, self))?))
+        Ok(hash_bytes(&serde_json::to_vec(&(3, self))?))
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Local {
-    pub bindings: BTreeMap<String, PathBuf>,
+    pub folders: Vec<FolderGrant>,
     pub approved: Option<String>,
 }
 impl Local {
@@ -228,21 +165,15 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
             .get(&side)
             .map(|runtime| serde_json::to_vec(runtime).map(|bytes| hash_bytes(&bytes)))
             .transpose()?,
-        baseline: config.sandbox.clone(),
         effective: config.sandbox.clone(),
         packages: vec![],
-        folders: BTreeMap::new(),
+        shared_files: ws.shared_file_hashes(side)?,
+        folders: Local::load(ws, side)?.folders,
         limitations: vec![
             "Grants apply to the entire Minecraft process, including every loaded mod.".into(),
         ],
     };
-    let local = Local::load(ws, side)?;
-    for key in config.permissions.keys() {
-        ensure!(
-            target.packages.iter().any(|p| p.matches(key)),
-            "permission request references unknown package {key}"
-        );
-    }
+    validate_folders(ws, &plan.folders)?;
     for package in packages {
         let path = storage::safe_path(&ws.root, &package.relative_path(side))?;
         let metadata = std::fs::symlink_metadata(&path)
@@ -252,7 +183,7 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
             "{} must be the regular file recorded in the lock",
             package.name
         );
-        // Read and hash the same descriptor before inspecting untrusted ZIP metadata.
+        // Verify the installed bytes, even when a mod asks for no new permissions.
         let mut file = File::open(&path)
             .with_context(|| format!("{} is not installed; run sync --locked", package.name))?;
         ensure!(
@@ -260,128 +191,13 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
             "{} differs from the lock; refusing permission inspection",
             package.name
         );
-        use std::io::Seek;
-        file.rewind()?;
-        let mut archive =
-            zip::ZipArchive::new(&mut file).context("package is not a readable ZIP/JAR")?;
-        let embedded = if archive
-            .index_for_name("enderpin.permissions.json")
-            .is_some()
-        {
-            let entry = archive.by_name("enderpin.permissions.json")?;
-            ensure!(
-                entry.size() <= 65536,
-                "permission declaration exceeds 64 KiB"
-            );
-            let mut bytes = Vec::new();
-            entry.take(65537).read_to_end(&mut bytes)?;
-            ensure!(
-                bytes.len() <= 65536,
-                "permission declaration exceeds 64 KiB"
-            );
-            let declaration: Declaration =
-                serde_json::from_slice(&bytes).context("invalid enderpin.permissions.json")?;
-            ensure!(
-                declaration.format == 1,
-                "unsupported permission declaration format"
-            );
-            declaration.requests
-        } else {
-            vec![]
-        };
-        let repository: Vec<Request> = config
-            .permissions
-            .iter()
-            .filter(|(key, _)| package.matches(key))
-            .flat_map(|(_, requests)| requests.clone())
-            .collect();
-        ensure!(
-            embedded.len() + repository.len() <= 128,
-            "too many permission requests for {}",
-            package.name
-        );
-        for request in embedded.iter().chain(&repository) {
-            request.validate()?;
-            if side == Side::Server {
-                ensure!(
-                    !matches!(
-                        request.permission,
-                        Capability::Audio
-                            | Capability::Microphone
-                            | Capability::Clipboard
-                            | Capability::DesktopIntegration
-                            | Capability::SkinCache
-                            | Capability::GraphicsCache
-                            | Capability::Narrator
-                            | Capability::AccountAuthentication
-                    ),
-                    "{} requests desktop permissions for a headless server",
-                    package.name
-                );
-            }
-            match request.permission {
-                Capability::Narrator => plan.effective.narrator = true,
-                Capability::AccountAuthentication => plan.effective.account_authentication = true,
-                Capability::Network => plan.effective.network = true,
-                Capability::Audio => plan.effective.audio = true,
-                Capability::Microphone => {
-                    plan.effective.microphone = Some(true);
-                    plan.effective.audio = true;
-                }
-                Capability::Clipboard => plan.effective.clipboard = Some(true),
-                Capability::DesktopIntegration => plan.effective.desktop_integration = true,
-                Capability::SkinCache => plan.effective.skin_cache = true,
-                Capability::GraphicsCache => plan.effective.graphics_cache = true,
-                Capability::GameWrite => plan.effective.game_write = true,
-                Capability::DirectoryWrite => {
-                    plan.effective
-                        .read_only
-                        .retain(|dir| Some(*dir) != request.directory);
-                }
-                Capability::FolderRead | Capability::FolderWrite => {
-                    let slot = request.folder.as_ref().context("folder slot missing")?;
-                    let path = local.bindings.get(slot).with_context(|| {
-                        format!("{slot} needs a local folder; use permissions bind {slot} <path>")
-                    })?;
-                    let path = path.canonicalize().context("bound folder is unavailable")?;
-                    let private = crate::auth::state_root()?;
-                    ensure!(
-                        !path.starts_with(&private) && !private.starts_with(&path),
-                        "folder must not overlap host authentication state"
-                    );
-                    ensure!(
-                        !ws.root.starts_with(&path) && !path.starts_with(&ws.root),
-                        "external folder must not overlap the workspace"
-                    );
-                    ensure!(
-                        path.parent().is_some() && path.is_dir(),
-                        "external binding must be a directory below a filesystem root"
-                    );
-                    super::validate_data_tree(&path)?;
-                    let entry = plan
-                        .folders
-                        .entry(slot.clone())
-                        .or_insert(FolderGrant { path, write: false });
-                    entry.write |= request.permission == Capability::FolderWrite;
-                }
-            }
-        }
-        plan.packages.push(PackageRequests {
+        plan.packages.push(PackageIdentity {
             key: package.key,
+            name: package.name,
+            version: package.version_number.or(package.version),
             sha512: package.sha512,
-            embedded,
-            repository,
         });
     }
-    ensure!(
-        plan.effective.game_write
-            || !plan
-                .packages
-                .iter()
-                .flat_map(|p| p.embedded.iter().chain(&p.repository))
-                .any(|r| r.permission == Capability::DirectoryWrite),
-        "directory-write requires game_write; review the baseline or request game-write explicitly"
-    );
     plan.limitations.extend(
         plan.effective
             .validate_for(std::env::consts::OS, side == Side::Client)?,
@@ -389,7 +205,64 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Canonical paths keep a later symlink replacement from changing an approved grant.
+pub fn validate_folders(ws: &Workspace, folders: &[FolderGrant]) -> Result<()> {
+    if folders.is_empty() {
+        return Ok(());
+    }
+    let private = crate::auth::state_root()?;
+    for (index, grant) in folders.iter().enumerate() {
+        let path = &grant.path;
+        ensure!(
+            path.is_absolute() && path.is_dir() && path.canonicalize()? == *path,
+            "external folder must be an existing canonical directory"
+        );
+        ensure!(
+            path.parent().is_some() && !path.starts_with(&private) && !private.starts_with(path),
+            "folder must not overlap host authentication state or a filesystem root"
+        );
+        ensure!(
+            !ws.root.starts_with(path) && !path.starts_with(&ws.root),
+            "external folder must not overlap the workspace"
+        );
+        ensure!(
+            !folders[..index]
+                .iter()
+                .any(|other| path.starts_with(&other.path) || other.path.starts_with(path)),
+            "external folders must not overlap each other"
+        );
+        super::validate_data_tree(path)?;
+    }
+    Ok(())
+}
+
 impl Settings {
+    /// Explicit editor action; never relax a saved denial merely by opening or saving it.
+    pub fn reset_unsupported_desktop(&mut self, os: &str) {
+        match os {
+            "windows" => {
+                self.audio = true;
+                self.desktop_integration = true;
+                self.graphics_cache = true;
+                self.microphone = None;
+                self.clipboard = None;
+            }
+            "linux" => {
+                self.desktop_integration = true;
+                if self.clipboard == Some(false) {
+                    self.clipboard = None;
+                }
+                if self.microphone == Some(!self.audio) {
+                    self.microphone = None;
+                }
+            }
+            "macos" if !self.audio && self.microphone == Some(true) => {
+                self.microphone = None;
+            }
+            _ => {}
+        }
+    }
+
     pub fn validate_for(&self, os: &str, desktop: bool) -> Result<Vec<String>> {
         let mut notes = vec![];
         ensure!(

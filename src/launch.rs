@@ -166,8 +166,7 @@ pub fn start(
             "invalid server address"
         );
     }
-    let game = storage::directory(&workspace.root, &format!(".enderpin/{}/game", side.name()))?
-        .canonicalize()?;
+    let game = storage::directory(&workspace.root, side.game_directory())?.canonicalize()?;
     if side == Side::Server {
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(
@@ -201,17 +200,7 @@ pub fn start(
         let approval = sandbox::permissions::Local::load(&workspace, side)?;
         ensure!(
             approval.approved.as_deref() == Some(&plan.fingerprint()?),
-            "sandbox permissions changed or are unapproved; run permissions show, then permissions approve <fingerprint>"
-        );
-    }
-    if !options.network {
-        ensure!(
-            !plan
-                .packages
-                .iter()
-                .flat_map(|p| p.embedded.iter().chain(&p.repository))
-                .any(|r| r.permission == sandbox::permissions::Capability::Network),
-            "a mod requires network access but --no-network was requested"
+            "sandbox permissions changed or are unapproved; run permissions approve in a terminal (automation: permissions show --json, then permissions approve <fingerprint>)"
         );
     }
     if side == Side::Server && options.accept_eula {
@@ -233,7 +222,7 @@ pub fn start(
     for directory in &plan.effective.read_only {
         storage::directory(&game, directory.name())?;
     }
-    let mut extra: Vec<_> = plan.folders.values().cloned().collect();
+    let mut extra: Vec<_> = plan.folders.clone();
     let bridge_files = if side == Side::Client
         && (workspace.manifest.client.loader != "vanilla"
             || (!demo && plan.effective.account_authentication)

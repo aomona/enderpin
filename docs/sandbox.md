@@ -1,128 +1,105 @@
 # サンドボックスの権限
 
-ゲーム全体の設定に、MODが必要とする権限を足して、起動前に利用者が承認します。
-共有リポジトリやMODの宣言は要求であり、承認ではありません。
-
-`quick` は専用のバニラクライアント用設定を使い、アカウント認証を無効にした固定の権限だけを自動承認します。
-既存のMOD用ワークスペースや、手編集されたquick設定を自動承認することはありません。
-`quick --no-sandbox`（またはバニラクライアントの `launch --no-sandbox`）は明示的にOSの制限を無効にします。
-設定には保存しません。`--no-network` との併用とサーバーへの指定は拒否します。
-WindowsではAppContainer・ACL設定を省略し、終了時の子プロセス回収に使うJob Objectは維持します。
+client / serverごとに、ゲーム全体へ許可する範囲を選びます。
+すべてのMODが同じ許可を共有します。MODごとの権限宣言や、用途名を介したフォルダ割り当ては不要です。
 
 ## 試す
 
+セットアップ後、次のコマンドで編集します。
+
 ```sh
-enderpin --target client sync --locked
-enderpin --target client prepare --locked
-enderpin --target client permissions show
-# 表示された fingerprint を指定する
-enderpin --target client permissions approve <fingerprint>
-enderpin --target client launch
+enderpin permissions
+enderpin --target server permissions
 ```
 
-対話的な `launch` は未承認の計画を表示して確認します。非対話実行では事前の承認が必要です。
-`--yes` は権限の確認を省略しません。`permissions show --json` はCLIと同じ計画を構造化して返します。
+「Game permissions」で通信・ゲームフォルダの書き込み・クライアントのアカウント認証などを選び、
+「External folders」で外部フォルダを追加します。Spaceで選択を切り替え、Enterで決定します。
+メイン画面のEsc / Cancelは未保存の変更を破棄します。サブ画面のEscはその選択を取り消して戻ります。
+高度なデスクトップ設定には、現在のOSが対応する項目だけを表示します。
+別OS向けの非対応設定が残っている場合は「Reset unsupported desktop settings to defaults」で修正できます。
+その操作を選ぶまでは、保存済みの禁止設定を自動的に緩めません。
+
+「Save and review」で設定を保存し、権限とパッケージの一覧を確認して承認します。
+「Save without approving」では設定だけを保存します。保存後の確認を断った場合も設定は残り、承認は保留になります。
+
+```sh
+enderpin permissions show       # 読みやすい一覧と承認状態
+enderpin permissions approve    # 一覧を見て確認。ハッシュの入力は不要
+enderpin launch                # 未承認なら、起動前に同じ確認を表示
+enderpin permissions revoke     # 承認を取り消す
+```
+
+初回・設定変更時・MODの追加や更新時に承認が必要です。変更がなければ繰り返し確認しません。
+承認は対象、OS、ワークスペースの場所、Minecraft・ローダー・ランタイムの固定情報、
+導入パッケージのファイルハッシュ、設定、外部フォルダに結び付いています。
+表示後と起動直前に内容を再確認します。起動直前は対象の実行ロックも保持します。
+実行中の承認・設定・外部フォルダ変更は、ゲームを停止してから行います。
+
+`quick` はファイルを取得する初期セットアップです。起動も権限の自動承認も行いません。
+バニラの `launch --no-sandbox` は明示的にOS制限を無効にします（設定には保存しません）。
+`--no-network` との併用はできません。Windowsでは子プロセス回収用のJob Objectを維持します。
+
+### 自動化する場合
+
+非対話では、調べた計画をハッシュで指定して承認する方法を残しています。
+`--yes` では権限を自動承認しません。
+
+```sh
+enderpin permissions show --json
+enderpin permissions approve <fingerprint>
+```
+
+JSONには完全な実効設定、パッケージのSHA-512、承認状態とfingerprintを含みます。
 GUIは `sandbox::permissions::plan` と `Local` を利用できます。
 
-承認は `.enderpin/<client|server>/permissions.toml` に保存します。Gitで共有しません。
-対象、OS、ワークスペースの場所、ゲーム・ローダー・ランタイム固定情報、導入対象のパッケージハッシュ、
-要求の用途・内容、実効設定、外部フォルダの割り当てを照合します。変更時は再承認が必要です。
-起動直前にも、対象の実行ロックを保持してファイルと承認を再確認します。
+## 設定ファイル
 
-```sh
-enderpin --target client permissions revoke
-```
-
-実行中の承認変更・取り消し・フォルダ再割り当ては拒否します。ゲームを停止してから変更します。
-
-## ゲーム全体の設定
-
-`enderpin.toml` のclient/serverそれぞれに指定できます。
+ゲーム設定は共有する `enderpin.toml`、承認と外部フォルダはPCごとの
+`.enderpin/<client|server>/permissions.toml` に保存します。ローカルの権限ファイルはGitで共有しません。
+標準値は省略でき、Enderpinも変更された項目だけを書き出します。
 
 ```toml
 [client.sandbox]
-game_write = true
+account_authentication = false
 read_only = ["mods", "resourcepacks", "shaderpacks"]
+
+[server.sandbox]
 network = false
-audio = true
-desktop_integration = true
-skin_cache = true
-graphics_cache = true
-narrator = false
-account_authentication = true
 ```
 
-省略時は従来のゲーム書き込み・通信許可を維持します。`game_write = false` はゲーム全体を書き込み禁止にします。
+標準では通信・ゲームフォルダへの書き込み・音声・デスクトップ連携・スキンキャッシュ・描画キャッシュを許可し、
+ナレーターを無効にします。`init` のアカウント認証は有効、`quick` は認証を無効にした設定を明示的に保存します。
+`game_write = false` はゲーム全体を書き込み禁止にします。
 `read_only` は `saves`, `screenshots`, `resourcepacks`, `shaderpacks`, `mods`, `config`, `logs`,
 `plugins`, `world` から選びます。標準以外のサーバーワールド名は `world` の制限に含まれません。
 読み取り専用化はファイル内容の秘密化ではありません。読み取った内容を他の許可先へコピーできます。
 
-スキンはゲーム本体と別の `.enderpin/client/cache/enderpin-assets/skins` に保存します。
+スキンは `.enderpin/client/cache/enderpin-assets/skins` に保存します。
 検証済みassetsは読み取り専用です。ゲーム全体の書き込みを止めても、許可済みスキンキャッシュは使えます。
 Linuxの描画キャッシュは `.enderpin/client/cache/graphics`、macOSはOSユーザーのJava Metalキャッシュです。
 macOSの描画キャッシュは同じOSユーザーの他のJavaアプリと共有されます。
 
-`launch --no-network` は承認内容より通信を狭める起動指定です。
-MODが必須の `network` を宣言している場合は、矛盾を示して停止します。
+`launch --no-network` は、その起動だけゲームの通信許可を狭めます。
 通信許可はIPの送受信・LAN・待ち受けをまとめて扱います。ポート・ドメイン単位では制御しません。
-
-## MODの要求
-
-対応MODは配布JAR/ZIPのルートに `enderpin.permissions.json` を置けます。
-64 KiB以内、形式1、パッケージごとの要求はリポジトリ側と合わせて128件以内です。
-ロックのハッシュを検証したファイルから読み、実行して問い合わせることはありません。
-内包JARは個別に探索しません。外側の配布パッケージが必要な権限をまとめて宣言します。
-
-```json
-{
-  "format": 1,
-  "requests": [
-    { "permission": "network", "reason": "共有サーバーへ接続するため" },
-    { "permission": "folder-read", "folder": "schematics", "reason": "利用者が選んだ設計図を読み込むため" }
-  ]
-}
-```
-
-既存MODには共有リポジトリ側から要求を追記できます。キーはロック内のパッケージキー、ID、直接指定名です。
-埋め込み宣言を削除・上書きせず、両方の要求を表示します。理由の文章はMOD作者・リポジトリ作者の説明であり、検証済みの事実ではありません。
-
-```toml
-[[client.permissions.litematica]]
-permission = "folder-write"
-folder = "schematics"
-reason = "編集した設計図を保存するため"
-
-[[client.permissions.litematica]]
-permission = "directory-write"
-directory = "config"
-reason = "MOD設定を保存するため"
-```
-
-パッケージ名は実際の構成に合わせます。存在しないパッケージの要求は拒否します。
-個人用ignoreで除外したパッケージの要求は適用しません。
-
-要求は `network`, `audio`, `microphone`, `clipboard`, `desktop-integration`, `skin-cache`,
-`graphics-cache`, `narrator`, `account-authentication`, `game-write`, `directory-write`, `folder-read`, `folder-write` です。
-`directory-write` は指定ディレクトリを `read_only` から外します。ゲーム全体が書き込み禁止なら、
-別途 `game-write` を要求しなければ停止します。宣言した権限はこの段階ではすべて必須です。
-拒否する場合は起動せず、そのMODを除外するか構成を見直します。
 
 ## 外部フォルダ
 
-MODは用途を表す名前だけを指定します。実際のホストパスは、そのPCの利用者が割り当てます。
+編集画面のほか、コマンドでも既存のフォルダを直接指定できます。追加や変更だけでは承認しません。
 
 ```sh
-enderpin --target client permissions bind schematics /absolute/path/to/schematics
-enderpin --target client permissions show
-enderpin --target client permissions approve <fingerprint>
-# 不要になった割り当てを外す
-enderpin --target client permissions unbind schematics
+enderpin permissions allow-folder /absolute/path/to/schematics          # 読み取り専用
+enderpin permissions allow-folder /absolute/path/to/schematics --write  # 読み書き
+enderpin permissions approve
+enderpin permissions remove-folder /absolute/path/to/schematics         # 許可を削除。実フォルダは残す
 ```
 
-既存のディレクトリだけを指定できます。ワークスペースやランタイムと重なる許可は拒否します。
-同じ名前への読み取り・書き込み要求は書き込み許可へ統合し、要求元を両方表示します。
-割り当ては環境変数でMODに渡されません。MOD自身の設定にも必要に応じて同じパスを指定してください。
-権限付与はOSによるアクセス許可であり、MODのパス設定変更とは別です。
+ワークスペース・ホスト認証情報と重なるパス、ファイルシステムのルート、外部フォルダ同士の重複は拒否します。
+起動時にはランタイムとの重複も検査します。正規化した絶対パスを保存し、起動前に再検証します。
+MODのパス設定は自動変更しません。必要に応じてMOD側にも同じパスを指定してください。
+
+旧形式の `[client.permissions.<mod>]` / `[server.permissions.<mod>]`、ローカルの `[bindings]` は廃止しました。
+旧設定を使っている場合は該当のMOD宣言を削除し、古い `.enderpin/<client|server>/permissions.toml` を削除してから、
+編集画面で外部フォルダを指定し直して承認してください。JAR内の `enderpin.permissions.json` は読みません。
 
 ## OSで強制できる範囲
 
@@ -174,7 +151,6 @@ WindowsはSAPI、macOSはAVSpeechSynthesizer、Linuxは `/usr/bin/espeak-ng` を
 
 ## 境界と次の段階
 
-MODごとの要求は、同じMinecraftプロセス全体に対する許可へ統合されます。
-同じJVM内の別MODもその権限を利用できます。要求元の表示はMOD単位の強制隔離を意味しません。
-宣言の検査とハッシュによる承認の対象はロックで管理するパッケージです。手動配置した管理外MODはこの検査に含みません。
+権限は同じMinecraftプロセス全体に適用されます。MODごとの強制隔離は行いません。
+ファイル検査とハッシュによる承認の対象はロックで管理するパッケージです。手動配置した管理外MODはこの検査に含みません。
 実行中の追加要求・承認、ネットワークの宛先別制御、任意コードを実行するプラグイン機構は含めません。

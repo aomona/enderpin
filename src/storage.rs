@@ -261,14 +261,15 @@ pub(crate) fn valid_destination(relative: &str) -> Result<()> {
     }
     let components: Vec<_> = relative.split('/').collect();
     ensure!(
-        components.len() == 5
-            && components[0] == ".enderpin"
-            && ["client", "server"].contains(&components[1])
-            && components[2] == "game"
-            && ["mods", "resourcepacks", "shaderpacks", "plugins"].contains(&components[3]),
+        components.len() >= 3
+            && components[0] == "run"
+            && ["client", "server"].contains(&components[1]),
         "invalid transaction destination: {relative}"
     );
-    safe_filename(components[4])
+    for component in &components[2..] {
+        safe_filename(component)?;
+    }
+    Ok(())
 }
 
 fn present_hash(root: &Path, path: &str) -> Result<Option<String>> {
@@ -465,6 +466,31 @@ pub fn recover(root: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transactions_only_write_managed_game_paths() -> Result<()> {
+        for path in [
+            "run/client/mods/example.jar",
+            "run/server/plugins/example.jar",
+            "run/client/resourcepacks/example.zip",
+            "run/client/config/example/settings.json",
+            "run/server/server.properties",
+        ] {
+            valid_destination(path)?;
+        }
+        for path in [
+            ".enderpin/client/game/mods/example.jar",
+            "client/world/level.dat",
+            "server/enderpin.toml",
+            "run/client/mods/../world/level.dat",
+            "run/client/config/",
+            "run/client",
+            "run/other/config/a.json",
+            "other/mods/example.jar",
+        ] {
+            assert!(valid_destination(path).is_err(), "{path}");
+        }
+        Ok(())
+    }
     #[test]
     #[cfg(windows)]
     fn java_paths_use_dos_and_unc_syntax() {

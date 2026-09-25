@@ -2,6 +2,64 @@
 
 2026-09-15更新。quick起動、サンドボックス拡張、初版の実測を区別して記録する。
 
+## ゲーム単位の権限編集（開発版、2026-09-15）
+
+- `enderpin permissions` の対話編集、ハッシュ入力不要の `permissions approve`、権限とパッケージの要約表示を追加。共有設定は標準値と異なる項目だけを出力する。
+- MODの権限宣言の合算と論理フォルダ名を廃止。外部フォルダはPCごとの絶対パスと読み書き許可で指定する。MOD追加・更新、設定・フォルダ変更による再承認、実ファイル検査、起動直前の照合を維持する。
+- macOS ARM64 / Java 21で `cargo test --locked -- --include-ignored`（`ENDERPIN_TEST_JAVA_HOME` 指定）52件成功。実JVMでのファイル・通信の隔離と認証・ナレーターのブリッジ用テストを含む。fmt・Clippy（警告をエラー扱い）成功。
+- `python3 -B tests/permissions_tui.py --binary target/debug/enderpin`：擬似端末でキャンセル時の未保存、コンパクトな設定の保存、ハッシュ不要の承認、外部フォルダ追加、サーバー用の項目、保存のみ、初期値での承認拒否を確認。外部フォルダ選択の初期選択不足もこの検証で修正した。
+- `tests/permissions_cli.rs`：`--yes` のみの承認拒否、指定ハッシュの一致・不一致、外部フォルダの読み取り／書き込みと取り消しを検証。`tests/permissions.rs` は同じ権限でのMOD追加・更新時にも承認が失効し、埋め込み宣言がゲーム設定を拡張しないことを確認する。
+- `python3 tests/live_server.py --quick --version 26.2 --accept-eula`：macOSで実サーバーをサンドボックス有効で起動。指定ポートの応答、コンソール、実行中のsync拒否、ワールド保存、正常終了を確認。認証済みプレイヤーの参加は検証していない。
+- CodeRabbitは13ファイルを確認し、非対応OS設定を編集画面から修正できない軽微な問題を1件指摘。自動緩和はせず、利用者が明示的に選ぶリセット項目を追加し、3 OSそれぞれの設定検証で確認した。
+- npm公開済み0.1.3にはこの変更を含まない。Linux/Windowsの実ゲーム画面は今回も未検証。
+
+## pnpm対応のバイナリ同梱パッケージ（v0.1.3、2026-09-15）
+
+- pnpm 12.4.2で `blockExoticSubdeps: true` を指定し、公開済み0.1.2の `ERR_PNPM_EXOTIC_SUBDEP` を再現。GitHub URLをoptional dependencyにしていたことが原因。
+- 0.1.3ではOS別バイナリ5種類を1つのnpmアーカイブへ同梱。依存・インストール用スクリプトは0件。公開物は9ファイル、圧縮後20,598,419バイト。
+- [Release Actions](https://github.com/aomona/enderpin/actions/runs/34969035608)：Linux x64/ARM64、macOS Intel/ARM64、Windows x64の全5環境で、ネイティブビルド後に同梱版のnpm/Bun導入とpnpm dlxを検証。すべて成功。
+- [Check Actions](https://github.com/aomona/enderpin/actions/runs/34969035671)：3 OSのRustテスト・fmt・Clippy・実JVMサンドボックス確認が成功。ローカルの通常テストも46件成功。
+- 全5環境のアーカイブがないと公開用パッケージの作成を拒否することを確認。`--allow-partial` のローカル検証用は `private: true` で生成。
+- CodeRabbitの変更8ファイルのレビューは指摘0件。
+- npm公開処理の完了後、`latest = 0.1.3` と配布アーカイブのintegrityを確認。`tests/npm_install.py target/npm-release-v0.1.3/enderpin-0.1.3.tgz --registry` で公開版を名前から取得し、npm/Bun導入とpnpm dlxが成功した。pnpmの `blockExoticSubdeps` は有効のまま検証した。
+
+## npm配布パッケージ（v0.1.2、2026-09-15）
+
+- macOS ARM64でnpm 11.19.0・Bun 1.4.2の隔離グローバルインストールを実行。インストール用スクリプトを無効にして、OS別バイナリの起動、0.1.2の版表示、CLIのエラー終了コード、空白を含むパスでの初期化を確認。
+- `tests/npm_install.py` はnpm/Bunのprefix・グローバル設定・キャッシュを一時領域に置く。ローカル検証用URLは一時コピーにだけ設定し、公開アーカイブは同じ版のGitHub HTTPS URLだけを含むことを検査する。
+- Node.jsのディレクトリをPATHから外し、Bunの `bunx --bun enderpin --version` でも実行を確認。`bun --bun enderpin` はこのグローバル配置では解決できなかったため、案内を修正した。
+- `npm publish --dry-run` で公開対象が起動用JavaScript・package.json・README・LICENSEの4ファイルであることを確認。実公開の完了を示すチェックではない。
+- Rust通常テスト46件、Clippy、fmt、releaseビルド成功。CodeRabbitによる8ファイルの配布差分レビューは指摘0件。その後、Bunだけで実行する検証とドキュメントを上記の実測結果へ修正した。
+
+- [v0.1.2 Release Actions](https://github.com/aomona/enderpin/actions/runs/34966610213)：Linux x64/ARM64、macOS ARM64/Intel、Windows x64の全5環境でビルドとnpm/Bun導入を確認。[Check Actions](https://github.com/aomona/enderpin/actions/runs/34966610639)も3 OSすべて成功。Windowsのテスト用cmd.exe引数の二重引用を修正した後の結果。
+- [GitHub Release v0.1.2](https://github.com/aomona/enderpin/releases/tag/v0.1.2)を公開し、そのアーカイブからnpm/Bun導入を再確認。[npm enderpin](https://www.npmjs.com/package/enderpin)へ0.1.2を公開、`latest = 0.1.2` と公開物のintegrityを確認した。
+- 公開後は `tests/npm_install.py target/npm-release/enderpin-0.1.2.tgz --registry` で、npm/Bunがパッケージ名から取得して起動することをmacOS ARM64で確認した。
+- このMacのVite Plus製npmラッパーは、`--prefix` 指定時もユーザーのbinにリンクを作った。そのテスト由来のリンクだけを削除し、検証スクリプトは実際のNode.js/npm CLIを直接呼ぶ形へ修正。再検証で追加リンクができないことと、元のBun版0.1.1が引き続き選ばれることを確認した。
+- npmの起動ラッパーを通した `tests/live_setup.py` も成功。実TUIの検索・MOD選択・ダウンロード・両側配置・中止・ゲーム未起動を確認した。今回npm版による実ゲームの起動は検証対象に含めていない。
+
+## 検索付きquickセットアップ（開発版、2026-09-15）
+
+`quick` をゲーム起動から初期セットアップに変更。単体はクライアント、`--server` は両側のMinecraft・Java・ローダー・MODを準備する。Minecraft版とローダーは文字入力で絞り込む選択画面、MODはModrinth検索と選択・取り消し・ページ移動を使う。候補ローダーは現在Vanilla/Fabric。既存の設定は上書きしない。
+
+- macOS Apple Silicon：`cargo test --locked` 46件、Clippy（警告をエラー扱い）、fmt、releaseビルド成功。実JVM用4件はこのテストではignored。
+- `python3 tests/live_setup.py --binary target/release/enderpin`：擬似端末から版を検索し、1.21.1・Fabricを選択。Lithiumの検索・追加・取り消し・再追加とダウンロードを確認。クライアントのロックとMODの実ファイルを確認。
+- 同スクリプトで `--server --version 1.21.1 --loader fabric --mods lithium,sodium --no-interactive` を実行。両側のランタイムを固定し、Lithiumは両側、Sodiumはクライアントだけに配置。
+- セットアップでMinecraftを起動しないこと、権限を自動承認しないこと、EULA同意ファイルを作らないことを確認。Esc中止では空ディレクトリにファイルが残らない。
+- 更新した `tests/live_server.py --quick --version 26.2 --accept-eula --binary target/release/enderpin` では、セットアップ後に明示的に権限承認・`launch` を実行。サーバーの応答・コンソール・保存・正常終了を確認。
+- CodeRabbitの追跡済み変更7ファイルのレビューは軽微な指摘1件。両側の初回ダウンロードを検証するスクリプトの上限時間を600秒から1800秒へ延長した。
+- Windows/LinuxのTUI操作は未実測。公開済みv0.1.1にはこのセットアップ動作は含まれない。
+
+## 直下のclient/server構成（開発版、2026-09-15）
+
+通常ワークスペースとquickのゲーム保存先を `client/`・`server/` に変更。quickは実行ディレクトリ（または `-C` 指定先）に共通の設定・ロックを作り、両側のゲームディレクトリを使う。内部状態は `.enderpin/` に残す。新形式は `format = 2`、旧形式の自動移行は行わない。
+
+- macOS Apple Siliconで `cargo test --locked` 46件成功、実JVM用4件はignored。Clippy（警告をエラー扱い）、fmt、releaseビルド成功。
+- 新配置のMOD同期・復元、反対側のファイルを指定した状態の拒否、許可された同期先以外の拒否、設定だけ複製した空ワークスペースでのディレクトリ作成を検証。
+- `tests/live_server.py --quick --version 26.2 --accept-eula --binary target/release/enderpin`：`-C` なしで一時ディレクトリをcwdにして起動。`client/`・`server/`・設定ファイルの直下配置、ポート応答、コンソール操作、実行中sync拒否、`server/world/level.dat` の保存と正常終了を確認。
+- 一時ディレクトリで `quick --version 26.2 --no-interactive` を実行。Seatbelt内でクライアントを起動し、`client/logs/latest.log`、音声初期化・アトラス生成ログ、反対側のファイル保持、Ctrl-Cによる終了を確認。画面とプレイは確認していない。
+- CodeRabbitの軽微な指摘1件（設定だけ複製したワークスペースのゲームディレクトリ不足）は、共通の同期処理で作成する変更と、その回帰テストで対応。
+- この配置変更についてWindows/Linuxの実ゲームは未検証。公開済みv0.1.1には含まれない。
+
 ## quickサーバー・ポート・版指定と公開後インストール（2026-09-15）
 
 v0.1.1に含むサーバー・版指定・ポート指定を、`codex/quick-server` でmacOS / Apple Siliconにて確認した。
@@ -103,3 +161,19 @@ CodeRabbitのレビューを実施し、権限表示の制御文字除去、無�
 - Paper、NeoForge/Sinytra Connector、MonaLauncherへの組込は後続段階。
 
 この記録は指定した条件・プローブの結果であり、OSの脆弱性やあらゆるデスクトップサービスを含む完全な隔離証明ではない。
+
+## 2026-09-25: 共有ファイルと実行環境の分離（format 3）
+
+`files/common/`・`files/client/`・`files/server/` を共有入力、`run/client/`・`run/server/` を実際のゲームディレクトリに変更。`run/` はワールドを含む永続データで、初期化時にGit除外する。共有ファイルは共通→対象別の順にファイル単位で反映し、最後の反映内容との比較でローカル編集を保持する。共有元とローカルが異なる内容へ変更された場合は、既存のトランザクションに入る前に停止する。旧形式は拒否し、READMEに別ディレクトリへの手動移行手順を記載。
+
+ローカルmacOSでの確認:
+
+- `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、`git diff --check`。
+- `cargo test --locked`: 55件成功、ネイティブ環境を必要とする4件は既定で除外。
+- Java 21を指定した `cargo test --locked -- --ignored --nocapture`: 4件成功。ファイル・ネットワーク隔離、認証ブリッジ、JVMの実行ロックを検証。
+- `cargo build --locked` と `python3 -B tests/permissions_tui.py --binary target/debug/enderpin`: 成功。
+- 新規7件の統合テスト: Git入力からの再現、対象別優先・片側同期、共有元の更新・削除、ワールド保持、三者比較による競合と全対象の未反映、restore、管理外ファイル保護、権限指紋、大小文字・ファイル/ディレクトリ競合、不正な対象の台帳、シンボリックリンク、旧形式拒否。既存パッケージ同期テストにも共有ファイルとの衝突を追加。
+- 一時ディレクトリでCLIの `init`・両側への `sync --locked --offline`・`permissions show --json` を実行し、共有設定の配置と承認対象への反映を確認。
+- Pythonの実ネットワーク/ゲーム起動スクリプトは新配置へ更新し、構文を確認。この変更ではMinecraftの実起動・認証接続は未実施。上記のネイティブ検証はJavaプローブであり、ゲーム起動の証明ではない。
+
+Linux・Windowsの検証結果は、この変更のCI実行結果を参照。

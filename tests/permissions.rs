@@ -4,7 +4,7 @@ use enderpin::{
     model::LockedPackage,
     sandbox::{
         self,
-        permissions::{self, Local, Request, Settings},
+        permissions::{self, FolderGrant, Local, Settings},
     },
     storage,
 };
@@ -14,7 +14,7 @@ use std::{
 };
 
 #[test]
-fn requests_are_hash_bound_local_and_rechecked_before_approval() -> Result<()> {
+fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
     let external = tempfile::tempdir()?;
@@ -35,7 +35,6 @@ fn requests_are_hash_bound_local_and_rechecked_before_approval() -> Result<()> {
         .packages
         .insert("example".into(), package);
     ws.manifest.client.sandbox.network = false;
-    ws.manifest.client.permissions.insert("url:example".into(), vec![serde_json::from_value::<Request>(serde_json::json!({"permission":"folder-write","folder":"schematics","reason":"Save edited schematics"}))?]);
     let target = ws
         .lockfile
         .targets
@@ -60,47 +59,124 @@ fn requests_are_hash_bound_local_and_rechecked_before_approval() -> Result<()> {
         incompatible: vec![],
         optional: vec![],
     });
-    let game_mods = storage::directory(&ws.root, ".enderpin/client/game/mods")?;
+    let game_mods = storage::directory(&ws.root, "run/client/mods")?;
     fs::write(game_mods.join("example.jar"), &bytes)?;
+    let original = permissions::plan(&ws, Side::Client)?;
     assert!(
-        permissions::plan(&ws, Side::Client).is_err(),
-        "unbound folders must stop inspection"
+        !original.effective.network,
+        "embedded declarations cannot increase game permissions"
     );
-    let mut local = Local::default();
-    local
-        .bindings
-        .insert("schematics".into(), external.path().canonicalize()?);
-    local.save(&ws, Side::Client)?;
-    let plan = permissions::plan(&ws, Side::Client)?;
-    assert!(!plan.baseline.network && plan.effective.network);
-    assert!(plan.folders["schematics"].write);
-    assert_eq!(plan.packages[0].embedded.len(), 2);
-    assert_eq!(plan.packages[0].repository.len(), 1);
-    local.approved = Some(plan.fingerprint()?);
+    assert_eq!(original.packages.len(), 1);
+    let mut local = Local {
+        approved: Some(original.fingerprint()?),
+        ..Default::default()
+    };
     local.save(&ws, Side::Client)?;
     assert_eq!(
         Local::load(&ws, Side::Client)?.approved,
-        Some(plan.fingerprint()?)
+        Some(original.fingerprint()?)
     );
-    ws.manifest
-        .client
-        .permissions
-        .get_mut("url:example")
-        .context("request missing")?[0]
-        .reason = "A changed purpose".into();
+
+    // New content requires review even though the game's permissions did not increase.
+    let updated = vec![b'x'; bytes.len()];
+    fs::write(game_mods.join("example.jar"), &updated)?;
+    assert!(
+        permissions::plan(&ws, Side::Client).is_err(),
+        "unlocked content must fail closed"
+    );
+    ws.lockfile
+        .targets
+        .get_mut(&Side::Client)
+        .context("missing target")?
+        .packages[0]
+        .sha512 = enderpin::model::hash_bytes(&updated);
     assert_ne!(
         local.approved,
         Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
     );
+    fs::write(game_mods.join("example.jar"), &bytes)?;
+    ws.lockfile
+        .targets
+        .get_mut(&Side::Client)
+        .context("missing target")?
+        .packages[0]
+        .sha512 = enderpin::model::hash_bytes(&bytes);
+    assert_eq!(
+        local.approved,
+        Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
+    );
+
+    let mut second = ws.lockfile.targets[&Side::Client].packages[0].clone();
+    second.key = "url:another".into();
+    second.name = "another".into();
+    second.filename = "another.jar".into();
+    fs::write(game_mods.join("another.jar"), &bytes)?;
+    ws.lockfile
+        .targets
+        .get_mut(&Side::Client)
+        .context("missing target")?
+        .packages
+        .push(second);
+    assert_ne!(
+        local.approved,
+        Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
+    );
+    ws.lockfile
+        .targets
+        .get_mut(&Side::Client)
+        .context("missing target")?
+        .packages
+        .pop();
+
+    ws.manifest.client.sandbox.network = true;
+    assert_ne!(
+        local.approved,
+        Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
+    );
+    ws.manifest.client.sandbox.network = false;
+    local.folders.push(FolderGrant {
+        path: external.path().canonicalize()?,
+        write: false,
+    });
+    local.save(&ws, Side::Client)?;
+    let read_only = permissions::plan(&ws, Side::Client)?;
+    assert_ne!(local.approved, Some(read_only.fingerprint()?));
+    assert_eq!(read_only.folders, local.folders);
+    local.folders[0].write = true;
+    local.save(&ws, Side::Client)?;
+    assert_ne!(
+        read_only.fingerprint()?,
+        permissions::plan(&ws, Side::Client)?.fingerprint()?
+    );
+    // Grants apply directly even when there are no mods requesting the folder.
+    ws.lockfile
+        .targets
+        .get_mut(&Side::Client)
+        .context("missing target")?
+        .packages
+        .clear();
+    assert!(permissions::plan(&ws, Side::Client)?.folders[0].write);
+    for unsafe_path in [
+        ws.root.clone(),
+        ws.root.parent().context("no parent")?.to_owned(),
+        ws.root.join("run/client"),
+    ] {
+        local.folders[0].path = unsafe_path;
+        local.save(&ws, Side::Client)?;
+        assert!(permissions::plan(&ws, Side::Client).is_err());
+    }
+    local.folders[0].path = external.path().canonicalize()?;
+    local.folders.push(local.folders[0].clone());
+    assert!(
+        permissions::validate_folders(&ws, &local.folders).is_err(),
+        "overlapping grants are ambiguous"
+    );
+    local.folders.pop();
+    local.save(&ws, Side::Client)?;
     let running = storage::target_lock(&ws.root, Side::Client)?;
     assert!(local.save(&ws, Side::Client).is_err());
     assert!(permissions::plan(&ws, Side::Client).is_err());
     drop(running);
-    fs::write(game_mods.join("example.jar"), b"replacement")?;
-    assert!(
-        permissions::plan(&ws, Side::Client).is_err(),
-        "changed artifacts must not be inspected as the old mod"
-    );
     Ok(())
 }
 
@@ -113,17 +189,49 @@ fn unsupported_denials_and_aliases_fail_closed() -> Result<()> {
     assert!(settings.validate_for("linux", true).is_err());
     assert!(settings.validate_for("windows", true).is_err());
     assert!(settings.validate_for("macos", true).is_ok());
-    assert!(
-        serde_json::from_str::<Request>(r#"{"permission":"shell","reason":"run code"}"#).is_err()
-    );
-    let request: Request = serde_json::from_str(
-        r#"{"permission":"folder-read","reason":"Read files","folder":"../private"}"#,
-    )?;
-    assert!(request.validate().is_err());
+    for os in ["windows", "linux", "macos"] {
+        let mut settings = Settings {
+            audio: false,
+            desktop_integration: false,
+            graphics_cache: false,
+            microphone: Some(true),
+            clipboard: Some(false),
+            network: false,
+            account_authentication: false,
+            ..Default::default()
+        };
+        assert!(settings.validate_for(os, true).is_err());
+        settings.reset_unsupported_desktop(os);
+        assert!(settings.validate_for(os, true).is_ok());
+        assert!(!settings.network && !settings.account_authentication);
+    }
+    assert!(serde_json::from_str::<Settings>(r#"{"shell":true}"#).is_err());
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
     fs::write(outside.path().join("secret"), b"private")?;
     fs::hard_link(outside.path().join("secret"), root.path().join("alias"))?;
     assert!(sandbox::validate_data_tree(root.path()).is_err());
+    Ok(())
+}
+
+#[test]
+fn compact_settings_roundtrip_and_legacy_requests_fail_closed() -> Result<()> {
+    let mut manifest = enderpin::Manifest::new("1.21.1".into())?;
+    assert!(!manifest.to_toml()?.contains("sandbox"));
+    manifest.client.sandbox.network = false;
+    manifest.client.sandbox.microphone = Some(false);
+    let text = manifest.to_toml()?;
+    assert!(text.contains("network = false"));
+    assert!(!text.contains("game_write"));
+    assert_eq!(
+        enderpin::Manifest::parse(&text)?.client.sandbox,
+        manifest.client.sandbox
+    );
+    assert_eq!(
+        enderpin::Manifest::parse(&text)?.server.sandbox,
+        manifest.server.sandbox
+    );
+    assert!(enderpin::Manifest::parse(&(text + "\n[[client.permissions.example]]\npermission = 'network'\nreason = 'old declaration'\n")).is_err());
+    assert!(toml::from_str::<Local>("[bindings]\nexample = '/tmp'\n").is_err());
     Ok(())
 }

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 3;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
@@ -17,6 +17,12 @@ pub enum Side {
 
 impl Side {
     pub const ALL: [Self; 2] = [Self::Client, Self::Server];
+    pub fn game_directory(self) -> &'static str {
+        match self {
+            Self::Client => "run/client",
+            Self::Server => "run/server",
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Client => "client",
@@ -133,8 +139,6 @@ pub struct Target {
     pub disabled: Vec<String>,
     #[serde(default)]
     pub sandbox: crate::sandbox::permissions::Settings,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub permissions: BTreeMap<String, Vec<crate::sandbox::permissions::Request>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +161,6 @@ impl Manifest {
             enabled: vec![],
             disabled: vec![],
             sandbox: Default::default(),
-            permissions: BTreeMap::new(),
         };
         let manifest = Self {
             format: FORMAT,
@@ -168,6 +171,26 @@ impl Manifest {
         };
         manifest.validate()?;
         Ok(manifest)
+    }
+    /// Keep shared configuration small; omitted sandbox keys use Settings::default().
+    pub fn to_toml(&self) -> Result<String> {
+        let mut value = toml::Value::try_from(self)?;
+        let defaults = toml::Value::try_from(crate::sandbox::permissions::Settings::default())?;
+        for side in Side::ALL {
+            let target = value
+                .get_mut(side.name())
+                .and_then(toml::Value::as_table_mut)
+                .context("missing target settings")?;
+            let sandbox = target
+                .get_mut("sandbox")
+                .and_then(toml::Value::as_table_mut)
+                .context("missing sandbox settings")?;
+            sandbox.retain(|key, value| defaults.get(key) != Some(value));
+            if sandbox.is_empty() {
+                target.remove("sandbox");
+            }
+        }
+        Ok(toml::to_string_pretty(&value)?)
     }
     pub fn parse(text: &str) -> Result<Self> {
         let result: Self = toml::from_str(text).context("invalid enderpin.toml")?;
@@ -205,17 +228,12 @@ impl Manifest {
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.format == FORMAT,
-            "unsupported manifest format {}",
+            "unsupported manifest format {}; expected format 3 (see README manual migration)",
             self.format
         );
         identifier(&self.minecraft)?;
         for side in Side::ALL {
             let target = self.target(side);
-            for requests in target.permissions.values() {
-                for request in requests {
-                    request.validate()?;
-                }
-            }
             if let Some(version) = &target.loader_version {
                 identifier(version)?;
             }
@@ -301,8 +319,8 @@ impl LockedPackage {
     }
     pub fn relative_path(&self, side: Side) -> String {
         format!(
-            ".enderpin/{}/game/{}/{}",
-            side.name(),
+            "{}/{}/{}",
+            side.game_directory(),
             self.kind.directory(),
             self.filename
         )
@@ -555,6 +573,9 @@ mod tests {
         let m = Manifest::new("1.21.1".into())?;
         assert_eq!(Manifest::parse(&toml::to_string(&m)?)?.minecraft, "1.21.1");
         assert!(Manifest::parse(&(toml::to_string(&m)? + "\n[unknown]\na = 1\n")).is_err());
+        let mut old = m.clone();
+        old.format = 1;
+        assert!(Manifest::parse(&toml::to_string(&old)?).is_err());
         assert_eq!(
             parse_ignores(
                 "# mine\nclient:sodium\nserver:example\ncommon-mod",

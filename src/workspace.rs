@@ -40,7 +40,7 @@ pub struct SyncReport {
     pub lock_updated: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstalledFile {
     sha512: String,
@@ -52,6 +52,8 @@ struct InstalledFile {
 struct InstalledState {
     format: u32,
     files: BTreeMap<String, InstalledFile>,
+    #[serde(default)]
+    shared: BTreeMap<String, InstalledFile>,
 }
 
 /// Owns an exclusive advisory workspace lock through planning and commit.
@@ -67,6 +69,33 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub(crate) fn shared_file_hashes(&self, side: Side) -> Result<BTreeMap<String, String>> {
+        let mut hashes = BTreeMap::new();
+        // Include both current inputs and previously installed files awaiting removal.
+        let state_path = format!(".enderpin/{}/state.toml", side.name());
+        let state: Option<InstalledState> = storage::read_optional(&self.root, &state_path)?
+            .map(|text| toml::from_str(&text))
+            .transpose()?;
+        let mut paths: std::collections::BTreeSet<_> =
+            shared_files(&self.root, side)?.into_keys().collect();
+        if let Some(state) = state {
+            ensure!(state.format == FORMAT, "unsupported installed state format");
+            paths.extend(state.shared.into_keys());
+        }
+        for path in paths {
+            storage::valid_destination(&path)?;
+            ensure!(
+                path.starts_with(&format!("{}/", side.game_directory())),
+                "shared state contains a different target"
+            );
+            let file = storage::safe_path(&self.root, &path)?;
+            if file.try_exists()? {
+                hashes.insert(path, storage::hash_file(&file)?.0);
+            }
+        }
+        Ok(hashes)
+    }
+
     pub fn prepare_runtime(
         &mut self,
         sides: &[Side],
@@ -107,27 +136,22 @@ impl Workspace {
         Self::init_manifest(root, Manifest::new(minecraft)?, &Side::ALL)
     }
 
-    pub fn init_vanilla_client(root: &Path, minecraft: String) -> Result<()> {
-        Self::init_quick(root, minecraft, Side::Client)
-    }
-
-    pub fn init_quick(root: &Path, minecraft: String, side: Side) -> Result<()> {
-        Self::init_manifest(root, Self::quick_manifest_for(minecraft, side)?, &[side])
+    pub fn init_quick(root: &Path, minecraft: String) -> Result<()> {
+        Self::init_manifest(root, Self::quick_manifest(minecraft)?, &Side::ALL)
     }
 
     pub fn quick_manifest(minecraft: String) -> Result<Manifest> {
-        Self::quick_manifest_for(minecraft, Side::Client)
-    }
-
-    pub fn quick_manifest_for(minecraft: String, side: Side) -> Result<Manifest> {
         let mut manifest = Manifest::new(minecraft)?;
-        manifest.target_mut(side).loader = "vanilla".into();
-        manifest.target_mut(side).sandbox.account_authentication = false;
+        for side in Side::ALL {
+            manifest.target_mut(side).loader = "vanilla".into();
+            manifest.target_mut(side).sandbox.account_authentication = false;
+        }
         manifest.validate()?;
         Ok(manifest)
     }
 
-    fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
+    pub fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
+        manifest.validate()?;
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
         let _guard = storage::operation_lock(&root)?;
@@ -140,8 +164,16 @@ impl Workspace {
             storage::read_optional(&root, "enderpin.lock")?.is_none(),
             "enderpin.lock already exists"
         );
+        for &side in sides {
+            storage::directory(&root, side.game_directory())?;
+            storage::directory(&root, &format!("files/{}", side.name()))?;
+        }
+        storage::directory(&root, "files/common")?;
         let mut lock = Lockfile::default();
         for &side in sides {
+            if !manifest.requests(side).is_empty() {
+                continue;
+            }
             lock.targets.insert(
                 side,
                 crate::model::TargetLock {
@@ -154,7 +186,7 @@ impl Workspace {
             );
         }
         let mut gitignore = storage::read_optional(&root, ".gitignore")?.unwrap_or_default();
-        for pattern in ["/.enderpin/", "/.enderpinignore"] {
+        for pattern in ["/run/", "/.enderpin/", "/.enderpinignore"] {
             if !gitignore.lines().any(|line| line == pattern) {
                 if !gitignore.is_empty() && !gitignore.ends_with('\n') {
                     gitignore.push('\n');
@@ -168,7 +200,7 @@ impl Workspace {
             vec![
                 Change {
                     path: "enderpin.toml".into(),
-                    content: Content::Bytes(toml::to_string_pretty(&manifest)?.into_bytes()),
+                    content: Content::Bytes(manifest.to_toml()?.into_bytes()),
                 },
                 Change {
                     path: "enderpin.lock".into(),
@@ -305,6 +337,7 @@ impl Workspace {
             if options.lock_only {
                 continue;
             }
+            storage::directory(&self.root, side.game_directory())?;
             let state_path = format!(".enderpin/{}/state.toml", side.name());
             let old: InstalledState = storage::read_optional(&self.root, &state_path)?
                 .map(|s| toml::from_str(&s))
@@ -313,13 +346,14 @@ impl Workspace {
                 .unwrap_or(InstalledState {
                     format: FORMAT,
                     files: BTreeMap::new(),
+                    shared: BTreeMap::new(),
                 });
             ensure!(old.format == FORMAT, "unsupported installed state format");
             let mut actual = BTreeMap::new();
             for (path, record) in &old.files {
                 storage::valid_destination(path)?;
                 ensure!(
-                    path.starts_with(&format!(".enderpin/{}/game/", side.name())),
+                    path.starts_with(&format!("{}/", side.game_directory())),
                     "installed state contains a different target"
                 );
                 validate_hash(&record.sha512)?;
@@ -336,7 +370,30 @@ impl Workspace {
             let mut state = InstalledState {
                 format: FORMAT,
                 files: BTreeMap::new(),
+                shared: BTreeMap::new(),
             };
+            let shared = shared_files(&self.root, side)?;
+            for package in &desired {
+                let path = package.relative_path(side);
+                ensure!(
+                    !shared
+                        .keys()
+                        .chain(old.shared.keys())
+                        .any(|shared| paths_overlap(shared, &path)),
+                    "shared file collides with a managed package: {}",
+                    package.relative_path(side)
+                );
+            }
+            state.shared = sync_shared(
+                &self.root,
+                side,
+                &old.shared,
+                &old.files,
+                shared,
+                options.restore,
+                &mut changes,
+                &mut report,
+            )?;
             // Preflight the complete target before acquiring any files for it.
             for p in &desired {
                 let path = p.relative_path(side);
@@ -399,7 +456,7 @@ impl Workspace {
         {
             self.original_manifest.clone()
         } else {
-            toml::to_string_pretty(&manifest)?
+            manifest.to_toml()?
         };
         let lock_text = toml::to_string_pretty(&lock)?;
         if manifest_text != self.original_manifest {
@@ -426,14 +483,211 @@ impl Workspace {
     }
 }
 
+/// Shared inputs are copied, never linked into the writable game directory.
+fn shared_files(root: &Path, side: Side) -> Result<BTreeMap<String, (PathBuf, InstalledFile)>> {
+    fn visit(
+        root: &Path,
+        source: &str,
+        destination: &str,
+        files: &mut BTreeMap<String, (PathBuf, InstalledFile)>,
+    ) -> Result<()> {
+        let directory = storage::safe_path(root, source)?;
+        if !directory.try_exists()? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(directory)? {
+            let name = entry?
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("non-UTF8 shared filename"))?;
+            let source = format!("{source}/{name}");
+            let destination = format!("{destination}/{name}");
+            let path = storage::safe_path(root, &source)?;
+            if path.is_dir() {
+                visit(root, &source, &destination, files)?;
+            } else {
+                storage::valid_destination(&destination)?;
+                let (sha512, size) = storage::hash_file(&path)?;
+                files.insert(destination, (path, InstalledFile { sha512, size }));
+            }
+        }
+        Ok(())
+    }
+    let mut files = BTreeMap::new();
+    for scope in ["common", side.name()] {
+        visit(
+            root,
+            &format!("files/{scope}"),
+            side.game_directory(),
+            &mut files,
+        )?;
+    }
+    // Reject ambiguous trees before a transaction, also on case-sensitive hosts.
+    let mut names = std::collections::BTreeSet::new();
+    for path in files.keys() {
+        ensure!(
+            names.insert(path.to_lowercase()),
+            "shared paths differ only by case: {path}"
+        );
+    }
+    for path in &names {
+        for (index, _) in path.match_indices('/') {
+            ensure!(
+                !names.contains(&path[..index]),
+                "shared file/directory collision: {path}"
+            );
+        }
+    }
+    Ok(files)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_shared(
+    root: &Path,
+    side: Side,
+    old: &BTreeMap<String, InstalledFile>,
+    packages: &BTreeMap<String, InstalledFile>,
+    desired: BTreeMap<String, (PathBuf, InstalledFile)>,
+    restore: bool,
+    changes: &mut Vec<Change>,
+    report: &mut SyncReport,
+) -> Result<BTreeMap<String, InstalledFile>> {
+    for (path, record) in old {
+        storage::valid_destination(path)?;
+        ensure!(
+            path.starts_with(&format!("{}/", side.game_directory())),
+            "shared state contains a different target"
+        );
+        validate_hash(&record.sha512)?;
+    }
+    let paths: std::collections::BTreeSet<_> = old.keys().chain(desired.keys()).collect();
+    for path in paths {
+        storage::valid_destination(path)?;
+        ensure!(
+            path.starts_with(&format!("{}/", side.game_directory())),
+            "shared state contains a different target"
+        );
+        ensure!(
+            !packages.keys().any(|package| paths_overlap(package, path)),
+            "shared file collides with a managed package: {path}"
+        );
+        let file = storage::safe_path(root, path)?;
+        let actual = if file.try_exists()? {
+            let (sha512, size) = storage::hash_file(&file)?;
+            Some(InstalledFile { sha512, size })
+        } else {
+            None
+        };
+        let previous = old.get(path);
+        if let Some(previous) = previous {
+            validate_hash(&previous.sha512)?;
+        }
+        ensure!(
+            previous.is_some() || actual.is_none(),
+            "unmanaged filename collision: {path}"
+        );
+        let next = desired.get(path).map(|(_, record)| record);
+        if actual.as_ref() == next || (!restore && previous == next) {
+            report.unchanged.push(path.clone());
+            continue;
+        }
+        ensure!(
+            restore || actual.as_ref() == previous,
+            "shared file conflict: {path}; copy the local edit back to files/, resolve it manually, or use restore to discard it"
+        );
+        let content = if let Some((source, record)) = desired.get(path) {
+            report.added.push(path.clone());
+            Content::File {
+                path: source.clone(),
+                sha512: record.sha512.clone(),
+            }
+        } else {
+            report.removed.push(path.clone());
+            Content::Delete
+        };
+        changes.push(Change {
+            path: path.clone(),
+            content,
+        });
+    }
+    Ok(desired
+        .into_iter()
+        .map(|(path, (_, record))| (path, record))
+        .collect())
+}
+
+fn paths_overlap(a: &str, b: &str) -> bool {
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_mod_requests_must_be_resolved_before_locking() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let mut manifest = Workspace::quick_manifest("1.21.1".into())?;
+        manifest.client.loader = "fabric".into();
+        manifest
+            .client
+            .packages
+            .insert("example".into(), Package::modrinth("example", Kind::Mod));
+        Workspace::init_manifest(root.path(), manifest, &Side::ALL)?;
+        let mut ws = Workspace::open(root.path(), cache.path())?;
+        assert!(!ws.lockfile.targets.contains_key(&Side::Client));
+        assert!(ws.lockfile.targets.contains_key(&Side::Server));
+        let manifest = ws.manifest.clone();
+        assert!(
+            ws.plan(
+                &manifest,
+                &[Side::Client],
+                SyncOptions {
+                    locked: true,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+    #[test]
+    fn sync_creates_game_directories_from_shared_config() -> Result<()> {
+        let origin = tempfile::tempdir()?;
+        let clone = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        Workspace::init_quick(origin.path(), "26.2".into())?;
+        for file in ["enderpin.toml", "enderpin.lock"] {
+            fs::copy(origin.path().join(file), clone.path().join(file))?;
+        }
+        let mut ws = Workspace::open(clone.path(), cache.path())?;
+        for side in Side::ALL {
+            ws.sync(
+                ws.manifest.clone(),
+                &[side],
+                SyncOptions {
+                    locked: true,
+                    offline: true,
+                    ..Default::default()
+                },
+                |_| (),
+            )?;
+            assert!(clone.path().join(side.game_directory()).is_dir());
+        }
+        assert!(!clone.path().join(".enderpin/client/game").exists());
+        assert!(!clone.path().join(".enderpin/server/game").exists());
+        Ok(())
+    }
     #[test]
     fn running_target_blocks_its_sync_but_not_the_other_target() -> Result<()> {
         let root = tempfile::tempdir()?;
         let cache = tempfile::tempdir()?;
         Workspace::init(root.path(), "1.21.1".into())?;
+        assert!(root.path().join("run/client").is_dir());
+        assert!(root.path().join("run/server").is_dir());
+        assert!(!root.path().join(".enderpin/client/game").exists());
         let mut ws = Workspace::open(root.path(), cache.path())?;
         let running = storage::target_lock(&ws.root, Side::Server)?;
         let options = SyncOptions {
@@ -492,8 +746,46 @@ mod tests {
             ..Default::default()
         };
         ws.apply(manifest.clone(), lock, &Side::ALL, options, |_| ())?;
-        let client = root.path().join(".enderpin/client/game/mods/example.jar");
-        let server = root.path().join(".enderpin/server/game/mods/example.jar");
+        storage::directory(root.path(), "files/common/mods")?;
+        for name in ["example.jar", "EXAMPLE.jar"] {
+            let shared = root.path().join("files/common/mods").join(name);
+            fs::write(&shared, b"shared jar")?;
+            let error = ws
+                .sync(manifest.clone(), &Side::ALL, options, |_| ())
+                .expect_err("shared files must not shadow managed packages");
+            assert!(
+                error
+                    .to_string()
+                    .contains("collides with a managed package")
+            );
+            fs::remove_file(shared)?;
+        }
+        let client = root.path().join("run/client/mods/example.jar");
+        let server = root.path().join("run/server/mods/example.jar");
+        let mut wrong_target: InstalledState = toml::from_str(&fs::read_to_string(
+            root.path().join(".enderpin/client/state.toml"),
+        )?)?;
+        let original_state = toml::to_string(&wrong_target)?;
+        let record = wrong_target
+            .files
+            .remove("run/client/mods/example.jar")
+            .context("missing client state")?;
+        wrong_target
+            .files
+            .insert("run/server/mods/example.jar".into(), record);
+        fs::write(
+            root.path().join(".enderpin/client/state.toml"),
+            toml::to_string(&wrong_target)?,
+        )?;
+        assert!(
+            ws.sync(manifest.clone(), &[Side::Client], options, |_| ())
+                .is_err()
+        );
+        assert_eq!(fs::read(&server)?, b"test artifact");
+        fs::write(
+            root.path().join(".enderpin/client/state.toml"),
+            original_state,
+        )?;
         fs::write(&client, b"manual edit")?;
         let locked = SyncOptions {
             locked: true,

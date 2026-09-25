@@ -243,15 +243,26 @@ struct LatestVersions {
     release: String,
 }
 #[derive(Debug, Deserialize)]
-struct VersionEntry {
-    id: String,
+pub struct VersionEntry {
+    pub id: String,
     url: String,
     sha1: String,
     #[serde(rename = "type")]
-    kind: String,
+    pub kind: String,
 }
 
 const VERSION_MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+
+pub fn minecraft_versions() -> Result<Vec<VersionEntry>> {
+    let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
+    Ok(versions
+        .versions
+        .into_iter()
+        .filter(|entry| {
+            ["release", "snapshot"].contains(&entry.kind.as_str()) && identifier(&entry.id).is_ok()
+        })
+        .collect())
+}
 
 pub fn latest_release() -> Result<String> {
     let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
@@ -1089,7 +1100,7 @@ mod tests {
         }))?;
         assert!(bad.release().is_err());
         for side in Side::ALL {
-            let mut manifest = crate::Workspace::quick_manifest_for("26.2".into(), side)?;
+            let mut manifest = crate::Workspace::quick_manifest("26.2".into())?;
             manifest.target_mut(side).packages.insert(
                 "mod".into(),
                 crate::Package::modrinth("mod", crate::Kind::Mod),

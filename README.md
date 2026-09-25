@@ -6,7 +6,28 @@ Minecraftのクライアントとサーバーの構成を、同じGitリポジ�
 
 ## インストール
 
-[GitHub Releases](https://github.com/aomona/enderpin/releases) のOS・CPUに合った `.tgz` のURLを指定して、Bunでインストールできます。最新版はv0.1.1です。
+npm版（v0.1.2から）は、次のコマンドでインストールします。
+
+```sh
+bun install -g enderpin
+# または
+npm install -g enderpin
+enderpin --version
+```
+
+v0.1.3からは全5環境のネイティブバイナリをnpmパッケージに同梱し、OS・CPUに合うものを起動します。外部URLへの依存やインストール用スクリプト、`bun pm trust` は不要です。pnpmの `blockExoticSubdeps` を有効にしたまま使えます。
+
+```sh
+pnpm dlx enderpin@latest quick
+# 版の確認
+pnpm dlx enderpin@latest --version
+```
+
+`pnpm dlx enderpin` 単体はCLIの使い方を表示します。初期セットアップは末尾に `quick` を付けてください。
+
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
+
+ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 
 ```sh
 # macOS / Apple Siliconの例
@@ -22,9 +43,9 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.1/` のような公開済みタグのパスに置き換えます。更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.3/` のような公開済みタグのパスに置き換えます。URL版からnpm版への切り替えは `bun remove -g enderpin` の後に `bun install -g enderpin` を実行してください。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
 
-パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
+このOS別パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
 ソースからビルドする場合はRust 1.89以上、JDK 17以上、Cコンパイラーが必要です。
 
@@ -32,31 +53,44 @@ enderpin --version
 cargo install --path . --locked
 ```
 
-## ワンコマンドで起動
+## 対話で初期セットアップ
+
+v0.1.2からのセットアップ動作です（v0.1.1の `quick` はゲーム起動コマンド）。
 
 ```sh
-enderpin quick
-# この起動だけサンドボックスを無効にする場合
-enderpin quick --no-sandbox
-# バージョンを指定（省略すると最新安定版）
-enderpin quick --version 26.2
-# 標準の認証必須サーバー
-enderpin quick --server
-# EULAを確認・同意した上で、版とポートを指定して起動
-enderpin quick --server --version 26.2 --port 25566 --accept-eula
+enderpin quick           # クライアントをセットアップ
+enderpin quick --server  # クライアントとサーバーの両方をセットアップ
 ```
 
-`--server`・`--version`・`--port` はv0.1.1以降で利用できます。
+1. Minecraftのバージョンを検索して選択します。文字入力で一覧を絞り込めます。
+2. ローダーを検索して選択します。現在の候補はVanillaとFabricです。
+3. Fabricの場合、ModrinthのMODをキーワード検索し、結果から追加・取り消しできます。追加済みは `[x]` と表示します。次のページ・再検索にも対応します。VanillaではMOD選択を省略します。
+4. 構成を確認すると、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。ゲームは起動しません。
 
-実行時に公式メタデータの最新安定版を確認し、MinecraftとJavaを自動取得して、MOD・Fabricなしのクライアントを起動します。プレイヤー名は `Player`、ログイン不要のオフラインモードです。初回の準備と最新版の確認にはインターネット接続が必要です。認証が必要なマルチプレイサーバーやRealmsは利用できません。
+MODの候補は選んだMinecraft版とローダーで絞り込み、選択時に対象側で利用できるリリースを確認します。`--server` では両側に対応するMODを対象ごとに配置します。任意依存は自動追加しません。古いMinecraftなど実行環境が未対応の場合は準備時に理由を示して停止します。
 
-サンドボックスは既定で有効です。`quick` の固定されたバニラ用設定（アカウント認証なし・外部フォルダ権限なし）には追加の承認操作は不要です。設定を手編集した場合は自動承認せず停止します。`--no-sandbox` はこの実行だけOSのファイル・通信制限を外します。
+保存先は実行ディレクトリ内の `run/client/`・`run/server/` と、共通の `enderpin.toml`・`enderpin.lock` です。`-C DIRECTORY` で保存先を変更できます。初回に選んだ版を固定し、既存の設定は `quick` で上書きしません。MODの追加は `add`、準備の再実行は `prepare` を使います。別の版は別ディレクトリでセットアップしてください。
 
-保存先はOSのEnderpinデータディレクトリ内の `quick/<Minecraft版>/` です。同じ版では設定とワールドを再利用し、新しい版は別フォルダに作成します。`-C DIRECTORY` を付けると `DIRECTORY/<Minecraft版>/` に変更できます。既存のMOD用ワークスペースは読み込みません。サーバーは `--server` で選択し、`--target server` / `all` は拒否します。メモリ量は `--memory 4096` のようにMiBで指定できます。
+選択を省略したり、非対話環境でセットアップする場合は引数で指定できます。
 
-`quick --server` はバニラの専用サーバーを起動します。初回はMinecraft EULAへの同意を確認します。非対話環境では、EULAを読んで同意した場合に `--accept-eula` を指定してください。`--yes` ではEULAに同意しません。保存済みの同意は同じサーバーで再利用します。
+```sh
+enderpin quick --no-interactive --version 1.21.1 --loader fabric --mods lithium,sodium
+enderpin -C my-server quick --server --no-interactive --version 26.2 --loader vanilla
+```
 
-サーバー保存先は `quick/server/<Minecraft版>/`、`-C DIRECTORY` 指定時は `DIRECTORY/server/<Minecraft版>/` です。`online-mode=true` を含むMinecraft標準設定を使います。クライアント側のオフライン `Player` では参加できません。`--port 25566` は起動時のポート指定で、省略時は `server.properties` の設定（初期値25565）を使います。`--no-sandbox` も併用できます。Ctrl-Cで保存して停止します。
+`--version` と `--loader` は対応する選択画面を省略します。`--mods` はModrinthのIDまたはslugをカンマ区切りで指定します。非対話環境では版とローダーの指定が必須です。
+
+セットアップ後に起動するには、保存先で次を実行します。
+
+```sh
+enderpin launch
+# Minecraft EULAを確認し、同意した場合
+enderpin launch --target server --accept-eula --port 25566
+# バニラの起動でサンドボックスを無効にする場合
+enderpin launch --no-sandbox
+```
+
+サンドボックス権限は起動時に確認します。セットアップではMODの権限を自動承認しません。クライアントの初期設定はオフラインPlayerで、認証必須サーバーには参加できません。サーバーはMinecraft標準の認証設定を使い、EULA同意は起動時に行います。`--port`・`--memory`・`--no-sandbox`・`--accept-eula` は `launch` に指定してください。
 
 ## MOD用ワークスペースを試す
 
@@ -94,10 +128,10 @@ enderpin launch --target server --accept-eula
 
 同意はこのサーバーの `eula.txt` に保存します。ログを表示しながら `list`、`stop` 等のコンソール入力を使えます。Ctrl-Cは終了を要求し、2回目で強制停止します。保存完了まで自動的に待ち、時間だけを理由に強制終了しません。
 
-クライアントはMicrosoftの公開クライアントアプリケーションIDを指定してデバイスログインします。現在、Enderpinには配布用の既定IDを同梱していません。下記の値には、Minecraft認証で利用できる登録済みのIDが必要です。
+クライアントはMicrosoftの公開クライアントアプリケーションIDを使ってデバイスログインします。既定のIDは `f8d68570-e721-4aba-9c3e-1052d41e431a` です。別の登録済みIDを使う場合は `enderpin login --client-id YOUR_REGISTERED_CLIENT_ID` で上書きできます。
 
 ```sh
-enderpin login --client-id YOUR_REGISTERED_CLIENT_ID
+enderpin login
 enderpin launch --target client --connect localhost:25565
 ```
 
@@ -109,20 +143,20 @@ Minecraftのアクセストークンとチャット署名用秘密鍵はホス�
 
 ## サンドボックスと対応範囲
 
-フォルダ別の書き込み禁止、MODの権限宣言、PCごとの承認と外部フォルダの割り当てに対応しています。[設定例とOSごとの制約](docs/sandbox.md) を参照してください。初回起動や権限・MODの変更時は起動前に確認し、非対話実行では `permissions show` → `permissions approve <fingerprint>` で事前承認します。
+`enderpin permissions` で、ゲーム全体の通信・書き込み・認証・外部フォルダの許可を対話的に編集できます。`permissions approve` または初回の `launch` で一覧を確認して承認します。権限変更やMODの追加・更新時は再確認し、変更がなければ確認を省略します。[設定例・自動化・OSごとの制約](docs/sandbox.md) を参照してください。
 
 - macOSはSeatbelt、Linuxはbubblewrapとseccomp、WindowsはAppContainerとJob Objectを使います。通常起動への自動切り替えはありません。
 - 対象のゲームディレクトリと専用一時ディレクトリを書込可能にし、共有Java・ライブラリ・キャッシュを読取専用にします。クライアントのassetsは検証して対象別キャッシュへ複製し、スキンの書き込み許可も分離します。
 - 通信は既定で許可します。`launch --no-network` はゲームのIP通信を拒否します。ポートごとの制御やOSファイアウォールの変更は行いません。
 - `--offline` は固定済みファイルとキャッシュだけで準備します。認証付きクライアントのセッション更新と承認済みの認証仲介には別途ホスト側のネットワークを使います。アカウントなしの公式デモは `launch --demo --offline --no-network` で試せます（事前に `prepare` が必要）。
 - Linuxにはbubblewrapと利用可能なユーザー名前空間が必要です。デスクトップ起動はローカルX11またはWayland、必要に応じてPulseAudioとGPUを使います。
-- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はバニラクライアントまたはサーバーを使います。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
+- MOD用の実行環境は現代のFabricプロファイルを対象とし、Minecraft 1.21.1で実測しています。`quick` はVanillaまたはFabricのセットアップに対応します。未対応の旧式native形式やOSバージョン条件は理由を示して停止します。1.21.1のLinux ARM64クライアントは公式LWJGL nativeが適合しないため停止します（サーバーは対応）。
 - Windows・Linuxの実JVMによる制限と認証ブリッジは検証済みですが、両OSのMinecraft画面・認証付きゲーム参加は未検証です。Windowsのloopback例外は自動追加しません。AppContainerの対象別プロファイルとファイル権限設定は起動後も残ります。
 
 ## 構成
 
 ```toml
-format = 1
+format = 3
 minecraft = "1.21.1"
 
 [common.lithium]
@@ -178,7 +212,7 @@ example-mod
 
 | コマンド | 動作 |
 | --- | --- |
-| `quick [--server] [--version VERSION] [--port PORT] [--no-sandbox]` | バニラクライアント／サーバーを準備・起動。ポートはサーバー専用 |
+| `quick [--server] [--version VERSION] [--loader vanilla\|fabric] [--mods IDS]` | 検索付き初期セットアップ。`--server` は両側を準備。ゲームは起動しない |
 | `init --minecraft VERSION` | 共有構成・ロック・Git除外設定を作成 |
 | `add ID_OR_URL` | 追加して同期 |
 | `remove NAME` | 指定スコープから削除して同期 |
@@ -190,18 +224,76 @@ example-mod
 | `list` | ロックされたパッケージとロックの更新要否を表示 |
 | `prepare [--locked] [--update]` | Minecraft・Fabric・Javaを固定して準備 |
 | `login --client-id ID` / `logout` | OS資格情報ストアを使ったログイン・削除 |
-| `permissions show / approve / revoke / bind / unbind` | 権限の確認・ローカル承認・外部フォルダの割り当て |
+| `permissions [show / approve / revoke / allow-folder / remove-folder]` | 対話編集・権限の確認と承認・外部フォルダの許可 |
 | `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
 
 共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`quick`・`login`・`launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。
 
 ## ファイルと保護
 
-- `enderpin.toml` と `enderpin.lock` はGitへ追加します。
-- `.enderpin/client/game/` と `.enderpin/server/game/` に対象ごとに配置します。
-- `.enderpin/` と `.enderpinignore` はGit管理外です。
+構成形式は `format = 3` です。共有する入力と、実際にゲームが読み書きする環境を分離します。
+
+```text
+workspace/
+├── enderpin.toml
+├── enderpin.lock
+├── files/                    # Git管理する共有ファイル
+│   ├── common/config/        # 両側へ反映
+│   ├── client/resourcepacks/ # クライアントだけへ反映
+│   └── server/server.properties
+├── run/                      # Git管理外。セーブデータも含む
+│   ├── client/               # mods/、config/、saves/、options.txt など
+│   └── server/               # mods/、config/、world/、server.properties など
+└── .enderpin/                # 権限・同期台帳・復旧用ファイル
+```
+
+- `enderpin.toml`・`enderpin.lock`・`files/` をGitへ追加します。空のディレクトリはGitに保存されませんが、同期に必要な場所は自動作成されます。
+- `run/client/` がクライアントの `.minecraft` 相当、`run/server/` がサーバーのゲームディレクトリです。`run/` はワールドも含むため、消して再生成できるキャッシュではありません。
+- 初期化時に `/run/`・`/.enderpin/`・`/.enderpinignore` を `.gitignore` へ追加します。認証資格情報はこれらとは別のOS資格情報ストアに保存します。
+
+### 共有設定を使う
+
+たとえば両側で使うMOD設定を `files/common/config/example.json` に置き、`enderpin sync --target all --locked` を実行します。`run/client/config/example.json` と `run/server/config/example.json` にコピーされます。サーバーだけ異なる設定にするには `files/server/config/example.json` を置きます。
+
+- 対象ごとに `files/common/` → `files/client/` または `files/server/` の順で反映し、同じ相対パスは対象側が優先されます。ファイル単位の置き換えで、JSONやTOMLのキーのマージはしません。
+- `sync`・`prepare`・`launch` の同期処理で反映します。`lock` はファイルを配置しません。`.enderpinignore` はパッケージ用で、共有ファイルには適用しません。
+- 取得するMODなどは従来どおり `enderpin.toml` と `enderpin.lock` で管理します。共有ファイルはGitのリビジョンで固定し、ロックファイルには追加しません。`--locked --offline` でも、現在チェックアウトしている `files/` の内容を反映します。
+- 管理パッケージと共有ファイルの配置先が重なる場合、大小文字だけが異なる共有パス、ファイルとディレクトリが重なる構成、シンボリックリンク・reparse pointは拒否します。
+- `files/` に認証情報・秘密鍵・個人のワールドを置かないでください。置いたファイルは共有・同期の対象になります。
+
+### ゲーム内で設定を変えたとき
+
+最後に反映した共有元・現在の共有元・ゲーム側のファイルを比較します。
+
+| 変更 | 通常の同期 |
+| --- | --- |
+| 共有元だけ変更 | ゲーム側へ反映 |
+| ゲーム側だけ変更・削除 | ローカルの変更を保持 |
+| 両側が同じ内容へ変更 | 解決済みとして記録 |
+| 両側が異なる内容へ変更 | 競合として停止。同期対象のファイル変更はまとめて見送る |
+| 共有元から削除 | ゲーム側が未変更なら削除。編集済みなら競合 |
+| 配置先に管理外ファイルが存在 | 内容が同じでも停止。勝手に取り込まない |
+
+ローカルの設定を共有するには、対象ファイルを `files/client/` などへコピーして再同期します。共有元の内容へ戻す場合は `enderpin restore --target client` を使います。`restore` はその対象の管理パッケージと共有ファイルのローカル変更・削除を破棄しますが、管理外ファイルは上書きしません。初めて共有管理に入れる既存設定は、バックアップして `files/` に置き、ゲーム側の同名ファイルを退避してから同期してください。
+
+対象側の上書きファイルを削除すると共通ファイルへ戻ります。共通ファイルもなければ削除になります。ディレクトリそのものや、共有管理していないワールド・ログなどは削除しません。
+
+権限承認には、共有管理下のゲーム側ファイルのパスと内容ハッシュも含めます。共有ファイル経由でMODを追加した場合や、共有設定をゲーム内で変更した場合も再承認が必要になることがあります。`permissions show` で対象ファイルを確認できます。
+
+### format = 2 から手動で移行する
+
+自動移動・旧形式との互換対応は行いません。ゲームを終了し、旧ワークスペース全体をバックアップしてから、別の空ディレクトリで移行します。
+
+1. 旧環境の `enderpin.toml` と `enderpin.lock` を新しいディレクトリへコピーし、**両ファイルのトップレベルの** `format = 2` を `format = 3` に変更します。旧 `.enderpin/` とゲームディレクトリはコピーしません。
+2. 新しいディレクトリに `files/common/`・`files/client/`・`files/server/` を作り、共有したい設定だけを旧 `client/`・`server/` から対応する `files/` へコピーします。
+3. `.gitignore` に `/run/`・`/.enderpin/`・`/.enderpinignore` を追加します。`enderpin sync --target all` を実行して、新形式の指紋と配置を生成します。この最初の同期は `--locked`・`--offline` を付けず、`update` は使いません。既存ロックの固定版を維持して解決するため、変更されたロックを確認してください。
+4. 旧 `client/saves/`・`server/world/` などの必要なプレイデータを、それぞれ新 `run/client/`・`run/server/` へコピーします。個人設定も必要に応じてコピーしますが、手順2で共有したファイルと生成済みの管理MODは上書きしません。サーバーの `level-name` を変えている場合は、そのワールドもコピーします。
+5. `enderpin prepare --target all` で実行環境を準備します。既存の実行環境の固定版は維持し、旧ロックで未準備だった対象はここで固定します。必要な対象が片側だけなら `--target client` または `--target server` を指定します。その後、必要な権限・外部フォルダを設定して再承認します。起動してワールドと設定を確認できるまで旧環境を残してください。新しい構成・ロック・`files/` をGitへ追加します。
+
+### ファイルの保護
+
 - ダウンロード済みファイルはOS標準のキャッシュディレクトリにハッシュで保存します。
-- 管理外ファイルとの衝突、管理対象の手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。
+- 管理外ファイルとの衝突、管理パッケージの手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。
 - 構成・ロック・ファイル変更をステージングし、復旧用ジャーナルを保存してから反映します。中断時は次の操作で元の状態へ戻します。復旧中に別の変更を見つけた場合はバックアップを保持して停止します。
 - 以前の構成とロックをGitで戻して `sync --locked` すれば、そのファイルへ戻せます。配布元またはキャッシュから取得できることが前提です。
 
@@ -247,6 +339,22 @@ bun install -g ./target/bun/enderpin-darwin-arm64.tgz
 Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケージ名は上の表の環境に合わせて指定します。検証スクリプトは一時HTTPサーバーからBunで取得し、隔離したグローバル領域へインストールして、バージョン表示・ヘルプ・エラー終了・空白を含むパスでのワークスペース作成を確認します。普段のBunグローバル領域は変更しません。ゲーム起動の検証は含みません。
 
 `.github/workflows/release.yml` は5環境でビルドとBunインストール検証を行います。手動実行ではActionsの成果物だけを作成します。`Cargo.toml` と一致する `vVERSION` タグをpushすると、全環境の成功後に `.tgz` を添付したReleaseの下書きを作成します。内容を確認して公開すると上のURLからインストールできます。対応するソースは同じタグのGitHubソースアーカイブから取得できます。
+
+### npm配布パッケージ
+
+5環境のOS別アーカイブを同じ版で揃えてから作成します。
+
+```sh
+python3 scripts/package_npm.py --tag v0.1.3 --binaries packages
+python3 tests/npm_install.py target/npm/enderpin-0.1.3.tgz
+npm publish target/npm/enderpin-0.1.3.tgz --dry-run
+npm publish target/npm/enderpin-0.1.3.tgz --access public
+python3 tests/npm_install.py target/npm/enderpin-0.1.3.tgz --registry
+```
+
+バージョンはCargo.tomlから生成します。起動用JavaScript・メタデータ・README・LICENSEと、5種類の実行ファイルだけを同梱します。npm依存はありません。Releaseワークフローはビルド後に同梱版を5環境でnpm/Bun/pnpm検証し、全件成功後にアーカイブを下書きへ添付します。
+
+手元の1環境だけで検証する場合は `python3 scripts/package_npm.py --allow-partial` を使えます。このテスト用パッケージには `private: true` が入り、npmへ公開できません。検証は標準のNode.js/npm CLI、Bun、pnpmを使い、グローバル領域とキャッシュを一時ディレクトリへ分離します。
 
 ## ライセンス
 

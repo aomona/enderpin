@@ -25,6 +25,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - run: cargo build --release --locked
       - name: Package and verify Bun installation
         shell: bash
@@ -40,17 +43,62 @@ jobs:
           name: bun-${{ matrix.os }}
           path: target/bun/*.tgz
           if-no-files-found: error
-  draft:
-    if: startsWith(github.ref, 'refs/tags/v')
+  npm:
     needs: package
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '12.4.2'
       - uses: actions/download-artifact@v4
         with:
           pattern: bun-*
           merge-multiple: true
+          path: packages
+      - name: Bundle and test all native binaries
+        shell: bash
+        run: |
+          python scripts/package_npm.py --binaries packages
+          python tests/npm_install.py target/npm/*.tgz
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-22.04'
+        with:
+          name: npm
+          path: target/npm/*.tgz
+          if-no-files-found: error
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bun-*
+          merge-multiple: true
+          path: packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm
           path: packages
       - name: Create release draft
         env:
