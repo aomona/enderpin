@@ -63,6 +63,7 @@ a { text-underline-offset: 3px; }
 .vp-doc { font-size: 16px; line-height: 28px; overflow-wrap: anywhere; }
 .vp-doc h1 { margin-bottom: 24px; color: var(--mona-text-heading); font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: normal; text-wrap: balance; }
 .vp-doc h2 { margin: 32px 0 16px; padding-top: 0; border-top: 0; font-size: 18px; line-height: 26px; font-weight: 600; letter-spacing: normal; }
+.vp-doc h2 .header-anchor { top: 0; }
 .vp-doc h3 { font-size: 16px; line-height: 28px; font-weight: 600; letter-spacing: normal; }
 .vp-doc p, .vp-doc li { line-height: 28px; }
 .vp-doc a { text-decoration: underline; text-decoration-thickness: 1px; }
