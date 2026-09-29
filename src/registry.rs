@@ -56,8 +56,15 @@ fn pinned_client(
 /// HTTPS transport validates and pins DNS results for every redirect hop.
 /// It never forwards credentials or records temporary signed redirect URLs.
 pub fn response(raw: &str) -> Result<Response> {
+    response_with_policy(raw, |_| true)
+}
+
+/// Apply an embedding application's URL allowlist before DNS lookup and connection,
+/// including every redirect, while retaining Enderpin's public-address checks.
+pub fn response_with_policy(raw: &str, allowed: impl Fn(&Url) -> bool) -> Result<Response> {
     let mut url = https_url(raw)?;
     for _ in 0..10 {
+        ensure!(allowed(&url), "distribution URL rejected by caller policy");
         let host = url
             .host_str()
             .context("URL has no host")?
@@ -395,6 +402,40 @@ impl Modrinth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn caller_policy_rejects_before_dns_and_cannot_bypass_public_addresses() {
+        let error = response_with_policy("https://not-resolved.invalid/file", |_| false)
+            .expect_err("request must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "distribution URL rejected by caller policy"
+        );
+        let error = response_with_policy("https://127.0.0.1/file", |_| true)
+            .expect_err("request must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "download host must resolve only to public addresses"
+        );
+    }
+
+    #[test]
+    #[ignore = "requests a public GitHub archive redirect"]
+    fn live_caller_policy_rejects_redirect_before_connecting_to_destination() {
+        let visited = std::cell::RefCell::new(Vec::new());
+        let error = response_with_policy(
+            "https://github.com/aomona/enderpin/archive/5a05db9f643c029994df225080dee8698ece2540.tar.gz",
+            |url| {
+                visited.borrow_mut().push(url.host_str().unwrap_or_default().to_owned());
+                url.host_str() == Some("github.com")
+            },
+        ).expect_err("request must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "distribution URL rejected by caller policy"
+        );
+        assert_eq!(*visited.borrow(), ["github.com", "codeload.github.com"]);
+    }
+
     #[test]
     fn reject_local_and_transition_addresses() -> Result<()> {
         for ip in [
