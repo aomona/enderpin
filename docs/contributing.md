@@ -23,6 +23,31 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 
 GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](verification.md) に今回実行した範囲を記載しています。
 
+## 認証ブリッジの組込API
+
+Rustの利用側は `enderpin::auth::bridge` から、ビルド時に埋め込まれた認証ブリッジを取得できます。
+
+```rust
+use enderpin::auth::bridge::{AGENT, BOOTSTRAP, NATIVE, ASSETS};
+
+assert_eq!(AGENT.name, "auth-bridge.jar");
+assert_eq!(BOOTSTRAP.name, "auth-bootstrap.jar");
+assert!(!NATIVE.bytes.is_empty());
+for asset in ASSETS {
+    // asset.name: &'static str、asset.bytes: &'static [u8]
+    // 保存先の検査・ファイルの配置・起動は利用側で行います。
+    assert!(!asset.bytes.is_empty());
+}
+```
+
+`EmbeddedAsset` はファイル名と読み取り専用バイト列だけを公開します。`ASSETS` はエージェントJAR・ブートストラップJAR・JNIライブラリの3点で、ナレーターを含みません。このAPI自体はファイルを書き込まず、資格情報の読み出し・認証仲介の開始・権限承認も行いません。エージェントはJNIライブラリと同じディレクトリにある `auth-bootstrap.jar` を読み込むため、利用側はこの配置を維持してください。
+
+Javaクラスは `--release 17` で生成します。ビルドにはホスト側のJDK 17以上の `java` / `javac` / `jar` と、対象向けのCコンパイラーが必要です。JNIライブラリはRustのコンパイル対象OS・CPU向けであり、実行時に別環境向けを選ぶ仕組みではありません。Windowsは `auth-bridge.dll`、macOSは `libauth-bridge.dylib`、Linuxは `libauth-bridge.so` になります。
+
+クロスコンパイルでは対象向けのCツールチェーンに加え、対象OSのJNIヘッダーを含むJDKを `ENDERPIN_TARGET_JDK` で指定します。この変数はヘッダーの選択だけに使われ、ホストで実行するJavaツールはPATHから取得します。ビルド済みのバイト列を配置するだけなら、利用時にJDKの開発ツールやCコンパイラーは不要です。対象OS・CPUの一致に加えて、既存の対応ゲーム版・Java版・authlib検査と認証の失敗時停止は利用側で引き続き必要です。
+
+`tests/auth_bridge_assets.rs` は公開APIだけを使い、ファイル名、対象OSのネイティブ形式、JARのクラス分離・マニフェスト・Java 17バイトコードを検査します。これは実ゲーム認証や各OSでのJNI動作を証明するテストではありません。
+
 ## Bun配布パッケージ
 
 Python 3.11以上とBunを使って、現在のOS・CPU向けのパッケージを作成・検証できます。

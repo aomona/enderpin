@@ -1,7 +1,10 @@
 use crate::{
-    auth::broker::{
-        channel::PreparedBroker,
-        service::{OfficialOperations, UserAttributesSchema},
+    auth::{
+        bridge,
+        broker::{
+            channel::PreparedBroker,
+            service::{OfficialOperations, UserAttributesSchema},
+        },
     },
     runtime::{PreparedRuntime, RuntimeLock},
     storage,
@@ -16,22 +19,13 @@ use std::{
 
 pub(crate) fn write_files(root: &Path) -> Result<()> {
     for (name, bytes) in [
-        (
-            "auth-bridge.jar",
-            include_bytes!(concat!(env!("OUT_DIR"), "/auth-bridge.jar")).as_slice(),
-        ),
-        (
-            "auth-bootstrap.jar",
-            include_bytes!(concat!(env!("OUT_DIR"), "/auth-bootstrap.jar")).as_slice(),
-        ),
+        (bridge::AGENT.name, bridge::AGENT.bytes),
+        (bridge::BOOTSTRAP.name, bridge::BOOTSTRAP.bytes),
         (
             "narrator-bridge.jar",
             include_bytes!(concat!(env!("OUT_DIR"), "/narrator-bridge.jar")).as_slice(),
         ),
-        (
-            env!("ENDERPIN_AUTH_NATIVE"),
-            include_bytes!(concat!(env!("OUT_DIR"), "/", env!("ENDERPIN_AUTH_NATIVE"))).as_slice(),
-        ),
+        (bridge::NATIVE.name, bridge::NATIVE.bytes),
     ] {
         fs::write(storage::safe_path(root, name)?, bytes)?;
     }
@@ -108,5 +102,44 @@ pub(crate) fn clear_profile_keys(game: &Path) -> Result<()> {
 }
 
 pub(crate) fn native(root: &Path) -> PathBuf {
-    root.join(env!("ENDERPIN_AUTH_NATIVE"))
+    root.join(bridge::NATIVE.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_uses_public_auth_assets_and_keeps_narrator() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        write_files(root.path())?;
+        for asset in bridge::ASSETS {
+            assert_eq!(fs::read(root.path().join(asset.name))?, asset.bytes);
+        }
+        assert_eq!(
+            fs::read(root.path().join("narrator-bridge.jar"))?,
+            include_bytes!(concat!(env!("OUT_DIR"), "/narrator-bridge.jar"))
+        );
+        assert_eq!(fs::read_dir(root.path())?.count(), 4);
+        assert_eq!(native(root.path()), root.path().join(bridge::NATIVE.name));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_rejects_symlinks_for_each_asset() -> Result<()> {
+        for name in bridge::ASSETS
+            .map(|asset| asset.name)
+            .into_iter()
+            .chain(["narrator-bridge.jar"])
+        {
+            let root = tempfile::tempdir()?;
+            let target = tempfile::NamedTempFile::new()?;
+            fs::write(target.path(), b"keep me")?;
+            std::os::unix::fs::symlink(target.path(), root.path().join(name))?;
+            assert!(write_files(root.path()).is_err());
+            assert_eq!(fs::read(target.path())?, b"keep me");
+        }
+        Ok(())
+    }
 }
