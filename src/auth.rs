@@ -11,6 +11,7 @@ use std::{
 const DEVICE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const SCOPE: &str = "XboxLive.signin offline_access";
+pub mod bridge;
 pub mod broker;
 
 #[derive(Clone)]
