@@ -36,7 +36,7 @@ impl Operations for HostOperations {
             return Err(BrokerError::NetworkDenied);
         }
         if let Command::ImportFiles { paths, multiple } = command {
-            if !self.settings.import_files || !self.settings.game_write {
+            if !self.settings.import_files || !self.settings.files.game.writable() {
                 return Err(BrokerError::Forbidden);
             }
             let selected = crate::imports::select(paths.as_deref(), *multiple)?;

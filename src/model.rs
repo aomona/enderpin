@@ -138,7 +138,7 @@ pub struct Target {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled: Vec<String>,
     #[serde(default)]
-    pub sandbox: crate::sandbox::permissions::Settings,
+    pub permissions: crate::sandbox::permissions::Settings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,7 +160,7 @@ impl Manifest {
             packages: BTreeMap::new(),
             enabled: vec![],
             disabled: vec![],
-            sandbox: Default::default(),
+            permissions: Default::default(),
         };
         let manifest = Self {
             format: FORMAT,
@@ -172,7 +172,7 @@ impl Manifest {
         manifest.validate()?;
         Ok(manifest)
     }
-    /// Keep shared configuration small; omitted sandbox keys use Settings::default().
+    /// Keep shared configuration small; omitted permission keys use Settings::default().
     pub fn to_toml(&self) -> Result<String> {
         let mut value = toml::Value::try_from(self)?;
         let defaults = toml::Value::try_from(crate::sandbox::permissions::Settings::default())?;
@@ -181,13 +181,13 @@ impl Manifest {
                 .get_mut(side.name())
                 .and_then(toml::Value::as_table_mut)
                 .context("missing target settings")?;
-            let sandbox = target
-                .get_mut("sandbox")
+            let permissions = target
+                .get_mut("permissions")
                 .and_then(toml::Value::as_table_mut)
-                .context("missing sandbox settings")?;
-            sandbox.retain(|key, value| defaults.get(key) != Some(value));
-            if sandbox.is_empty() {
-                target.remove("sandbox");
+                .context("missing permission settings")?;
+            omit_default_permissions(permissions, &defaults);
+            if permissions.is_empty() {
+                target.remove("permissions");
             }
         }
         Ok(toml::to_string_pretty(&value)?)
@@ -238,13 +238,14 @@ impl Manifest {
                 identifier(version)?;
             }
             ensure!(
-                ["vanilla", "fabric", "paper", "neoforge"].contains(&target.loader.as_str()),
+                ["vanilla", "fabric", "paper", "velocity", "neoforge"]
+                    .contains(&target.loader.as_str()),
                 "unsupported loader {}",
                 target.loader
             );
             ensure!(
-                side != Side::Client || target.loader != "paper",
-                "Paper is a server runtime"
+                side != Side::Client || !matches!(target.loader.as_str(), "paper" | "velocity"),
+                "Paper and Velocity are server runtimes"
             );
             if target.loader == "vanilla" {
                 ensure!(
@@ -277,6 +278,22 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+fn omit_default_permissions(
+    table: &mut toml::map::Map<String, toml::Value>,
+    defaults: &toml::Value,
+) {
+    table.retain(|key, value| {
+        if let Some(nested) = value.as_table_mut()
+            && let Some(default) = defaults.get(key)
+        {
+            omit_default_permissions(nested, default);
+            !nested.is_empty()
+        } else {
+            defaults.get(key) != Some(value)
+        }
+    });
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -573,6 +590,13 @@ mod tests {
         let m = Manifest::new("1.21.1".into())?;
         assert_eq!(Manifest::parse(&toml::to_string(&m)?)?.minecraft, "1.21.1");
         assert!(Manifest::parse(&(toml::to_string(&m)? + "\n[unknown]\na = 1\n")).is_err());
+        for loader in ["paper", "velocity"] {
+            let mut server = m.clone();
+            server.server.loader = loader.into();
+            server.validate()?;
+            server.client.loader = loader.into();
+            assert!(server.validate().is_err());
+        }
         let mut old = m.clone();
         old.format = 1;
         assert!(Manifest::parse(&toml::to_string(&old)?).is_err());

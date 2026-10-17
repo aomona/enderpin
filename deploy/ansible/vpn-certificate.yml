@@ -1,0 +1,42 @@
+- name: Create persistent private identity key
+  ansible.builtin.command:
+    argv: [openssl, ecparam, -genkey, -name, prime256v1, -noout, -out, "{{ enderpin_pki_directory }}/{{ certificate_name }}.key"]
+    creates: "{{ enderpin_pki_directory }}/{{ certificate_name }}.key"
+  no_log: true
+- name: Create certificate request
+  ansible.builtin.command:
+    argv: [openssl, req, -new, -sha256, -key, "{{ enderpin_pki_directory }}/{{ certificate_name }}.key", -out, "{{ enderpin_pki_directory }}/{{ certificate_name }}.csr", -subj, "/CN={{ certificate_name }}"]
+    creates: "{{ enderpin_pki_directory }}/{{ certificate_name }}.csr"
+- name: Define certificate usage
+  ansible.builtin.copy:
+    dest: "{{ enderpin_pki_directory }}/{{ certificate_name }}.ext"
+    mode: '0600'
+    content: |
+      basicConstraints=critical,CA:FALSE
+      keyUsage=critical,digitalSignature
+      extendedKeyUsage={{ 'serverAuth' if certificate_name == 'enderpin-gateway' else 'clientAuth' }}
+- name: Sign identity using the controller CA
+  ansible.builtin.command:
+    argv: [openssl, x509, -req, -in, "{{ enderpin_pki_directory }}/{{ certificate_name }}.csr", -CA, "{{ enderpin_pki_directory }}/ca.crt", -CAkey, "{{ enderpin_pki_directory }}/ca.key", -CAcreateserial, -out, "{{ enderpin_pki_directory }}/{{ certificate_name }}.crt", -days, '825', -sha256, -extfile, "{{ enderpin_pki_directory }}/{{ certificate_name }}.ext"]
+    creates: "{{ enderpin_pki_directory }}/{{ certificate_name }}.crt"
+- name: Fail before expiry instead of silently rotating deployed identities
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, "{{ enderpin_pki_directory }}/{{ certificate_name }}.crt", -checkend, '604800', -noout]
+  changed_when: false
+- name: Verify the existing identity against its CA and purpose
+  ansible.builtin.command:
+    argv: [openssl, verify, -CAfile, "{{ enderpin_pki_directory }}/ca.crt", -purpose, "{{ 'sslserver' if certificate_name == 'enderpin-gateway' else 'sslclient' }}", "{{ enderpin_pki_directory }}/{{ certificate_name }}.crt"]
+  changed_when: false
+- name: Read the private identity's public key
+  ansible.builtin.command:
+    argv: [openssl, pkey, -in, "{{ enderpin_pki_directory }}/{{ certificate_name }}.key", -pubout]
+  register: identity_public_key
+  changed_when: false
+- name: Read the certificate public key
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, "{{ enderpin_pki_directory }}/{{ certificate_name }}.crt", -pubkey, -noout]
+  register: certificate_public_key
+  changed_when: false
+- name: Refuse mismatched persistent keys and certificates
+  ansible.builtin.assert:
+    that: identity_public_key.stdout == certificate_public_key.stdout

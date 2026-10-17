@@ -1,0 +1,3 @@
+# Copy to vault.yml, replace the value, then run: ansible-vault encrypt vault.yml
+# Generate once, retain across deployments: openssl rand -hex 32
+enderpin_forwarding_secret: REPLACE_WITH_64_RANDOM_HEX_CHARACTERS

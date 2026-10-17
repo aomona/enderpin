@@ -1,0 +1,195 @@
+- name: Prepare persistent VPN PKI on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require one gateway and a complete set of named clients
+      ansible.builtin.assert:
+        that:
+          - groups.get('vpn_gateway', []) | length == 1
+          - groups.get('vpn_clients', []) | sort == enderpin_vpn_clients.keys() | list | sort
+          - enderpin_pki_directory is match('^/[a-zA-Z0-9/_.-]+$')
+    - name: Validate VPN addressing
+      ansible.builtin.set_fact:
+        vpn_network: "{{ enderpin_vpn | enderpin_vpn(enderpin_vpn_clients) }}"
+    - name: Create private controller PKI directory
+      ansible.builtin.file:
+        path: "{{ enderpin_pki_directory }}"
+        state: directory
+        mode: '0700'
+    - name: Create persistent CA key
+      ansible.builtin.command:
+        argv: [openssl, ecparam, -genkey, -name, prime256v1, -noout, -out, "{{ enderpin_pki_directory }}/ca.key"]
+        creates: "{{ enderpin_pki_directory }}/ca.key"
+      no_log: true
+    - name: Create self-signed CA certificate
+      ansible.builtin.command:
+        argv: [openssl, req, -x509, -new, -sha256, -key, "{{ enderpin_pki_directory }}/ca.key", -out, "{{ enderpin_pki_directory }}/ca.crt", -days, '3650', -subj, /CN=EnderpinVPN-CA, -addext, 'basicConstraints=critical,CA:TRUE', -addext, 'keyUsage=critical,keyCertSign,cRLSign']
+        creates: "{{ enderpin_pki_directory }}/ca.crt"
+    - name: Check CA expiry before issuing identities
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, "{{ enderpin_pki_directory }}/ca.crt", -checkend, '604800', -noout]
+      changed_when: false
+    - name: Check persistent tls-crypt key
+      ansible.builtin.stat:
+        path: "{{ enderpin_pki_directory }}/tls-crypt.key"
+      register: tls_key
+    - name: Generate static key material once
+      ansible.builtin.command:
+        argv: [openssl, rand, -hex, '256']
+      register: static_random
+      when: not tls_key.stat.exists
+      changed_when: true
+      no_log: true
+    - name: Store OpenVPN static key
+      ansible.builtin.copy:
+        dest: "{{ enderpin_pki_directory }}/tls-crypt.key"
+        mode: '0600'
+        content: |
+          -----BEGIN OpenVPN Static key V1-----
+          {% for line in static_random.stdout | regex_findall('.{32}') %}
+          {{ line }}
+          {% endfor %}
+          -----END OpenVPN Static key V1-----
+      when: not tls_key.stat.exists
+      no_log: true
+    - name: Issue gateway and client certificates without replacing existing identities
+      ansible.builtin.include_tasks: vpn-certificate.yml
+      loop: "{{ ['enderpin-gateway'] + (enderpin_vpn_clients.keys() | list) }}"
+      loop_control:
+        loop_var: certificate_name
+    - name: Protect all local private keys
+      ansible.builtin.file:
+        path: "{{ enderpin_pki_directory }}/{{ item }}.key"
+        mode: '0600'
+      loop: "{{ ['ca', 'enderpin-gateway'] + (enderpin_vpn_clients.keys() | list) }}"
+
+- name: Configure the OpenVPN gateway
+  hosts: vpn_gateway
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Install OpenVPN
+      ansible.builtin.apt:
+        name: openvpn
+        update_cache: true
+        state: present
+    - name: Create private gateway directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop: [/etc/openvpn/server/enderpin, /etc/openvpn/server/enderpin/ccd]
+    - name: Install gateway identity without the CA private key
+      ansible.builtin.copy:
+        src: "{{ enderpin_pki_directory }}/{{ item }}"
+        dest: "/etc/openvpn/server/enderpin/{{ item }}"
+        mode: '0600'
+      loop: [ca.crt, enderpin-gateway.crt, enderpin-gateway.key, tls-crypt.key]
+      no_log: true
+      notify: Restart VPN gateway
+    - name: Find previous client authorizations
+      ansible.builtin.find:
+        paths: /etc/openvpn/server/enderpin/ccd
+        file_type: file
+      register: previous_clients
+    - name: Remove clients no longer present in inventory
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ previous_clients.files }}"
+      when: item.path | basename not in enderpin_vpn_clients
+      notify: Restart VPN gateway
+    - name: Assign static addresses only to authorized certificate names
+      ansible.builtin.copy:
+        dest: "/etc/openvpn/server/enderpin/ccd/{{ item.key }}"
+        mode: '0644'
+        content: "ifconfig-push {{ item.value }} {{ hostvars.localhost.vpn_network.netmask }}\n"
+      loop: "{{ enderpin_vpn_clients | dict2items }}"
+      notify: Restart VPN gateway
+    - name: Permit OpenVPN to read client authorization after dropping privileges
+      ansible.builtin.file:
+        path: "{{ item }}"
+        mode: '0755'
+      loop: [/etc/openvpn/server/enderpin, /etc/openvpn/server/enderpin/ccd]
+    - name: Render gateway configuration
+      ansible.builtin.template:
+        src: templates/openvpn-server.conf.j2
+        dest: /etc/openvpn/server/enderpin.conf
+        mode: '0600'
+      notify: Restart VPN gateway
+    - name: Start OpenVPN gateway
+      ansible.builtin.systemd_service:
+        name: openvpn-server@enderpin
+        enabled: true
+        state: started
+    - name: Apply changed VPN settings before connecting clients
+      ansible.builtin.meta: flush_handlers
+  handlers:
+    - name: Restart VPN gateway
+      ansible.builtin.systemd_service:
+        name: openvpn-server@enderpin
+        state: restarted
+
+- name: Configure outbound OpenVPN clients
+  hosts: vpn_clients
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Install OpenVPN
+      ansible.builtin.apt:
+        name: openvpn
+        update_cache: true
+        state: present
+    - name: Create private client directory
+      ansible.builtin.file:
+        path: /etc/openvpn/client/enderpin
+        state: directory
+        mode: '0700'
+    - name: Install only this client's identity
+      ansible.builtin.copy:
+        src: "{{ enderpin_pki_directory }}/{{ item.src }}"
+        dest: "/etc/openvpn/client/enderpin/{{ item.dest }}"
+        mode: '0600'
+      loop:
+        - {src: ca.crt, dest: ca.crt}
+        - {src: '{{ inventory_hostname }}.crt', dest: client.crt}
+        - {src: '{{ inventory_hostname }}.key', dest: client.key}
+        - {src: tls-crypt.key, dest: tls-crypt.key}
+      no_log: true
+      notify: Restart VPN client
+    - name: Render client configuration
+      ansible.builtin.template:
+        src: templates/openvpn-client.conf.j2
+        dest: /etc/openvpn/client/enderpin.conf
+        mode: '0600'
+      notify: Restart VPN client
+    - name: Start outbound VPN connection
+      ansible.builtin.systemd_service:
+        name: openvpn-client@enderpin
+        enabled: true
+        state: started
+    - name: Apply changed VPN client settings
+      ansible.builtin.meta: flush_handlers
+    - name: Wait for the static VPN address
+      ansible.builtin.wait_for:
+        path: /sys/class/net/epvpn
+        timeout: 60
+    - name: Verify the gateway is reachable through the tunnel
+      ansible.builtin.command:
+        argv: [ping, -I, epvpn, -c, '1', -W, '5', "{{ enderpin_vpn.server_address }}"]
+      changed_when: false
+  handlers:
+    - name: Restart VPN client
+      ansible.builtin.systemd_service:
+        name: openvpn-client@enderpin
+        state: restarted
+      async: 60
+      poll: 0
+      notify: Wait for client SSH to return
+    - name: Wait for client SSH to return
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 120

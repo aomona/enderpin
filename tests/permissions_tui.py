@@ -47,12 +47,36 @@ def main():
                 assert (root / 'enderpin.toml').read_bytes() == original
                 assert not local.exists()
         manifest = tomllib.loads((root / 'enderpin.toml').read_text())
-        assert manifest['client']['sandbox'] == {'network': False}, manifest
-        assert 'sandbox' not in manifest['server']
+        assert manifest['client']['permissions'] == {'network': False}, manifest
+        assert 'permissions' not in manifest['server']
         plan = json.loads(subprocess.check_output([str(binary), 'permissions', 'show', '--json'], cwd=root))
         assert plan['approved']
         assert plan['plan']['effective']['network'] is False
         assert plan['plan']['effective']['account_authentication'] is True
+        # Both file controls save into the nested policy and invalidate approval.
+        terminal = Terminal(binary, root, ['permissions'])
+        try:
+            terminal.expect('Game permissions')
+            terminal.send('\r')
+            terminal.expect('Allowed access')
+            terminal.send('\x1b[B \r')  # Deny writes to the game folder.
+            terminal.expect('Save and review')
+            terminal.send('\x1b[B\r')  # Read-only game folders.
+            terminal.expect('Read-only folders')
+            terminal.send('\x1b[B' * 4 + ' \r')  # Mods.
+            terminal.expect('Save and review')
+            terminal.send('\x1b[B' * 4 + '\r')  # Save without approving.
+            terminal.expect('Permissions saved; approval is pending.')
+            terminal.finish()
+        finally:
+            terminal.close()
+        manifest = tomllib.loads((root / 'enderpin.toml').read_text())
+        assert manifest['client']['permissions'] == {
+            'network': False, 'files': {'game': 'read-only', 'read_only': ['mods']}
+        }, manifest
+        plan = json.loads(subprocess.check_output([str(binary), 'permissions', 'show', '--json'], cwd=root))
+        assert not plan['approved']
+        assert plan['plan']['effective']['files'] == {'game': 'read-only', 'read_only': ['mods']}
         # Add a direct host grant from the TUI; declining review keeps it unapproved.
         with tempfile.TemporaryDirectory(prefix='enderpin-external-folder-') as external:
             folder = Path(external).resolve()
@@ -100,6 +124,7 @@ def main():
             terminal.close()
         assert 'approved' not in tomllib.loads((root / '.enderpin/server/permissions.toml').read_text())
     print(json.dumps({'cancel_without_writes': True, 'compact_settings': True,
+                      'file_permissions_editor': True,
                       'hash_free_approval': True, 'server_controls': True,
                       'save_without_approval': True, 'default_decline': True, 'external_folder_editor': True}))
 

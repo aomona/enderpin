@@ -59,12 +59,17 @@ GUIは `sandbox::permissions::plan` と `Local` を利用できます。
 標準値は省略でき、Enderpinも変更された項目だけを書き出します。
 
 ```toml
-[client.sandbox]
+[client.permissions]
 account_authentication = false
+
+[client.permissions.files]
 read_only = ["mods", "resourcepacks", "shaderpacks"]
 
-[server.sandbox]
+[server.permissions]
 network = false
+
+[server.permissions.files]
+game = "read-only"
 ```
 
 標準では通信・ゲームフォルダへの書き込み・音声・デスクトップ連携・スキンキャッシュ・描画キャッシュを許可し、
@@ -72,8 +77,9 @@ network = false
 `init` と `quick` はともにアカウント認証を有効にします。既存設定の明示的な禁止は変更しません。
 `open_links`, `open_folders`, `import_files`, `narrator` はそれぞれ `false` で禁止できます。
 ファイル取り込みの許可は、ホスト側の選択・確認画面を使う許可です。ホーム全体の読み取り許可ではありません。
-`game_write = false` はゲーム全体を書き込み禁止にします。
-`read_only` は `saves`, `screenshots`, `resourcepacks`, `shaderpacks`, `mods`, `config`, `logs`,
+`permissions.files.game` は `"read-write"`（標準）または `"read-only"` です。
+`"read-only"` はゲームフォルダ全体を書き込み禁止にします。
+`permissions.files.read_only` は `saves`, `screenshots`, `resourcepacks`, `shaderpacks`, `mods`, `config`, `logs`,
 `plugins`, `world` から選びます。標準以外のサーバーワールド名は `world` の制限に含まれません。
 読み取り専用化はファイル内容の秘密化ではありません。読み取った内容を他の許可先へコピーできます。
 
@@ -116,11 +122,22 @@ MODのパス設定は自動変更しません。必要に応じてMOD側にも�
 | IME・全画面の追加連携 | 個別指定可能 | 個別の禁止は不可 | 個別の禁止は不可 |
 | 描画キャッシュの禁止 | Java Metal cacheの許可を外す | 専用cacheを読み取り専用化 | 個別の禁止は不可 |
 
-`microphone` を省略するとmacOSでは個別許可なしです。`clipboard` の省略時はmacOSで許可します。
+`microphone` を省略するとmacOSでは個別許可なしです。
+`clipboard` は `"system"`（標準）、`"read-write"`、`"none"` から選びます。
+`"system"` は現在のOS・バックエンドの標準動作を使う指定で、macOSでは許可します。
+例えばmacOSで個別に拒否する場合は、次のように指定します。
+
+```toml
+[client.permissions]
+microphone = false
+clipboard = "none"
+```
+
+読み取りだけ・書き込みだけのクリップボード指定はまだ対応していません。強制できない指定は受け付けません。
 Linux/WindowsではどちらもOS・デスクトップ接続の制約に従います。
 Linux/Windowsで省略している項目を「拒否できている」とは表示しません。
 例えばLinuxで `audio = true` と `microphone = false` を組み合わせると停止します。
-Windowsでは `microphone` / `clipboard` の明示指定、`audio = false` / `desktop_integration = false` /
+Windowsでは `microphone` の明示指定、`clipboard = "system"` 以外、`audio = false` / `desktop_integration = false` /
 `graphics_cache = false` を拒否します。ヘッドレスサーバーにはデスクトップ権限を付けません。
 
 LinuxはWaylandが指定された環境ではWaylandを優先し、失敗時にX11へ自動切り替えしません。

@@ -42,6 +42,7 @@ impl Default for LaunchOptions {
 /// Owns the target lock until its JVM exits. Dropping it kills and reaps the child.
 pub struct RunningGame {
     child: Child,
+    stop_command: &'static str,
     _target: File,
     _temporary: tempfile::TempDir,
     _broker: Option<crate::auth::broker::channel::BrokerGuard>,
@@ -91,7 +92,7 @@ impl RunningGame {
     }
     pub fn stop(&mut self, side: Side) -> Result<()> {
         if side == Side::Server {
-            return self.console("stop");
+            return self.console(self.stop_command);
         }
         #[cfg(unix)]
         {
@@ -166,7 +167,12 @@ pub fn start(
         );
     }
     let game = storage::directory(&workspace.root, side.game_directory())?.canonicalize()?;
-    if side == Side::Server {
+    let proxy = side == Side::Server && workspace.manifest.server.loader == "velocity";
+    ensure!(
+        !proxy || options.port.is_none(),
+        "configure the Velocity port in velocity.toml"
+    );
+    if side == Side::Server && !proxy {
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(
             options.accept_eula || eula.lines().any(|l| l.trim() == "eula=true"),
@@ -202,7 +208,7 @@ pub fn start(
             "sandbox permissions changed or are unapproved; run permissions approve in a terminal (automation: permissions show --json, then permissions approve <fingerprint>)"
         );
     }
-    if side == Side::Server && options.accept_eula {
+    if side == Side::Server && !proxy && options.accept_eula {
         let path = storage::safe_path(&game, "eula.txt")?;
         let mut file = File::create(path)?;
         file.write_all(
@@ -218,7 +224,7 @@ pub fn start(
         .and_then(|p| p.parent())
         .context("invalid Java path")?
         .canonicalize()?;
-    for directory in &plan.effective.read_only {
+    for directory in &plan.effective.files.read_only {
         storage::directory(&game, directory.name())?;
     }
     let mut extra: Vec<_> = plan.folders.clone();
@@ -430,18 +436,34 @@ pub fn start(
             .cloned(),
     );
     if side == Side::Server {
-        args.extend([
-            "-Djava.awt.headless=true".into(),
-            "-cp".into(),
-            classpath,
-            if workspace.manifest.server.loader == "vanilla" {
-                "net.minecraft.server.Main"
-            } else {
-                "net.fabricmc.loader.impl.launch.knot.KnotServer"
+        if matches!(
+            workspace.manifest.server.loader.as_str(),
+            "paper" | "velocity"
+        ) {
+            args.extend([
+                "-Djava.awt.headless=true".into(),
+                "-jar".into(),
+                storage::java_path(&runtime.game_jar)
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+            if !proxy {
+                args.push("nogui".into());
             }
-            .into(),
-            "nogui".into(),
-        ]);
+        } else {
+            args.extend([
+                "-Djava.awt.headless=true".into(),
+                "-cp".into(),
+                classpath,
+                if workspace.manifest.server.loader == "vanilla" {
+                    "net.minecraft.server.Main"
+                } else {
+                    "net.fabricmc.loader.impl.launch.knot.KnotServer"
+                }
+                .into(),
+                "nogui".into(),
+            ]);
+        }
         if let Some(port) = options.port {
             args.extend(["--port".into(), port.to_string()]);
         }
@@ -613,6 +635,7 @@ pub fn start(
     drop(workspace);
     Ok(RunningGame {
         child,
+        stop_command: if proxy { "end" } else { "stop" },
         _target: target,
         _temporary: temporary,
         _broker: broker.map(|broker| broker.into_guard()),

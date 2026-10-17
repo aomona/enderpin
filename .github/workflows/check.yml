@@ -24,6 +24,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify deployment templates and persistent VPN certificates
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -r deploy/ansible/requirements.txt
+          python -B deploy/test_deploy.py
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
