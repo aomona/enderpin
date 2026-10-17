@@ -83,7 +83,7 @@ def main():
     binary = args.binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-tui-') as directory:
         root = Path(directory)
-        terminal = Terminal(binary, root, ['quick'])
+        terminal = Terminal(binary, root, ['init'])
         try:
             terminal.expect('Minecraft version')
             terminal.send('1.21.1 (release)\r')
@@ -118,21 +118,60 @@ def main():
         assert not (root / 'run/server/eula.txt').exists()
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-both-') as directory:
         root = Path(directory)
-        result = subprocess.run([str(binary), 'quick', '--server', '--no-interactive',
-            '--version', '1.21.1', '--loader', 'fabric', '--mods', 'lithium,sodium'],
+        result = subprocess.run([str(binary), 'init', '--target', 'all', '--no-interactive',
+            '--minecraft', '1.21.1', '--loader', 'fabric', '--loader-version', '0.16.10', '--mods', 'lithium,sodium', '--yes'],
             cwd=root, capture_output=True, text=True, timeout=600)
         assert result.returncode == 0, result.stderr
         lock = tomllib.loads((root / 'enderpin.lock').read_text())
         assert set(lock['runtimes']) == {'client', 'server'}
+        assert all(runtime['loader_version'] == '0.16.10' for runtime in lock['runtimes'].values())
+        assert not (root / '.enderpin/client/permissions.toml').exists(), '--yes approved permissions'
+        assert not (root / '.enderpin/server/permissions.toml').exists(), '--yes approved permissions'
         client_mods = {p['name'] for p in lock['targets']['client']['packages']}
         server_mods = {p['name'] for p in lock['targets']['server']['packages']}
         assert {'lithium', 'sodium'} <= client_mods
         assert 'lithium' in server_mods and 'sodium' not in server_mods
         assert not (root / 'run/client/logs/latest.log').exists()
         assert not (root / 'run/server/eula.txt').exists()
+    with tempfile.TemporaryDirectory(prefix='enderpin-setup-server-') as directory:
+        root = Path(directory) / 'server with spaces'
+        result = subprocess.run([str(binary), 'init', str(root), '--target', 'server',
+            '--minecraft', '1.21.1', '--loader', 'vanilla'],
+            capture_output=True, text=True, timeout=600)
+        assert result.returncode == 0, result.stderr
+        lock = tomllib.loads((root / 'enderpin.lock').read_text())
+        assert set(lock['runtimes']) == {'server'}
+        assert not (root / 'run/client').exists(), 'server setup prepared a client'
+        assert not (root / 'run/server/eula.txt').exists(), 'setup accepted EULA'
+        assert not (root / '.enderpin/server/permissions.toml').exists(), 'setup auto-approved permissions'
+        snapshot = (root / 'enderpin.lock').read_bytes()
+        for flags in [[], ['--locked', '--offline']]:
+            result = subprocess.run([str(binary), '-C', str(root), 'sync', '--target', 'server', *flags],
+                capture_output=True, text=True, timeout=600)
+            assert result.returncode == 0, result.stderr
+            assert (root / 'enderpin.lock').read_bytes() == snapshot, 'sync changed pinned versions'
+        result = subprocess.run([str(binary), '-C', str(root), 'run', '--target', 'server',
+            '--no-interactive', '--offline', '--accept-eula'], capture_output=True, text=True, timeout=30)
+        assert result.returncode != 0 and 'approval' in result.stderr.lower(), result.stderr
+        assert not (root / 'run/server/eula.txt').exists(), 'unapproved run started Minecraft'
+        assert not (root / '.enderpin/server/permissions.toml').exists(), 'run auto-approved permissions'
+    with tempfile.TemporaryDirectory(prefix='enderpin-setup-velocity-cancel-') as directory:
+        root = Path(directory)
+        terminal = Terminal(binary, root, ['init', '--target', 'server', '--minecraft', '1.21.1'])
+        try:
+            terminal.expect('Mod loader')
+            terminal.send('velocity\r')
+            terminal.expect('Velocity version')
+            terminal.send('../bad\r')
+            terminal.expect('invalid identifier')
+            terminal.send('\x03')
+            terminal.finish(success=False)
+        finally:
+            terminal.close()
+        assert not list(root.iterdir()), 'invalid Velocity selection wrote files'
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-cancel-') as directory:
         root = Path(directory)
-        terminal = Terminal(binary, root, ['quick', '--version', '26.2'])
+        terminal = Terminal(binary, root, ['init', '--minecraft', '1.21.1'])
         try:
             terminal.expect('Mod loader')
             terminal.send('\x1b')
@@ -143,7 +182,8 @@ def main():
         assert not list(root.iterdir()), 'cancelled setup wrote files'
     print(json.dumps({'version_search': True, 'loader_search': True, 'mod_search_and_selection': True,
                       'download_and_lock': True, 'both_targets_and_mod_sides': True,
-                      'cancel_without_writes': True, 'game_launched': False}, indent=2))
+                      'velocity_version_validation': True, 'positional_server_setup': True, 'sync_preserves_pins': True,
+                      'noninteractive_run_requires_approval': True, 'cancel_without_writes': True, 'game_launched': False}, indent=2))
 
 
 if __name__ == '__main__':

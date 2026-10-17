@@ -176,7 +176,7 @@ pub fn start(
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(
             options.accept_eula || eula.lines().any(|l| l.trim() == "eula=true"),
-            "Minecraft EULA acceptance is required: https://aka.ms/MinecraftEULA ; review it, then run launch --target server --accept-eula"
+            "Minecraft EULA acceptance is required: https://aka.ms/MinecraftEULA ; review it, then run enderpin run --target server --accept-eula"
         );
     }
     let mut runtimes = workspace.prepare_runtime(
@@ -211,9 +211,7 @@ pub fn start(
     if side == Side::Server && !proxy && options.accept_eula {
         let path = storage::safe_path(&game, "eula.txt")?;
         let mut file = File::create(path)?;
-        file.write_all(
-            b"# Accepted explicitly through enderpin launch --accept-eula\neula=true\n",
-        )?;
+        file.write_all(b"# Accepted explicitly through enderpin run --accept-eula\neula=true\n")?;
         file.sync_all()?;
     }
     let temp_root = storage::directory(&workspace.root, &format!(".enderpin/{}/tmp", side.name()))?;

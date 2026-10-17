@@ -12,13 +12,14 @@ Node.js 18以上とnpm、またはBunを使います。
 npm install -g enderpin
 # または: bun install -g enderpin
 
-mkdir my-world
+enderpin init my-world --loader fabric
 cd my-world
-enderpin quick
-enderpin launch
+enderpin add sodium
+enderpin login  # 初回のアカウント認証
+enderpin run
 ```
 
-`quick` で版・ローダー・MODを選び、`launch` で権限を確認して起動します。初期状態はオフラインの `Player` です。
+`init` で版・ローダー・MODを選び（MODを使う場合はFabric）、`run` で権限を確認して起動します。アカウント認証は既定で有効です。
 
 - [ログイン・サーバー起動](https://enderpin-docs.aomona.workers.dev/launch)
 - [MODの追加・更新](https://enderpin-docs.aomona.workers.dev/packages)
@@ -26,7 +27,7 @@ enderpin launch
 - [Velocity・複数サーバー・Ansible CD](docs/deployment.md)
 - [開発・ビルド手順](https://enderpin-docs.aomona.workers.dev/contributing)
 
-> ドキュメントはmainブランチの仕様です。`files/`・`run/` の新構成は公開版v0.1.3には含まれません。利用する場合は[ソース版](https://enderpin-docs.aomona.workers.dev/installation#最新のソース版)をインストールしてください。
+> ドキュメントはmainブランチの仕様です。新CLIと `files/`・`run/` の新構成は公開版v0.1.3には含まれません。利用する場合は[ソース版](https://enderpin-docs.aomona.workers.dev/installation#最新のソース版)をインストールしてください。
 
 ## ライセンス
 

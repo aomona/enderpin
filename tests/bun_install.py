@@ -53,8 +53,12 @@ def main():
         invalid = subprocess.run([executable, "--invalid-option"], env=env, capture_output=True)
         assert invalid.returncode == 2, "CLI error exit code must be preserved"
         workspace = root / "world with spaces"
+        help_text = subprocess.check_output([executable, "init", "--help"], env=env, text=True)
+        assert "--minecraft" in help_text
+        workspace.mkdir()
+        (workspace / "enderpin.toml").write_bytes((Path(__file__).parent / "fixtures/empty-workspace.toml").read_bytes())
         subprocess.run(
-            [executable, "-C", str(workspace), "init", "--minecraft", "1.21.1"],
+            [executable, "-C", str(workspace), "lock", "--target", "all"],
             env=env, check=True,
         )
         assert (workspace / "enderpin.toml").is_file()

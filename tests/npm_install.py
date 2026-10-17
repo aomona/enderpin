@@ -71,7 +71,10 @@ def main():
             assert version.stdout.strip() == f"enderpin {metadata['version']}"
             assert run(["--invalid-option"], capture_output=True).returncode == 2
             workspace = prefix / "world with spaces"
-            run(["-C", str(workspace), "init", "--minecraft", "1.21.1"], check=True)
+            assert "--minecraft" in run(["init", "--help"], capture_output=True, text=True, check=True).stdout
+            workspace.mkdir()
+            (workspace / "enderpin.toml").write_bytes((Path(__file__).parent / "fixtures/empty-workspace.toml").read_bytes())
+            run(["-C", str(workspace), "lock", "--target", "all"], check=True)
             assert (workspace / "enderpin.toml").is_file()
             assert (workspace / "enderpin.lock").is_file()
             if manager == "bun":

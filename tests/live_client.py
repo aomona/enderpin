@@ -28,12 +28,12 @@ def main():
             shutil.copyfile(args.workspace / name, root / name)
         base = [str(binary), "-C", str(root)]
         for side in ["server", "client"]:
-            cmd = base + ["--target", side]
-            subprocess.run(cmd + ["prepare", "--locked", "--offline"], check=True, capture_output=True, timeout=240)
-            result = subprocess.run(cmd + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
+            cmd = base + ["sync", "--target", side]
+            subprocess.run(cmd + ["--locked", "--offline"], check=True, capture_output=True, timeout=240)
+            result = subprocess.run(base + ["permissions", "show", "--target", side, "--json"], check=True, capture_output=True, text=True, timeout=30)
             plan = json.loads(result.stdout)
             assert not plan["plan"]["folders"]
-            subprocess.run(cmd + ["permissions", "approve", plan["fingerprint"]], check=True, capture_output=True, timeout=30)
+            subprocess.run(base + ["permissions", "--target", side, "approve", plan["fingerprint"]], check=True, capture_output=True, timeout=30)
         game = root / "run" / "server"
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -53,9 +53,9 @@ def main():
                     time.sleep(0.25)
                 raise RuntimeError("timeout waiting for " + fragment + ":\n" + path.read_text(errors="replace")[-10000:])
             try:
-                server = subprocess.Popen(base + ["--target", "server", "launch", "--offline", "--accept-eula", "--memory", "1024"], stdin=subprocess.PIPE, stdout=server_log, stderr=subprocess.STDOUT, text=True)
+                server = subprocess.Popen(base + ["run", "--target", "server", "--offline", "--accept-eula", "--memory", "1024"], stdin=subprocess.PIPE, stdout=server_log, stderr=subprocess.STDOUT, text=True)
                 until(root / "server.log", "Done (", server)
-                client = subprocess.Popen(base + ["--target", "client", "launch", "--offline", "--connect", f"127.0.0.1:{port}", "--memory", "2048"], stdin=subprocess.DEVNULL, stdout=client_log, stderr=subprocess.STDOUT, text=True)
+                client = subprocess.Popen(base + ["run", "--target", "client", "--offline", "--connect", f"127.0.0.1:{port}", "--memory", "2048"], stdin=subprocess.DEVNULL, stdout=client_log, stderr=subprocess.STDOUT, text=True)
                 until(root / "server.log", "joined the game", client)
                 # Minecraft must not persist a private signing key in its old cache.
                 for path in (root / "run/client/profilekeys").glob("**/*"):

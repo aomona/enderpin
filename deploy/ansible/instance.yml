@@ -117,7 +117,7 @@
     - name: Verify and cache all locked downloads before stopping the live server
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ staged.path }}/enderpin", -C, "{{ staged.path }}", --cache-dir, "{{ instance_root }}/cache", --target, server, --no-interactive, prepare, --locked]
+        argv: ["{{ staged.path }}/enderpin", -C, "{{ staged.path }}", --cache-dir, "{{ instance_root }}/cache", sync, --target, server, --locked]
       changed_when: false
     - name: Install instance service
       ansible.builtin.template:
@@ -158,17 +158,17 @@
     - name: Restore managed files from the fixed lock after backup
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", --target, server, --no-interactive, restore, --offline, --no-ignore]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", restore, --target, server, --offline, --no-ignore]
       changed_when: true
     - name: Verify the installed runtime offline
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", --target, server, --no-interactive, prepare, --locked, --offline]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", sync, --target, server, --locked, --offline]
       changed_when: false
     - name: Inspect the exact installed permission plan
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", --target, server, --json, permissions, show]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, show, --target, server, --json]
       register: installed_plan
       changed_when: false
       no_log: true
@@ -179,7 +179,7 @@
     - name: Apply permissions authorized by the deployed commit
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", --target, server, --no-interactive, permissions, approve, "{{ (installed_plan.stdout | from_json).fingerprint }}"]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, --target, server, --no-interactive, approve, "{{ (installed_plan.stdout | from_json).fingerprint }}"]
       changed_when: true
       no_log: true
     - name: Launch with approval verification and sandbox enforcement

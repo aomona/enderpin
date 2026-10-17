@@ -25,7 +25,7 @@ workspace/
 たとえば両側で使うMOD設定を `files/common/config/example.json` に置き、`enderpin sync --target all --locked` を実行します。`run/client/config/example.json` と `run/server/config/example.json` にコピーされます。サーバーだけ異なる設定にするには `files/server/config/example.json` を置きます。
 
 - 対象ごとに `files/common/` → `files/client/` または `files/server/` の順で反映し、同じ相対パスは対象側が優先されます。ファイル単位の置き換えで、JSONやTOMLのキーのマージはしません。
-- `sync`・`prepare`・`launch` の同期処理で反映します。`lock` はファイルを配置しません。`.enderpinignore` はパッケージ用で、共有ファイルには適用しません。
+- `sync`・`run` の同期処理で反映します。`lock` はファイルを配置しません。`.enderpinignore` はパッケージ用で、共有ファイルには適用しません。
 - 取得するMODなどは従来どおり `enderpin.toml` と `enderpin.lock` で管理します。共有ファイルはGitのリビジョンで固定し、ロックファイルには追加しません。`--locked --offline` でも、現在チェックアウトしている `files/` の内容を反映します。
 - 管理パッケージと共有ファイルの配置先が重なる場合、大小文字だけが異なる共有パス、ファイルとディレクトリが重なる構成、シンボリックリンク・reparse pointは拒否します。
 - `files/` に認証情報・秘密鍵・個人のワールドを置かないでください。置いたファイルは共有・同期の対象になります。

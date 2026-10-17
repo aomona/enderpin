@@ -19,16 +19,18 @@ binary = Path(__file__).resolve().parents[1] / "target" / "debug" / (
 
 
 def run(root, cache, *args, success=True):
+    output = [] if args[0] == "init" else ["--json"]
+    prompts = ["--no-interactive"] if args[0] in {"init", "add", "search"} else []
     result = subprocess.run(
-        [str(binary), "-C", str(root), "--cache-dir", str(cache), "--no-interactive", "--json", *args],
-        capture_output=True, text=True, timeout=240,
+        [str(binary), "-C", str(root), "--cache-dir", str(cache), *args, *output, *prompts],
+        capture_output=True, text=True, timeout=1800 if args[0] == "init" else 240,
     )
     if success and result.returncode:
         raise AssertionError(result.stderr)
     if not success:
         assert result.returncode, "expected rejection"
         return result.stderr
-    return json.loads(result.stdout)
+    return json.loads(result.stdout) if output else None
 
 
 def inspect(root, side):
@@ -47,12 +49,18 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     origin, clone, cache = base / "origin", base / "clone", base / "cache"
     origin.mkdir()
     clone.mkdir()
-    run(origin, cache, "init", "--minecraft", "1.21.1")
+    run(origin, cache, "init", "--minecraft", "1.21.1", "--loader", "fabric", "--loader-version", "0.16.10", "--target", "all")
     search = run(origin, cache, "search", "sodium")
     assert any(p["slug"] == "sodium" for p in search["hits"])
     run(origin, cache, "add", "sodium", "--target", "all")
     run(origin, cache, "add", "lithium", "--target", "all")
     run(origin, cache, "add", "iris", "--target", "client")
+    sodium_pin = next(p for p in inspect(origin, "client") if p["name"] == "sodium")["version"]
+    run(origin, cache, "add", "sodium", "--version-id", sodium_pin, "--target", "all")
+    run(origin, cache, "update", "--target", "all")
+    lock = tomllib.loads((origin / "enderpin.lock").read_text())
+    assert all(runtime["loader_version"] == "0.16.10" for runtime in lock["runtimes"].values())
+    assert next(p for p in inspect(origin, "client") if p["name"] == "sodium")["version"] == sodium_pin
     client = inspect(origin, "client")
     server = inspect(origin, "server")
     assert any(p["name"] == "sodium" for p in client)
@@ -83,14 +91,14 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     # URL mode uses the same public artifact through its explicit file URL.
     urls = base / "urls"
     urls.mkdir()
-    run(urls, cache, "init", "--minecraft", "1.21.1")
+    run(urls, cache, "init", "--minecraft", "1.21.1", "--loader", "fabric")
     run(urls, cache, "add", sodium["url"], "--kind", "mod", "--name", "custom-sodium")
     url_package = inspect(urls, "client")[0]
     assert url_package["sha512"] == sodium["sha512"]
     run(urls, cache, "remove", "custom-sodium")
     assert not list((urls / "run/client/mods").iterdir())
     print(json.dumps({
-        "search": "passed", "client_artifacts": len(client), "server_artifacts": len(server),
+        "search": "passed", "update_preserves_explicit_pins": "passed", "client_artifacts": len(client), "server_artifacts": len(server),
         "offline_clone": "passed", "manual_change_and_restore": "passed", "ignore_dependency_check": "passed",
         "https_url_and_remove": "passed", "game_launch": "not exercised",
         "artifacts": [{"name": p["name"], "version": p.get("version"), "sha512": p["sha512"]} for p in client],

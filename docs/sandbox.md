@@ -9,7 +9,7 @@ client / serverごとに、ゲーム全体へ許可する範囲を選びます�
 
 ```sh
 enderpin permissions
-enderpin --target server permissions
+enderpin permissions --target server
 ```
 
 「Game permissions」で通信・ゲームフォルダの書き込み・クライアントのアカウント認証などを選び、
@@ -25,7 +25,7 @@ enderpin --target server permissions
 ```sh
 enderpin permissions show       # 読みやすい一覧と承認状態
 enderpin permissions approve    # 一覧を見て確認。ハッシュの入力は不要
-enderpin launch                # 未承認なら、起動前に同じ確認を表示
+enderpin run                   # 未承認なら、起動前に同じ確認を表示
 enderpin permissions revoke     # 承認を取り消す
 ```
 
@@ -35,14 +35,14 @@ enderpin permissions revoke     # 承認を取り消す
 表示後と起動直前に内容を再確認します。起動直前は対象の実行ロックも保持します。
 実行中の承認・設定・外部フォルダ変更は、ゲームを停止してから行います。
 
-`quick` はファイルを取得する初期セットアップです。起動も権限の自動承認も行いません。
-バニラの `launch --no-sandbox` は明示的にOS制限を無効にします（設定には保存しません）。
+`init` はファイルを取得する初期セットアップです。起動も権限の自動承認も行いません。
+バニラの `run --no-sandbox` は明示的にOS制限を無効にします（設定には保存しません）。
 `--no-network` との併用はできません。Windowsでは子プロセス回収用のJob Objectを維持します。
 
 ### 自動化する場合
 
 非対話では、調べた計画をハッシュで指定して承認する方法を残しています。
-`--yes` では権限を自動承認しません。
+`--yes` は `init`・`add`・`search` の省略可能な確認だけを扱い、権限を自動承認しません。`run` と `permissions` には指定できません。
 
 ```sh
 enderpin permissions show --json
@@ -74,7 +74,7 @@ game = "read-only"
 
 標準では通信・ゲームフォルダへの書き込み・音声・デスクトップ連携・スキンキャッシュ・描画キャッシュを許可し、
 ナレーター・クリップボード・外部リンク・フォルダ表示・ファイル取り込みを許可します。
-`init` と `quick` はともにアカウント認証を有効にします。既存設定の明示的な禁止は変更しません。
+`init` はアカウント認証を有効にします。既存設定の明示的な禁止は変更しません。
 `open_links`, `open_folders`, `import_files`, `narrator` はそれぞれ `false` で禁止できます。
 ファイル取り込みの許可は、ホスト側の選択・確認画面を使う許可です。ホーム全体の読み取り許可ではありません。
 `permissions.files.game` は `"read-write"`（標準）または `"read-only"` です。
@@ -88,7 +88,7 @@ game = "read-only"
 Linuxの描画キャッシュは `.enderpin/client/cache/graphics`、macOSはOSユーザーのJava Metalキャッシュです。
 macOSの描画キャッシュは同じOSユーザーの他のJavaアプリと共有されます。
 
-`launch --no-network` は、その起動だけゲームの通信許可を狭めます。
+`run --no-network` は、その起動だけゲームの通信許可を狭めます。
 通信許可はIPの送受信・LAN・待ち受けをまとめて扱います。ポート・ドメイン単位では制御しません。
 
 ## 外部フォルダ
