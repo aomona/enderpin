@@ -34,6 +34,7 @@ pub struct OfficialOperations {
     attributes_schema: UserAttributesSchema,
     client: Client,
     chat_keys: ChatKeys,
+    pub(crate) minecraft_version: String,
     #[cfg(test)]
     test_origin: Option<String>,
 }
@@ -58,11 +59,12 @@ impl OfficialOperations {
             attributes_schema,
             client,
             chat_keys: ChatKeys::default(),
+            minecraft_version: String::new(),
             #[cfg(test)]
             test_origin: None,
         })
     }
-    fn endpoint(&self, official: &'static str) -> String {
+    fn endpoint(&self, official: &str) -> String {
         #[cfg(test)]
         if let Some(origin) = &self.test_origin {
             let path = reqwest::Url::parse(official).expect("constant official URL");
@@ -138,7 +140,94 @@ impl Operations for OfficialOperations {
                 self.chat_keys
                     .sign(key_id, message, &self.account_id, SystemTime::now())
             }
-            Command::Hello {} => Err(BrokerError::Unsupported),
+            Command::Report { body } => {
+                if !body.is_object() || body.to_string().len() > 512 * 1024 {
+                    return Err(BrokerError::InvalidRequest);
+                }
+                let response = self
+                    .client
+                    .post(self.endpoint("https://api.minecraftservices.com/player/report"))
+                    .bearer_auth(&session.access_token)
+                    .json(body)
+                    .send()
+                    .map_err(|_| BrokerError::Unavailable)?;
+                if response.status().is_success() {
+                    Ok(Value::Null)
+                } else {
+                    Err(status_error(response.status()))
+                }
+            }
+            Command::Realms {
+                method,
+                path,
+                body,
+                headers,
+            }
+            | Command::GameServices {
+                method,
+                path,
+                body,
+                headers,
+            } => {
+                let services = matches!(command, Command::GameServices { .. });
+                let url = if services {
+                    game_services_url(method, path, body, headers)?
+                } else {
+                    realms_url(method, path, body, headers)?
+                };
+                let response = self
+                    .client
+                    .request(
+                        method.parse().map_err(|_| BrokerError::InvalidRequest)?,
+                        self.endpoint(url.as_str()),
+                    )
+                    .header(
+                        reqwest::header::CONTENT_TYPE,
+                        "application/json; charset=utf-8",
+                    );
+                let mut request = if services {
+                    response.bearer_auth(&session.access_token)
+                } else {
+                    response.header(
+                        reqwest::header::COOKIE,
+                        format!(
+                            "sid=token:{}:{};user={};version={}",
+                            session.access_token,
+                            session.uuid,
+                            session.name,
+                            self.minecraft_version
+                        ),
+                    )
+                };
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                let response = request
+                    .body(body.clone())
+                    .send()
+                    .map_err(|_| BrokerError::Unavailable)?;
+                let status = response.status().as_u16();
+                let mut headers = std::collections::BTreeMap::new();
+                for name in ["retry-after", "www-authenticate", "content-type", "etag"] {
+                    if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok())
+                    {
+                        headers.insert(name.to_owned(), value.to_owned());
+                    }
+                }
+                let mut bytes = Vec::new();
+                response
+                    .take((MAX_RESPONSE / 2 + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| BrokerError::Unavailable)?;
+                if bytes.len() > MAX_RESPONSE / 2 {
+                    return Err(BrokerError::InvalidResponse);
+                }
+                let body = String::from_utf8(bytes).map_err(|_| BrokerError::InvalidResponse)?;
+                Ok(json!({ "status": status, "headers": headers, "body": body }))
+            }
+            Command::Hello {} | Command::DesktopOpen { .. } | Command::ImportFiles { .. } => {
+                Err(BrokerError::Unsupported)
+            }
         };
         if !self.source.valid() {
             self.chat_keys.clear();
@@ -159,12 +248,80 @@ impl Operations for OfficialOperations {
                 Command::Certificate {} => "certificate",
                 Command::Sign { .. } => "sign",
                 Command::Hello {} => "hello",
+                Command::Report { .. } => "report",
+                Command::Realms { .. } => "realms",
+                Command::GameServices { .. } => "game_services",
+                Command::DesktopOpen { .. } => "desktop",
+                Command::ImportFiles { .. } => "import",
             };
             // Fixed operation names and our own error enum only; never log service
             // bodies, account identifiers, tokens, signatures or chat text.
             eprintln!("Enderpin authentication {operation} failed: {error}");
         })
     }
+}
+
+fn game_services_url(
+    method: &str,
+    path: &str,
+    body: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<reqwest::Url, BrokerError> {
+    // Only vanilla account services. In particular, certificates and login/token endpoints
+    // cannot bypass the dedicated private-key filter through this operation.
+    if !matches!(
+        path,
+        "/friends"
+            | "/presence"
+            | "/events"
+            | "/player/attributes"
+            | "/privacy/blocklist"
+            | "/player/report"
+    ) || !matches!(method, "GET" | "POST" | "PUT" | "DELETE")
+        || body.len() > 512 * 1024
+        || headers.iter().any(|(name, value)| {
+            !matches!(name.as_str(), "If-None-Match" | "If-Match")
+                || value.len() > 256
+                || value.chars().any(char::is_control)
+        })
+    {
+        return Err(BrokerError::InvalidRequest);
+    }
+    reqwest::Url::parse(&format!("https://api.minecraftservices.com{path}"))
+        .map_err(|_| BrokerError::InvalidRequest)
+}
+
+fn realms_url(
+    method: &str,
+    path: &str,
+    body: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<reqwest::Url, BrokerError> {
+    if !matches!(method, "GET" | "POST" | "PUT" | "DELETE")
+        || !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains(['\\', '#', '\r', '\n'])
+        || path.len() > 8192
+        || body.len() > 512 * 1024
+        || headers.iter().any(|(name, value)| {
+            !matches!(
+                name.as_str(),
+                "Is-Prerelease" | "Minecraft-Version" | "Minecraft-Protocol-Version"
+            ) || value.len() > 64
+                || value.bytes().any(|c| !c.is_ascii_graphic())
+        })
+    {
+        return Err(BrokerError::InvalidRequest);
+    }
+    let url = reqwest::Url::parse(&format!("https://pc.realms.minecraft.net{path}"))
+        .map_err(|_| BrokerError::InvalidRequest)?;
+    if url.host_str() != Some("pc.realms.minecraft.net")
+        || url.scheme() != "https"
+        || !url.username().is_empty()
+    {
+        return Err(BrokerError::InvalidRequest);
+    }
+    Ok(url)
 }
 
 pub(super) fn status_error(status: reqwest::StatusCode) -> BrokerError {
@@ -233,7 +390,7 @@ fn sanitize_properties(value: Value, schema: UserAttributesSchema) -> Result<Val
             .ok_or(BrokerError::InvalidResponse)?;
         privileges.insert(key.into(), json!({ "enabled": enabled }));
     }
-    let filter = value["profanityFilterPreferences"]["enabled"]
+    let filter = value["profanityFilterPreferences"]["profanityFilterOn"]
         .as_bool()
         .ok_or(BrokerError::InvalidResponse)?;
     let scopes = value["banStatus"]["bannedScopes"]
@@ -261,7 +418,7 @@ fn sanitize_properties(value: Value, schema: UserAttributesSchema) -> Result<Val
         }
         bans.insert(scope.clone(), Value::Object(clean));
     }
-    let mut clean = json!({ "privileges": privileges, "profanityFilterPreferences": { "enabled": filter }, "banStatus": { "bannedScopes": bans } });
+    let mut clean = json!({ "privileges": privileges, "profanityFilterPreferences": { "profanityFilterOn": filter }, "banStatus": { "bannedScopes": bans } });
     // authlib 9 consumes these restrictions too. Missing values are not grants.
     for (group, fields, allowed) in [
         (
@@ -353,7 +510,12 @@ mod tests {
             bytes.resize(header + length, 0);
             socket.read_exact(&mut bytes[header..]).unwrap();
             before_reply();
-            socket.write_all(response.as_bytes()).unwrap();
+            if let Err(error) = socket.write_all(response.as_bytes()) {
+                assert!(matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                ));
+            }
             bytes
         });
         let valid = Arc::new(AtomicBool::new(true));
@@ -365,6 +527,98 @@ mod tests {
         .unwrap();
         operations.test_origin = Some(origin);
         (operations, worker, valid)
+    }
+
+    #[test]
+    fn realms_pins_origin_and_host_credentials_and_preserves_errors() {
+        for path in ["//evil.example/", "/\\evil.example/", "/x#fragment", "/x\n"] {
+            assert!(realms_url("GET", path, "", &Default::default()).is_err());
+        }
+        assert!(realms_url("CONNECT", "/", "", &Default::default()).is_err());
+        assert!(
+            realms_url(
+                "GET",
+                "/",
+                "",
+                &std::collections::BTreeMap::from([("Cookie".into(), "sid=stolen".into())])
+            )
+            .is_err()
+        );
+        let (mut operations, worker, _) =
+            fixture("503 Unavailable\r\nRetry-After: 9", "busy".into(), || {});
+        operations.minecraft_version = "1.21.1".into();
+        let response = operations
+            .execute(&Command::Realms {
+                method: "GET".into(),
+                path: "/worlds".into(),
+                body: String::new(),
+                headers: Default::default(),
+            })
+            .unwrap();
+        assert_eq!(response["status"], 503);
+        assert_eq!(response["headers"]["retry-after"], "9");
+        assert_eq!(response["body"], "busy");
+        let request = String::from_utf8(worker.join().unwrap()).unwrap();
+        assert!(request.starts_with("GET /worlds HTTP/1.1"));
+        assert!(request.contains("sid=token:only-the-test-parent-has-this-credential:0123456789abcdef0123456789abcdef;user=Probe;version=1.21.1"));
+        assert!(!response.to_string().contains("only-the-test-parent"));
+    }
+
+    #[test]
+    fn vanilla_services_cannot_fetch_credentials_or_change_the_origin() {
+        for path in [
+            "/player/certificates",
+            "/authentication/login_with_xbox",
+            "//evil.example/friends",
+            "/friends/../player/certificates",
+            "/friends?redirect=evil",
+        ] {
+            assert!(game_services_url("GET", path, "", &Default::default()).is_err());
+        }
+        assert!(
+            game_services_url(
+                "GET",
+                "/friends",
+                "",
+                &std::collections::BTreeMap::from([(
+                    "Authorization".into(),
+                    "Bearer attacker".into()
+                )])
+            )
+            .is_err()
+        );
+        let (mut operations, worker, _) =
+            fixture("304 Not Modified\r\nETag: test-tag", String::new(), || {});
+        let response = operations
+            .execute(&Command::GameServices {
+                method: "GET".into(),
+                path: "/friends".into(),
+                body: String::new(),
+                headers: std::collections::BTreeMap::from([(
+                    "If-None-Match".into(),
+                    "test-tag".into(),
+                )]),
+            })
+            .unwrap();
+        assert_eq!(response["status"], 304);
+        assert_eq!(response["headers"]["etag"], "test-tag");
+        let request = String::from_utf8(worker.join().unwrap()).unwrap();
+        assert!(request.contains("authorization: Bearer only-the-test-parent-has-this-credential"));
+        assert!(!request.contains("cookie:"));
+    }
+
+    #[test]
+    fn report_uses_fixed_endpoint_and_revocable_account() {
+        let (mut operations, worker, _) = fixture("204 No Content", String::new(), || {});
+        assert_eq!(
+            operations.execute(&Command::Report {
+                body: json!({"report": "synthetic test"})
+            }),
+            Ok(Value::Null)
+        );
+        let request = String::from_utf8(worker.join().unwrap()).unwrap();
+        assert!(request.starts_with("POST /player/report HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer only-the-test-parent-has-this-credential"));
     }
 
     #[test]
@@ -500,7 +754,7 @@ mod tests {
         ] {
             privileges.insert(key.into(), json!({ "enabled": false }));
         }
-        let clean = sanitize_properties(json!({ "privileges": privileges, "profanityFilterPreferences": { "enabled": true }, "banStatus": { "bannedScopes": {} }, "accessToken": "not-returned" }), UserAttributesSchema::Authlib6).unwrap();
+        let clean = sanitize_properties(json!({ "privileges": privileges, "profanityFilterPreferences": { "profanityFilterOn": true }, "banStatus": { "bannedScopes": {} }, "accessToken": "not-returned" }), UserAttributesSchema::Authlib6).unwrap();
         assert_eq!(clean["privileges"]["multiplayerServer"]["enabled"], false);
         assert!(clean.get("accessToken").is_none());
         assert!(sanitize_properties(clean.clone(), UserAttributesSchema::Authlib9).is_err());

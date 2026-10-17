@@ -1,5 +1,6 @@
-//! Preparation of pinned Minecraft, Fabric and Temurin runtimes.
+//! Preparation of pinned Minecraft, Fabric, Paper, Velocity and Temurin runtimes.
 mod archive;
+mod papermc;
 
 use std::{
     collections::BTreeMap,
@@ -178,6 +179,8 @@ pub struct RuntimeLock {
     pub java: JavaLock,
     pub fabric_libraries: Vec<Download>,
     pub fabric_jvm: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_jar: Option<Download>,
 }
 
 impl RuntimeLock {
@@ -194,7 +197,7 @@ impl RuntimeLock {
         identifier(&self.minecraft)?;
         identifier(&self.loader_version)?;
         ensure!(
-            ["vanilla", "fabric"].contains(&self.loader.as_str()),
+            ["vanilla", "fabric", "paper", "velocity"].contains(&self.loader.as_str()),
             "unsupported runtime"
         );
         self.metadata.validate()?;
@@ -205,6 +208,18 @@ impl RuntimeLock {
         for archive in self.java.platforms.values() {
             archive.validate()?;
         }
+        if matches!(self.loader.as_str(), "paper" | "velocity") {
+            self.server_jar
+                .as_ref()
+                .context("server runtime jar is missing")?
+                .validate()?;
+            ensure!(
+                self.fabric_libraries.is_empty() && self.fabric_jvm.is_empty(),
+                "server jar cannot contain Fabric libraries or arguments"
+            );
+        } else {
+            ensure!(self.server_jar.is_none(), "unexpected server runtime jar");
+        }
         if self.loader == "vanilla" {
             ensure!(
                 self.loader_version == self.minecraft
@@ -212,7 +227,7 @@ impl RuntimeLock {
                     && self.fabric_jvm.is_empty(),
                 "vanilla runtime must not contain loader libraries or arguments"
             );
-        } else {
+        } else if self.loader == "fabric" {
             ensure!(
                 !self.fabric_libraries.is_empty() && self.fabric_libraries.len() <= 256,
                 "invalid Fabric library count"
@@ -588,8 +603,8 @@ pub fn resolve(
         return Ok(previous.clone());
     }
     ensure!(
-        ["fabric", "vanilla"].contains(&manifest.target(side).loader.as_str()),
-        "runtime preparation supports Fabric and vanilla"
+        ["fabric", "vanilla", "paper", "velocity"].contains(&manifest.target(side).loader.as_str()),
+        "runtime preparation supports Fabric, vanilla, Paper and Velocity"
     );
     let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
     let entry = versions
@@ -614,6 +629,26 @@ pub fn resolve(
         .as_ref()
         .map(|j| j.major_version)
         .context("Minecraft metadata does not declare its Java version")?;
+    if matches!(manifest.target(side).loader.as_str(), "paper" | "velocity") {
+        ensure!(
+            side == Side::Server,
+            "server runtime requested for a client"
+        );
+        let (loader_version, server_jar, java_major) = papermc::resolve(manifest)?;
+        let runtime = RuntimeLock {
+            fingerprint,
+            minecraft: manifest.minecraft.clone(),
+            loader: manifest.target(side).loader.clone(),
+            loader_version,
+            metadata,
+            java: java_lock(java_major)?,
+            fabric_libraries: vec![],
+            fabric_jvm: vec![],
+            server_jar: Some(server_jar),
+        };
+        runtime.validate()?;
+        return Ok(runtime);
+    }
     if manifest.target(side).loader == "vanilla" {
         let runtime = RuntimeLock {
             fingerprint,
@@ -624,6 +659,7 @@ pub fn resolve(
             java: java_lock(major)?,
             fabric_libraries: vec![],
             fabric_jvm: vec![],
+            server_jar: None,
         };
         runtime.validate()?;
         return Ok(runtime);
@@ -715,6 +751,7 @@ pub fn resolve(
         java: java_lock(major)?,
         fabric_libraries,
         fabric_jvm: arguments(&profile.arguments.jvm, &BTreeMap::new())?,
+        server_jar: None,
     };
     runtime.validate()?;
     Ok(runtime)
@@ -793,6 +830,10 @@ pub fn prepare(
     mut progress: impl FnMut(&str),
 ) -> Result<PreparedRuntime> {
     lock.validate()?;
+    ensure!(
+        side == Side::Server || lock.server_jar.is_none(),
+        "server jar cannot run as a client"
+    );
     progress("Minecraft metadata");
     let metadata: GameMetadata = read_json(&lock.metadata.acquire(cache, offline)?)?;
     ensure!(
@@ -848,16 +889,22 @@ pub fn prepare(
         classpath.push(library.acquire(cache, offline)?);
     }
     progress("Minecraft game files");
-    let game_download = metadata
-        .downloads
-        .get(side.name())
-        .context("Minecraft distribution does not contain this target")?
-        .download(format!("minecraft-{}-{}.jar", lock.minecraft, side.name()));
+    let game_download = if let Some(jar) = &lock.server_jar {
+        jar.clone()
+    } else {
+        metadata
+            .downloads
+            .get(side.name())
+            .context("Minecraft distribution does not contain this target")?
+            .download(format!("minecraft-{}-{}.jar", lock.minecraft, side.name()))
+    };
     let original_game = game_download.acquire(cache, offline)?;
     let game_jar;
     let mut assets = None;
     let mut asset_index = None;
-    if side == Side::Server {
+    if lock.server_jar.is_some() {
+        game_jar = original_game;
+    } else if side == Side::Server {
         let (jar, libraries) = server_bundle(&original_game, &runtime_cache, &game_download.hash)?;
         game_jar = jar;
         classpath.extend(libraries);
@@ -1084,6 +1131,47 @@ fn server_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn server_jar_lock_requires_hash_and_rejects_client_use() -> Result<()> {
+        let download = Download {
+            url: "https://fill-data.papermc.io/server.jar".into(),
+            filename: "server.jar".into(),
+            algorithm: Algorithm::Sha256,
+            hash: "a".repeat(64),
+            size: Some(42),
+        };
+        let mut lock = RuntimeLock {
+            fingerprint: "b".repeat(128),
+            minecraft: "1.21.1".into(),
+            loader: "paper".into(),
+            loader_version: "133".into(),
+            metadata: download.clone(),
+            java: JavaLock {
+                release: "test".into(),
+                major: 21,
+                platforms: BTreeMap::from([("test".into(), download.clone())]),
+            },
+            fabric_libraries: vec![],
+            fabric_jvm: vec![],
+            server_jar: Some(download),
+        };
+        lock.validate()?;
+        let temp = tempfile::tempdir()?;
+        let cache = Cache::open(temp.path())?;
+        let error = prepare(&lock, Side::Client, &cache, true, |_| {})
+            .err()
+            .context("client accepted server jar")?;
+        assert!(
+            error
+                .to_string()
+                .contains("server jar cannot run as a client")
+        );
+        lock.server_jar.as_mut().context("server jar")?.hash.clear();
+        assert!(lock.validate().is_err());
+        lock.server_jar = None;
+        assert!(lock.validate().is_err());
+        Ok(())
+    }
     #[test]
     fn latest_uses_stable_release_and_vanilla_rejects_mods() -> Result<()> {
         let list: VersionList = serde_json::from_value(serde_json::json!({

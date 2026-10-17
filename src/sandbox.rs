@@ -69,6 +69,7 @@ impl Policy {
 
     pub fn read_only_game(&self) -> Result<Vec<PathBuf>> {
         self.permissions
+            .files
             .read_only
             .iter()
             .map(|dir| crate::storage::safe_path(&self.game, dir.name()))
@@ -88,7 +89,7 @@ impl Policy {
         grants.extend([
             FolderGrant {
                 path: self.game.clone(),
-                write: self.permissions.game_write,
+                write: self.permissions.files.game.writable(),
             },
             FolderGrant {
                 path: self.temporary.clone(),
@@ -247,7 +248,7 @@ fn platform_command(java: &Path, policy: &Policy) -> Result<Command> {
         if policy.permissions.microphone == Some(true) {
             profile.push_str("\n(allow device-microphone)\n");
         }
-        if policy.permissions.clipboard == Some(true) {
+        if policy.permissions.clipboard_allowed() {
             profile.push_str("\n(allow mach-lookup (global-name \"com.apple.pasteboard.1\"))\n");
         }
     }

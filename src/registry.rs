@@ -39,7 +39,7 @@ fn pinned_client(
         .user_agent(concat!(
             "enderpin/",
             env!("CARGO_PKG_VERSION"),
-            " (Minecraft workspace manager)"
+            " (https://github.com/aomona/enderpin)"
         ))
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))
@@ -204,10 +204,12 @@ impl Version {
             && match kind {
                 Kind::Mod => self.loaders.iter().any(|l| l == loader),
                 Kind::Plugin => {
-                    self.loaders
-                        .iter()
-                        .any(|l| ["paper", "spigot", "bukkit"].contains(&l.as_str()))
-                        && loader == "paper"
+                    (loader == "paper"
+                        && self
+                            .loaders
+                            .iter()
+                            .any(|l| ["paper", "spigot", "bukkit"].contains(&l.as_str())))
+                        || (loader == "velocity" && self.loaders.iter().any(|l| l == "velocity"))
                 }
                 Kind::Resourcepack => self.loaders.iter().any(|l| l == "minecraft"),
                 Kind::Shader => self

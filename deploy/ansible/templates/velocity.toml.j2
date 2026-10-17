@@ -1,0 +1,15 @@
+config-version = "2.7"
+bind = {{ (instance.address ~ ':' ~ instance.port) | to_json }}
+motd = {{ instance.get('motd', 'Minecraft') | to_json(ensure_ascii=false) }}
+show-max-players = {{ instance.get('show_max_players', 20) }}
+online-mode = true
+player-info-forwarding-mode = "modern"
+forwarding-secret-file = "forwarding.secret"
+
+[servers]
+{% for name, address in enderpin_backends.items() | sort %}
+{{ name | to_json }} = {{ address | to_json }}
+{% endfor %}
+try = {{ enderpin_try | to_json }}
+
+[forced-hosts]

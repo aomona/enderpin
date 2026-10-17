@@ -1,0 +1,22 @@
+client
+proto udp4
+dev epvpn
+dev-type tun
+remote {{ enderpin_vpn.endpoint }} {{ enderpin_vpn.port }}
+nobind
+resolv-retry infinite
+route-nopull
+ca /etc/openvpn/client/enderpin/ca.crt
+cert /etc/openvpn/client/enderpin/client.crt
+key /etc/openvpn/client/enderpin/client.key
+tls-crypt /etc/openvpn/client/enderpin/tls-crypt.key
+remote-cert-tls server
+verify-x509-name enderpin-gateway name
+tls-version-min 1.2
+data-ciphers AES-128-GCM:CHACHA20-POLY1305:AES-256-GCM
+allow-compression no
+persist-key
+persist-tun
+user nobody
+group nogroup
+verb 3

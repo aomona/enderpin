@@ -1,0 +1,84 @@
+- name: Deploy locked Minecraft workspaces
+  hosts: minecraft
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    enderpin_source_root: "{{ playbook_dir }}/../.."
+  pre_tasks:
+    - name: Validate deployment identity and platform
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.os_family == 'Debian'
+          - enderpin_root is match('^/[a-zA-Z0-9/_-]+$')
+          - enderpin_root not in ['/', '/srv', '/var', '/home', '/usr', '/etc']
+          - enderpin_revision is match('^[0-9a-f]{40}$')
+          - enderpin_instances | enderpin_instances | length > 0
+          - enderpin_backend_interface is match('^[a-zA-Z0-9_-]{1,15}$')
+          - enderpin_proxy_address | enderpin_ipv4 == enderpin_proxy_address
+          - enderpin_backends | enderpin_backends | length > 0
+    - name: Require one persistent forwarding secret
+      ansible.builtin.assert:
+        that: enderpin_forwarding_secret is match('^[0-9a-f]{64}$')
+      no_log: true
+    - name: Install host tools
+      ansible.builtin.apt:
+        name: [acl, bubblewrap, nftables, tar, ca-certificates]
+        update_cache: true
+        state: present
+    - name: Allow bubblewrap user namespaces on Ubuntu with AppArmor
+      ansible.builtin.copy:
+        dest: /etc/apparmor.d/enderpin-bwrap
+        content: |
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile enderpin-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+        mode: '0644'
+      when: ansible_facts.distribution == 'Ubuntu' and ansible_facts.distribution_version is version('24.04', '>=')
+      register: enderpin_apparmor
+    - name: Load bubblewrap AppArmor profile
+      ansible.builtin.command:
+        argv: [apparmor_parser, -r, /etc/apparmor.d/enderpin-bwrap]
+      when: enderpin_apparmor is changed
+      changed_when: true
+    - name: Create firewall configuration directory
+      ansible.builtin.file:
+        path: /etc/enderpin
+        state: directory
+        mode: '0755'
+    - name: Render rules protecting backend ports over IPv4 and IPv6
+      ansible.builtin.template:
+        src: templates/firewall.nft.j2
+        dest: /etc/enderpin/firewall.nft
+        mode: '0644'
+        validate: /usr/sbin/nft -c -f %s
+      register: enderpin_firewall
+    - name: Install firewall service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/enderpin-firewall.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Enderpin backend port protection
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/sbin/nft -f /etc/enderpin/firewall.nft
+          RemainAfterExit=yes
+          [Install]
+          WantedBy=multi-user.target
+      register: enderpin_firewall_unit
+    - name: Apply firewall before launching instances
+      ansible.builtin.systemd_service:
+        name: enderpin-firewall
+        enabled: true
+        daemon_reload: true
+        state: "{{ 'restarted' if enderpin_firewall is changed or enderpin_firewall_unit is changed else 'started' }}"
+  tasks:
+    - name: Deploy instances one at a time
+      ansible.builtin.include_tasks: instance.yml
+      loop: "{{ enderpin_instances }}"
+      loop_control:
+        loop_var: instance
+        label: "{{ instance.name }}"

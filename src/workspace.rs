@@ -144,7 +144,6 @@ impl Workspace {
         let mut manifest = Manifest::new(minecraft)?;
         for side in Side::ALL {
             manifest.target_mut(side).loader = "vanilla".into();
-            manifest.target_mut(side).sandbox.account_authentication = false;
         }
         manifest.validate()?;
         Ok(manifest)

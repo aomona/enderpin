@@ -9,14 +9,16 @@ use crate::{Side, Workspace, model::hash_bytes, storage};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
-    pub game_write: bool,
-    pub read_only: Vec<GameDirectory>,
+    pub files: FilePermissions,
     pub network: bool,
     pub audio: bool,
     /// None means the backend's documented desktop behavior, not an enforced denial.
     pub microphone: Option<bool>,
-    pub clipboard: Option<bool>,
+    pub clipboard: Clipboard,
     pub desktop_integration: bool,
+    pub open_links: bool,
+    pub open_folders: bool,
+    pub import_files: bool,
     pub skin_cache: bool,
     pub graphics_cache: bool,
     pub narrator: bool,
@@ -25,19 +27,51 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            game_write: true,
-            read_only: vec![],
+            files: FilePermissions::default(),
             network: true,
             audio: true,
             microphone: None,
-            clipboard: None,
+            clipboard: Clipboard::System,
             desktop_integration: true,
+            open_links: true,
+            open_folders: true,
+            import_files: true,
             skin_cache: true,
             graphics_cache: true,
-            narrator: false,
+            narrator: true,
             account_authentication: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilePermissions {
+    pub game: FileAccess,
+    pub read_only: Vec<GameDirectory>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileAccess {
+    ReadOnly,
+    #[default]
+    ReadWrite,
+}
+impl FileAccess {
+    pub fn writable(self) -> bool {
+        self == Self::ReadWrite
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Clipboard {
+    /// Use the backend's documented behavior, not an independently enforced grant.
+    #[default]
+    System,
+    None,
+    ReadWrite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -101,7 +135,7 @@ pub struct Plan {
 impl Plan {
     pub fn fingerprint(&self) -> Result<String> {
         // Version the approval contract independently of the package lock format.
-        Ok(hash_bytes(&serde_json::to_vec(&(3, self))?))
+        Ok(hash_bytes(&serde_json::to_vec(&(4, self))?))
     }
 }
 
@@ -165,7 +199,7 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
             .get(&side)
             .map(|runtime| serde_json::to_vec(runtime).map(|bytes| hash_bytes(&bytes)))
             .transpose()?,
-        effective: config.sandbox.clone(),
+        effective: config.permissions.clone(),
         packages: vec![],
         shared_files: ws.shared_file_hashes(side)?,
         folders: Local::load(ws, side)?.folders,
@@ -237,6 +271,11 @@ pub fn validate_folders(ws: &Workspace, folders: &[FolderGrant]) -> Result<()> {
 }
 
 impl Settings {
+    /// Vanilla clipboard access is enabled unless explicitly denied.
+    pub fn clipboard_allowed(&self) -> bool {
+        self.clipboard != Clipboard::None
+    }
+
     /// Explicit editor action; never relax a saved denial merely by opening or saving it.
     pub fn reset_unsupported_desktop(&mut self, os: &str) {
         match os {
@@ -245,12 +284,12 @@ impl Settings {
                 self.desktop_integration = true;
                 self.graphics_cache = true;
                 self.microphone = None;
-                self.clipboard = None;
+                self.clipboard = Clipboard::System;
             }
             "linux" => {
                 self.desktop_integration = true;
-                if self.clipboard == Some(false) {
-                    self.clipboard = None;
+                if self.clipboard == Clipboard::None {
+                    self.clipboard = Clipboard::System;
                 }
                 if self.microphone == Some(!self.audio) {
                     self.microphone = None;
@@ -270,6 +309,12 @@ impl Settings {
             "unsupported sandbox OS"
         );
         if desktop {
+            if self.account_authentication {
+                notes.push("Account access includes vanilla multiplayer, Realms, player reports, friends and presence. Realms and social requests also require game network access.".into());
+            }
+            if self.import_files {
+                notes.push("File imports require a host file selection or confirmation. Selected data is copied read-only into the game's import cache (up to 2 GiB per request).".into());
+            }
             match os {
                 "macos" => {
                     ensure!(
@@ -291,7 +336,7 @@ impl Settings {
                         "Linux cannot independently disable desktop integration"
                     );
                     ensure!(
-                        self.clipboard != Some(false),
+                        self.clipboard != Clipboard::None,
                         "Linux display access cannot independently deny clipboard access"
                     );
                     ensure!(
@@ -304,7 +349,7 @@ impl Settings {
                     );
                     notes.push("Linux grants the selected display protocol; X11 can expose other clients, and Wayland access is not protocol-filtered.".into());
                     if self.audio {
-                        notes.push("PulseAudio grants the full service, including recording; output-only access is not enforced.".into());
+                        notes.push("Audio grants the selected local PulseAudio/PipeWire service or ALSA devices, including recording; output-only access is not enforced.".into());
                     }
                 }
                 "windows" => {
@@ -313,7 +358,7 @@ impl Settings {
                             && self.desktop_integration
                             && self.graphics_cache
                             && self.microphone.is_none()
-                            && self.clipboard.is_none(),
+                            && self.clipboard == Clipboard::System,
                         "AppContainer cannot independently enforce audio, microphone, clipboard, desktop-integration or graphics-cache switches; leave unsupported controls at their defaults"
                     );
                     notes.push("AppContainer desktop/audio/clipboard and private profile storage are OS-controlled; independent denials are unavailable.".into());
