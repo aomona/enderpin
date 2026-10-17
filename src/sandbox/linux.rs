@@ -291,25 +291,6 @@ fn nvidia_device(name: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn gpu_device_allowlist_excludes_unrelated_devices() {
-        for name in [
-            "nvidia0",
-            "nvidia12",
-            "nvidiactl",
-            "nvidia-modeset",
-            "nvidia-uvm",
-        ] {
-            assert!(super::nvidia_device(name));
-        }
-        for name in ["nvidia", "nvidia-secret", "input", "sda", "nvidia0/escape"] {
-            assert!(!super::nvidia_device(name));
-        }
-    }
-}
-
 // Classic BPF inspects the native ABI and denies namespace escape, privileged
 // introspection, unusual socket families, and terminal input injection.
 fn seccomp(network: bool) -> Result<Vec<u8>> {
@@ -404,4 +385,23 @@ fn seccomp(network: bool) -> Result<Vec<u8>> {
         bytes.extend(value.to_ne_bytes());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gpu_device_allowlist_excludes_unrelated_devices() {
+        for name in [
+            "nvidia0",
+            "nvidia12",
+            "nvidiactl",
+            "nvidia-modeset",
+            "nvidia-uvm",
+        ] {
+            assert!(super::nvidia_device(name));
+        }
+        for name in ["nvidia", "nvidia-secret", "input", "sda", "nvidia0/escape"] {
+            assert!(!super::nvidia_device(name));
+        }
+    }
 }
