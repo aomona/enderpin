@@ -21,7 +21,7 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 
 通常テストは固定データと一時ディレクトリで実行します。実ネットワーク検証はModrinthの検索・導入、両側の配置、ハッシュ、キャッシュからの別環境再現、ignore、変更検出、URL導入を検証します。ゲームの起動やサンドボックスの強制を証明するテストではありません。
 
-GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](verification.md) に今回実行した範囲を記載しています。
+GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。PRの作成・更新時と`main`へのpush時に実行し、作業ブランチへのpushでは起動しません。`dev`もPRを通して検査します。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](verification.md) に今回実行した範囲を記載しています。
 
 ## 認証ブリッジの組込API
 
