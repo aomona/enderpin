@@ -1,0 +1,16 @@
+# Own only this table; retain the administrator's other firewall rules.
+table inet enderpin
+flush table inet enderpin
+table inet enderpin {
+    chain input {
+        type filter hook input priority -10; policy accept;
+{% for instance in enderpin_instances %}
+{% set source = enderpin_source_root | enderpin_workspace(instance.workspace) %}
+{% if source.runtime != 'velocity' %}
+        iifname "lo" tcp dport {{ instance.port }} accept
+        iifname {{ enderpin_backend_interface | to_json }} ip saddr {{ enderpin_proxy_address }} tcp dport {{ instance.port }} accept
+        tcp dport {{ instance.port }} drop
+{% endif %}
+{% endfor %}
+    }
+}

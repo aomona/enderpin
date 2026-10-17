@@ -39,7 +39,17 @@ public final class AuthBridge {
             command = "{\"type\":\"block_list\"}";
         } else if (address.equals("https://api.minecraftservices.com/player/certificates") && method != 0) {
             command = "{\"type\":\"certificate\"}";
-        } else { throw failure(client, 403); }
+        } else if (address.equals("https://api.minecraftservices.com/player/report") && method == 2 && body != null) {
+            String report = (String) mapper.getClass().getMethod("writeValueAsString", Object.class).invoke(mapper, body);
+            command = "{\"type\":\"report\",\"body\":" + report + "}";
+        } else {
+            if (!url.getProtocol().equals("https") || !url.getHost().equals("api.minecraftservices.com")) throw failure(client, 403);
+            // Additional vanilla services use the same pinned-origin connection broker.
+            try {
+                if (method == 2) return client.getClass().getMethod("mona$original$post", URL.class, Object.class, Class.class).invoke(client, url, body, responseType);
+                return client.getClass().getMethod(method == 0 ? "mona$original$get" : "mona$original$post", URL.class, Class.class).invoke(client, url, responseType);
+            } catch (InvocationTargetException error) { throw error.getCause(); }
+        }
         Object value;
         try { value = rpc(client, mapper, command); }
         catch (IOException error) { throw failure(client, 503); }
@@ -52,6 +62,78 @@ public final class AuthBridge {
         }
         String json = (String) mapper.getClass().getMethod("writeValueAsString", Object.class).invoke(mapper, value);
         return mapper.getClass().getMethod("readValue", String.class, Class.class).invoke(mapper, json, responseType);
+    }
+
+    public static java.net.HttpURLConnection serviceConnection(Object client, URL url) throws Throwable {
+        Field token = client.getClass().getDeclaredField("accessToken"); token.setAccessible(true);
+        if (token.get(client) == null) {
+            Method original = client.getClass().getDeclaredMethod("mona$original$createUrlConnection", URL.class);
+            original.setAccessible(true);
+            try { return (java.net.HttpURLConnection) original.invoke(client, url); }
+            catch (InvocationTargetException error) { throw error.getCause(); }
+        }
+        return new RealmsConnection(url, mapper(client.getClass()), true);
+    }
+
+    static Object mapper(Class<?> owner) throws ReflectiveOperationException {
+        return owner.getClassLoader().loadClass("com.mojang.authlib.minecraft.client.ObjectMapper").getMethod("create").invoke(null);
+    }
+
+    public static void openUri(Class<?> owner, java.net.URI uri) {
+        try {
+            Object mapper = mapper(owner);
+            String command = (String) mapper.getClass().getMethod("writeValueAsString", Object.class)
+                .invoke(mapper, Map.of("type", "desktop_open", "uri", uri.toString()));
+            rpc(null, mapper, command);
+        } catch (Throwable error) {
+            System.err.println("Enderpin could not open the link or folder; check desktop permissions.");
+        }
+    }
+
+    private static java.util.List<String> importFiles(Class<?> owner, java.util.List<?> paths, boolean multiple) throws Throwable {
+        Object mapper = mapper(owner);
+        Map<String, Object> request = new java.util.HashMap<>();
+        request.put("type", "import_files"); request.put("multiple", multiple);
+        if (paths != null) request.put("paths", paths.stream().map(Object::toString).toList());
+        String json = (String) mapper.getClass().getMethod("writeValueAsString", Object.class).invoke(mapper, request);
+        Object result = rpc(null, mapper, json);
+        if (!(result instanceof java.util.List<?> list) || list.stream().anyMatch(item -> !(item instanceof String)))
+            throw new IOException("Invalid import response");
+        return list.stream().map(String.class::cast).toList();
+    }
+
+    public static String chooseFiles(Class<?> owner, boolean multiple) {
+        try {
+            java.util.List<String> paths = importFiles(owner, null, multiple);
+            return paths.isEmpty() ? null : String.join("|", paths);
+        } catch (Throwable error) { System.err.println("Enderpin file selection failed; check import permissions and the host file chooser."); return null; }
+    }
+
+    public static void filesDrop(Object screen, java.util.List<?> paths) {
+        try {
+            java.util.List<java.nio.file.Path> imported = importFiles(screen.getClass(), paths, true).stream().map(java.nio.file.Path::of).toList();
+            screen.getClass().getMethod("mona$original$onFilesDrop", java.util.List.class).invoke(screen, imported);
+        } catch (Throwable error) { System.err.println("Enderpin file import was cancelled or unavailable."); }
+    }
+
+    public static Object realmsConnect(Object request) throws Throwable {
+        Class<?> base = request.getClass();
+        while (base != null) {
+            try {
+                Method original = base.getDeclaredMethod("mona$original$connect");
+                original.setAccessible(true);
+                for (Field field : base.getDeclaredFields()) {
+                    if (field.getType() != java.net.HttpURLConnection.class) continue;
+                    field.setAccessible(true);
+                    java.net.HttpURLConnection connection = (java.net.HttpURLConnection) field.get(request);
+                    if (!(connection instanceof RealmsConnection)) field.set(request, new RealmsConnection(connection, mapper(base)));
+                    try { return original.invoke(request); }
+                    catch (InvocationTargetException error) { throw error.getCause(); }
+                }
+                throw new IOException("Realms connection field missing");
+            } catch (NoSuchMethodException ignored) { base = base.getSuperclass(); }
+        }
+        throw new IOException("Realms adapter missing");
     }
 
     public static java.security.PrivateKey readPrivateKey(Class<?> crypt, String value) throws Throwable {
@@ -83,11 +165,12 @@ public final class AuthBridge {
     }
 
     private static RuntimeException failure(Object client, int status) throws ReflectiveOperationException {
+        if (client == null) return new IllegalStateException("Host broker refused operation: " + status);
         return (RuntimeException) client.getClass().getClassLoader()
             .loadClass("com.mojang.authlib.exceptions.MinecraftClientHttpException").getConstructor(int.class).newInstance(status);
     }
 
-    private static synchronized Object rpc(Object client, Object mapper, String command) throws Throwable {
+    static synchronized Object rpc(Object client, Object mapper, String command) throws Throwable {
         if (!greeted) {
             Object hello = exchange(client, mapper, "{\"type\":\"hello\"}");
             if (!(hello instanceof Map<?,?> data) || !(data.get("protocol") instanceof Number protocol) || protocol.intValue() != 1)
@@ -104,7 +187,7 @@ public final class AuthBridge {
         byte[] header = ByteBuffer.allocate(4).putInt(request.length).array();
         transfer(header, true); transfer(request, true); transfer(header, false);
         int length = ByteBuffer.wrap(header).getInt();
-        if (length < 1 || length > 256 * 1024) throw new IOException("Authentication response size invalid");
+        if (length < 1 || length > 4 * 1024 * 1024) throw new IOException("Authentication response size invalid");
         byte[] response = new byte[length]; transfer(response, false);
         Map<?,?> parsed = (Map<?,?>) mapper.getClass().getMethod("readValue", String.class, Class.class)
             .invoke(mapper, new String(response, StandardCharsets.UTF_8), Map.class);

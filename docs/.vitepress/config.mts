@@ -22,6 +22,7 @@ export default defineConfig({
         { text: 'MODを追加・更新する', link: '/packages' },
         { text: 'ファイル構成と共有設定', link: '/workspace' },
         { text: '別のPCと共有する', link: '/sharing' },
+        { text: '複数サーバーとAnsible CD', link: '/deployment' },
         { text: '権限とサンドボックス', link: '/sandbox' },
         { text: '旧形式から移行する', link: '/migration' },
       ] },

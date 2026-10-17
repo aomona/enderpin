@@ -62,6 +62,8 @@ fn jars_keep_agent_and_bootstrap_classes_separate() -> Result<()> {
             BOOTSTRAP,
             &[
                 "me/aomona/auth/AuthBridge.class",
+                "me/aomona/auth/RealmsConnection.class",
+                "me/aomona/auth/RealmsConnection$1.class",
                 "me/aomona/auth/NativeIO.class",
                 "me/aomona/auth/RemotePrivateKey.class",
                 "me/aomona/auth/RemoteProvider.class",

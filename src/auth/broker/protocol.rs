@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_REQUEST: usize = 64 * 1024;
-pub const MAX_RESPONSE: usize = 256 * 1024;
+pub const MAX_REQUEST: usize = 1024 * 1024;
+pub const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 pub const GAME_TOKEN: &str = "MONALAUNCHER_BROKERED_NO_ACCESS_TOKEN";
 
 #[derive(Deserialize)]
@@ -17,11 +17,38 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Hello {},
-    Join { server_hash: String },
+    Join {
+        server_hash: String,
+    },
     Properties {},
     BlockList {},
     Certificate {},
-    Sign { key_id: String, message: String },
+    Sign {
+        key_id: String,
+        message: String,
+    },
+    Report {
+        body: Value,
+    },
+    GameServices {
+        method: String,
+        path: String,
+        body: String,
+        headers: std::collections::BTreeMap<String, String>,
+    },
+    Realms {
+        method: String,
+        path: String,
+        body: String,
+        headers: std::collections::BTreeMap<String, String>,
+    },
+    ImportFiles {
+        paths: Option<Vec<String>>,
+        multiple: bool,
+    },
+    DesktopOpen {
+        uri: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

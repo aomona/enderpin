@@ -1,0 +1,30 @@
+# Copy to .github/workflows/deploy.yml in the server configuration repository.
+name: Deploy Minecraft network
+on:
+  push:
+    branches: [deploy]
+permissions:
+  contents: read
+concurrency:
+  group: minecraft-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, enderpin-cd]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install deployment tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/enderpin-ansible"
+          "$RUNNER_TEMP/enderpin-ansible/bin/pip" install -r deploy/ansible/requirements.txt
+      - name: Apply the pushed commit
+        env:
+          ENDERPIN_INVENTORY: ${{ secrets.ENDERPIN_INVENTORY }}
+          ENDERPIN_VAULT: ${{ secrets.ENDERPIN_VAULT }}
+          ENDERPIN_VAULT_PASSWORD: ${{ secrets.ENDERPIN_VAULT_PASSWORD }}
+          ENDERPIN_MANAGE_VPN: ${{ vars.ENDERPIN_MANAGE_VPN }}
+        run: '"$RUNNER_TEMP/enderpin-ansible/bin/python" deploy/cd.py'

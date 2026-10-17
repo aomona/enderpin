@@ -10,11 +10,18 @@ final class MethodAdapter {
     private final Map<Integer, String> utf8 = new HashMap<>();
     private int count;
 
-    static byte[] transform(byte[] source) throws IOException { return new MethodAdapter().adapt(source, false); }
+    static byte[] transform(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 0); }
 
-    static byte[] transformPrivateKeys(byte[] source) throws IOException { return new MethodAdapter().adapt(source, true); }
+    static byte[] transformPrivateKeys(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 1); }
 
-    private byte[] adapt(byte[] source, boolean crypt) throws IOException {
+    static byte[] transformDesktop(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 2); }
+    static byte[] transformRealms(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 3); }
+
+    static byte[] transformFileDialog(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 4); }
+    static byte[] transformDrop(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 5); }
+
+    private byte[] adapt(byte[] source, int mode) throws IOException {
+        boolean crypt = mode == 1;
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(source));
         int magic = in.readInt();
         if (magic != 0xcafebabe) throw new IOException("invalid class");
@@ -43,6 +50,11 @@ final class MethodAdapter {
         int bridge = methodRef("me/aomona/auth/AuthBridge", "request", "(Ljava/lang/Object;Ljava/net/URL;Ljava/lang/Object;Ljava/lang/Class;I)Ljava/lang/Object;");
         int readKey = methodRef("me/aomona/auth/AuthBridge", "readPrivateKey", "(Ljava/lang/Class;Ljava/lang/String;)Ljava/security/PrivateKey;");
         int writeKey = methodRef("me/aomona/auth/AuthBridge", "writePrivateKey", "(Ljava/lang/Class;Ljava/security/PrivateKey;)Ljava/lang/String;");
+        int desktop = methodRef("me/aomona/auth/AuthBridge", "openUri", "(Ljava/lang/Class;Ljava/net/URI;)V");
+        int realms = methodRef("me/aomona/auth/AuthBridge", "realmsConnect", "(Ljava/lang/Object;)Ljava/lang/Object;");
+        int choose = methodRef("me/aomona/auth/AuthBridge", "chooseFiles", "(Ljava/lang/Class;Z)Ljava/lang/String;");
+        int drop = methodRef("me/aomona/auth/AuthBridge", "filesDrop", "(Ljava/lang/Object;Ljava/util/List;)V");
+        int service = methodRef("me/aomona/auth/AuthBridge", "serviceConnection", "(Ljava/lang/Object;Ljava/net/URL;)Ljava/net/HttpURLConnection;");
         int codeName = text("Code");
         for (int i = 0; i < methods; i++) {
             int flags = in.readUnsignedShort(), name = in.readUnsignedShort(), desc = in.readUnsignedShort();
@@ -51,12 +63,20 @@ final class MethodAdapter {
             if ("get".equals(method) && "(Ljava/net/URL;Ljava/lang/Class;)Ljava/lang/Object;".equals(descriptor)) kind = 0;
             if ("post".equals(method) && "(Ljava/net/URL;Ljava/lang/Class;)Ljava/lang/Object;".equals(descriptor)) kind = 1;
             if ("post".equals(method) && "(Ljava/net/URL;Ljava/lang/Object;Ljava/lang/Class;)Ljava/lang/Object;".equals(descriptor)) kind = 2;
+            if (mode == 0 && "createUrlConnection".equals(method) && "(Ljava/net/URL;)Ljava/net/HttpURLConnection;".equals(descriptor)) kind = 9;
             if (crypt) {
                 kind = -1;
                 if ((flags & 0x0008) != 0 && "(Ljava/lang/String;)Ljava/security/PrivateKey;".equals(descriptor)) kind = 3;
                 if ((flags & 0x0008) != 0 && "(Ljava/security/PrivateKey;)Ljava/lang/String;".equals(descriptor)) kind = 4;
             }
-            String original = kind == 3 ? "readPrivateKey" : kind == 4 ? "writePrivateKey" : method;
+            if (mode == 2) kind = "(Ljava/net/URI;)V".equals(descriptor) && Set.of("openUri", "a", "method_673").contains(method) ? 5 : -1;
+            if (mode == 3) kind = Set.of("connect", "d", "method_21054").contains(method)
+                && (flags & 0x0408) == 0 && descriptor.startsWith("()L") ? 6 : -1;
+            if (mode == 4) kind = "tinyfd_openFileDialog".equals(method)
+                && "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Lorg/lwjgl/PointerBuffer;Ljava/lang/CharSequence;Z)Ljava/lang/String;".equals(descriptor) ? 7 : -1;
+            if (mode == 5) kind = (flags & 0x0008) == 0 && "(Ljava/util/List;)V".equals(descriptor)
+                && Set.of("onFilesDrop", "a", "method_29638").contains(method) ? 8 : -1;
+            String original = kind == 8 ? "onFilesDrop" : kind == 6 ? "connect" : kind == 3 ? "readPrivateKey" : kind == 4 ? "writePrivateKey" : method;
             ByteArrayOutputStream saved = new ByteArrayOutputStream(); DataOutputStream member = new DataOutputStream(saved);
             member.writeShort(flags); member.writeShort(kind < 0 ? name : text("mona$original$" + original)); member.writeShort(desc);
             copyAttributes(in, member);
@@ -71,13 +91,21 @@ final class MethodAdapter {
                     code = new byte[] { 0x13, (byte)(thisClass >>> 8), (byte)thisClass, 0x2a,
                         (byte)0xb8, (byte)(target >>> 8), (byte)target, (byte)0xb0 };
                 }
+                if (kind == 5) code = new byte[] { 0x13, (byte)(thisClass >>> 8), (byte)thisClass, (byte)((flags & 0x0008) != 0 ? 0x2a : 0x2b),
+                    (byte)0xb8, (byte)(desktop >>> 8), (byte)desktop, (byte)0xb1 };
+                if (kind == 6) code = new byte[] { 0x2a, (byte)0xb8, (byte)(realms >>> 8), (byte)realms,
+                    (byte)0xc0, (byte)(thisClass >>> 8), (byte)thisClass, (byte)0xb0 };
+                if (kind == 9) code = new byte[] { 0x2a, 0x2b, (byte)0xb8, (byte)(service >>> 8), (byte)service, (byte)0xb0 };
+                if (kind == 7) code = new byte[] { 0x13, (byte)(thisClass >>> 8), (byte)thisClass, 0x15, 0x04,
+                    (byte)0xb8, (byte)(choose >>> 8), (byte)choose, (byte)0xb0 };
+                if (kind == 8) code = new byte[] { 0x2a, 0x2b, (byte)0xb8, (byte)(drop >>> 8), (byte)drop, (byte)0xb1 };
                 wrapper.writeShort(codeName); wrapper.writeInt(12 + code.length);
-                wrapper.writeShort(crypt ? 2 : 5); wrapper.writeShort(crypt ? 1 : kind == 2 ? 4 : 3);
+                wrapper.writeShort(mode >= 1 ? 2 : 5); wrapper.writeShort(kind == 7 ? 5 : kind == 8 || kind == 5 ? 2 : kind == 6 || crypt ? 1 : kind == 2 ? 4 : 3);
                 wrapper.writeInt(code.length); wrapper.write(code); wrapper.writeShort(0); wrapper.writeShort(0);
                 wrappers.add(bytes.toByteArray());
             }
         }
-        if (wrappers.size() != (crypt ? 2 : 3)) throw new IOException("authlib signature mismatch");
+        if (wrappers.size() != (mode >= 2 ? 1 : crypt ? 2 : 4)) throw new IOException("authlib signature mismatch");
         out.writeShort(methods + wrappers.size());
         for (byte[] method : originals) out.write(method);
         for (byte[] method : wrappers) out.write(method);

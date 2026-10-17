@@ -4,7 +4,7 @@ use enderpin::{
     model::LockedPackage,
     sandbox::{
         self,
-        permissions::{self, FolderGrant, Local, Settings},
+        permissions::{self, Clipboard, FileAccess, FolderGrant, GameDirectory, Local, Settings},
     },
     storage,
 };
@@ -34,7 +34,7 @@ fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
         .client
         .packages
         .insert("example".into(), package);
-    ws.manifest.client.sandbox.network = false;
+    ws.manifest.client.permissions.network = false;
     let target = ws
         .lockfile
         .targets
@@ -128,12 +128,12 @@ fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
         .packages
         .pop();
 
-    ws.manifest.client.sandbox.network = true;
+    ws.manifest.client.permissions.network = true;
     assert_ne!(
         local.approved,
         Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
     );
-    ws.manifest.client.sandbox.network = false;
+    ws.manifest.client.permissions.network = false;
     local.folders.push(FolderGrant {
         path: external.path().canonicalize()?,
         write: false,
@@ -195,7 +195,7 @@ fn unsupported_denials_and_aliases_fail_closed() -> Result<()> {
             desktop_integration: false,
             graphics_cache: false,
             microphone: Some(true),
-            clipboard: Some(false),
+            clipboard: Clipboard::None,
             network: false,
             account_authentication: false,
             ..Default::default()
@@ -217,21 +217,90 @@ fn unsupported_denials_and_aliases_fail_closed() -> Result<()> {
 #[test]
 fn compact_settings_roundtrip_and_legacy_requests_fail_closed() -> Result<()> {
     let mut manifest = enderpin::Manifest::new("1.21.1".into())?;
-    assert!(!manifest.to_toml()?.contains("sandbox"));
-    manifest.client.sandbox.network = false;
-    manifest.client.sandbox.microphone = Some(false);
+    assert!(!manifest.to_toml()?.contains("permissions"));
+    let defaults = &manifest.client.permissions;
+    assert!(defaults.account_authentication && defaults.narrator && defaults.clipboard_allowed());
+    assert!(defaults.open_links && defaults.open_folders && defaults.import_files);
+    manifest.client.permissions.network = false;
+    manifest.client.permissions.microphone = Some(false);
+    manifest.client.permissions.clipboard = Clipboard::None;
+    manifest.client.permissions.narrator = false;
+    manifest.client.permissions.open_links = false;
+    manifest.client.permissions.open_folders = false;
+    manifest.client.permissions.import_files = false;
     let text = manifest.to_toml()?;
     assert!(text.contains("network = false"));
+    assert!(text.contains("[client.permissions]"));
+    assert!(text.contains("clipboard = \"none\""));
     assert!(!text.contains("game_write"));
-    assert_eq!(
-        enderpin::Manifest::parse(&text)?.client.sandbox,
-        manifest.client.sandbox
+    assert!(!text.contains("permissions.files"));
+    assert!(
+        !enderpin::Manifest::parse(&text)?
+            .client
+            .permissions
+            .clipboard_allowed()
     );
     assert_eq!(
-        enderpin::Manifest::parse(&text)?.server.sandbox,
-        manifest.server.sandbox
+        enderpin::Manifest::parse(&text)?.client.permissions,
+        manifest.client.permissions
+    );
+    assert_eq!(
+        enderpin::Manifest::parse(&text)?.server.permissions,
+        manifest.server.permissions
     );
     assert!(enderpin::Manifest::parse(&(text + "\n[[client.permissions.example]]\npermission = 'network'\nreason = 'old declaration'\n")).is_err());
     assert!(toml::from_str::<Local>("[bindings]\nexample = '/tmp'\n").is_err());
+    Ok(())
+}
+
+#[test]
+fn file_permissions_roundtrip_omit_nested_defaults() -> Result<()> {
+    let mut manifest = enderpin::Manifest::new("1.21.1".into())?;
+    manifest.client.permissions.files.read_only = vec![GameDirectory::Mods, GameDirectory::Config];
+    manifest.server.permissions.files.game = FileAccess::ReadOnly;
+    let text = manifest.to_toml()?;
+    assert!(text.contains("[client.permissions.files]"));
+    assert!(text.contains("[server.permissions.files]"));
+    assert!(text.contains("game = \"read-only\""));
+    assert!(!text.contains("game = \"read-write\""));
+    let parsed = enderpin::Manifest::parse(&text)?;
+    assert_eq!(parsed.client.permissions, manifest.client.permissions);
+    assert_eq!(parsed.server.permissions, manifest.server.permissions);
+    // Explicit defaults are accepted but not rewritten into every config.
+    let defaults = enderpin::Manifest::new("1.21.1".into())?.to_toml()?;
+    let explicit = enderpin::Manifest::parse(&format!(
+        "{defaults}\n[client.permissions]\nclipboard = 'system'\n[client.permissions.files]\ngame = 'read-write'\nread_only = []\n"
+    ))?;
+    assert_eq!(explicit.to_toml()?, defaults);
+    Ok(())
+}
+
+#[test]
+fn permission_schema_rejects_legacy_and_misspelled_controls() -> Result<()> {
+    let base = enderpin::Manifest::new("1.21.1".into())?.to_toml()?;
+    for invalid in [
+        "[client.sandbox]\nnetwork = false",
+        "[server.sandbox]\ngame_write = false",
+        "[client.permissions]\ngame_write = false",
+        "[client.permissions]\nread_only = ['mods']",
+        "[client.permissions]\nclipboard = false",
+        "[client.permissions]\nclipboard = 'read'",
+        "[client.permissions.files]\ngame = 'write'",
+        "[client.permissions.files]\nread_only = ['../private']",
+        "[client.permissions.files]\nwrite = true",
+    ] {
+        assert!(
+            enderpin::Manifest::parse(&format!("{base}\n{invalid}\n")).is_err(),
+            "accepted {invalid}"
+        );
+    }
+    for clipboard in [Clipboard::None, Clipboard::ReadWrite] {
+        let settings = Settings {
+            clipboard,
+            ..Default::default()
+        };
+        assert!(settings.validate_for("windows", true).is_err());
+        assert!(settings.validate_for("macos", true).is_ok());
+    }
     Ok(())
 }
