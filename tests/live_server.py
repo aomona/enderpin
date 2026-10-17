@@ -1,8 +1,8 @@
 """Opt-in real server smoke test using a disposable workspace.
 
 Run: python3 tests/live_server.py /path/to/workspace --accept-eula [--offline]
-Or: python3 tests/live_server.py --quick --accept-eula [--version 26.2] [--no-sandbox]
---quick sets up a vanilla workspace before explicitly approving and launching the server.
+Or: python3 tests/live_server.py --init --accept-eula [--minecraft 26.2] [--no-sandbox]
+--init sets up a vanilla workspace before explicitly approving and launching the server.
 The explicit flag accepts https://aka.ms/MinecraftEULA for the disposable server.
 This verifies status/console/shutdown, not authenticated player participation.
 """
@@ -63,27 +63,27 @@ def status(port):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path, nargs="?")
-    parser.add_argument("--quick", action="store_true")
-    parser.add_argument("--version", help="quick Minecraft version (otherwise latest stable)")
-    parser.add_argument("--no-sandbox", action="store_true", help="quick vanilla server only")
+    parser.add_argument("--init", action="store_true")
+    parser.add_argument("--minecraft", help="setup Minecraft version (otherwise latest stable)")
+    parser.add_argument("--no-sandbox", action="store_true", help="setup vanilla server only")
     parser.add_argument("--accept-eula", action="store_true", required=True)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug" / ("enderpin.exe" if os.name == "nt" else "enderpin"))
     args = parser.parse_args()
-    if not args.quick and (args.workspace is None or args.version or args.no_sandbox):
-        parser.error("provide a workspace, or use --quick [--version VERSION] [--no-sandbox]")
-    if args.quick and args.offline:
-        parser.error("quick resolves official metadata online")
+    if not args.init and (args.workspace is None or args.minecraft or args.no_sandbox):
+        parser.error("provide a workspace, or use --init [--minecraft VERSION] [--no-sandbox]")
+    if args.init and args.offline:
+        parser.error("init resolves official metadata online")
     with tempfile.TemporaryDirectory(prefix="enderpin-server-smoke-") as temporary:
         base = Path(temporary)
-        version = args.version
-        if args.quick and version is None:
+        version = args.minecraft
+        if args.init and version is None:
             from urllib.request import urlopen
             with urlopen("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json", timeout=30) as response:
                 version = json.load(response)["latest"]["release"]
         root = base
-        if not args.quick:
+        if not args.init:
             for name in ["enderpin.toml", "enderpin.lock"]:
                 shutil.copyfile(args.workspace / name, root / name)
         game = root / "run" / "server"
@@ -92,28 +92,28 @@ def main():
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]
         (game / "server.properties").write_text(
-            f"server-ip=127.0.0.1\nserver-port={25565 if args.quick else port}\nonline-mode=true\n"
+            f"server-ip=127.0.0.1\nserver-port={25565 if args.init else port}\nonline-mode=true\n"
             "enforce-secure-profile=true\nview-distance=3\nsimulation-distance=3\n"
         )
-        command = [str(args.binary.resolve()), "-C", str(root), "--target", "server"]
+        command = [str(args.binary.resolve()), "-C", str(root)]
         if args.cache_dir:
             command += ["--cache-dir", str(args.cache_dir.resolve())]
         offline = ["--offline"] if args.offline else []
-        if args.quick:
-            setup = [str(args.binary.resolve()), "--no-interactive", "quick", "--server",
-                     "--version", version, "--loader", "vanilla"]
+        if args.init:
+            setup = [str(args.binary.resolve()), "init", "--target", "server", "--no-interactive",
+                     "--minecraft", version, "--loader", "vanilla"]
             if args.cache_dir:
                 setup += ["--cache-dir", str(args.cache_dir.resolve())]
             subprocess.run(setup, cwd=base, check=True, capture_output=True, text=True, timeout=1800)
             assert not (game / "eula.txt").exists(), "setup must not accept EULA or launch"
-        subprocess.run(command + ["sync", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
-        inspected = subprocess.run(command + ["--json", "permissions", "show"], check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(command + ["sync", "--target", "server", "--locked"] + offline, check=True, capture_output=True, text=True, timeout=180)
+        inspected = subprocess.run(command + ["permissions", "show", "--target", "server", "--json"], check=True, capture_output=True, text=True, timeout=30)
         permission_plan = json.loads(inspected.stdout)
         # Only authorize a vanilla server with no managed mods or host folders.
         assert not permission_plan["plan"]["folders"]
         assert not permission_plan["plan"]["packages"]
-        subprocess.run(command + ["permissions", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
-        launch = command + ["launch", "--accept-eula", "--memory", "1024", "--port", str(port)] + offline
+        subprocess.run(command + ["permissions", "--target", "server", "approve", permission_plan["fingerprint"]], check=True, capture_output=True, text=True, timeout=30)
+        launch = command + ["run", "--target", "server", "--accept-eula", "--memory", "1024", "--port", str(port)] + offline
         if args.no_sandbox:
             launch += ["--no-sandbox"]
         process = subprocess.Popen(launch, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -157,8 +157,8 @@ def main():
                         raise
                     time.sleep(0.2)
             assert observed["players"]["online"] == 0
-            if args.quick:
-                assert (base / "run" / "client").is_dir()
+            if args.init:
+                assert not (base / "run" / "client").exists(), "server setup prepared a client"
                 assert (base / "run" / "server").is_dir()
                 assert (base / "enderpin.toml").is_file()
                 assert not (base / "run" / "server" / version).exists()
@@ -166,16 +166,16 @@ def main():
                 assert observed["version"]["name"] == version
                 assert "online-mode=true" in (game / "server.properties").read_text()
                 assert "eula=true" in (game / "eula.txt").read_text()
-            rejected = subprocess.run(command + ["sync", "--locked"] + offline, capture_output=True, text=True, timeout=30)
+            rejected = subprocess.run(command + ["sync", "--target", "server", "--locked"] + offline, capture_output=True, text=True, timeout=30)
             assert rejected.returncode and "server is running" in rejected.stderr
             console("list")
             until("players online:", timeout=10)
             console("stop")
             assert process.wait(timeout=40) == 0, "server did not stop cleanly"
             assert (game / "world/level.dat").is_file(), "world was not saved"
-            synced = subprocess.run(command + ["sync", "--locked"] + offline, capture_output=True, text=True, timeout=30)
+            synced = subprocess.run(command + ["sync", "--target", "server", "--locked"] + offline, capture_output=True, text=True, timeout=30)
             assert synced.returncode == 0, synced.stderr
-            print(json.dumps({"minecraft": observed["version"]["name"], "sandbox": not args.no_sandbox, "quick": args.quick, "port": port,
+            print(json.dumps({"minecraft": observed["version"]["name"], "sandbox": not args.no_sandbox, "init": args.init, "port": port,
                               "status": True, "console": True, "running_sync_rejected": True,
                               "world_saved": True, "shutdown": True, "authenticated_join": "not tested by this script"}, indent=2))
         except Exception:

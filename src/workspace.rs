@@ -115,7 +115,8 @@ impl Workspace {
                         &manifest, side
                     )
                     .is_ok_and(|fp| fp == runtime.fingerprint)),
-                    "{} runtime is not locked; run prepare first",
+                    "{} runtime is not locked or configuration changed; run enderpin sync --target {} first",
+                    side.name(),
                     side.name()
                 );
             }

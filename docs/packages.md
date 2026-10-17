@@ -1,14 +1,13 @@
 # MODを追加・更新する
 
 ```sh
-mkdir my-world
+enderpin init my-world --target all --minecraft 1.21.1 --loader fabric
 cd my-world
-enderpin init --minecraft 1.21.1
 enderpin add lithium --target all
 enderpin add sodium --target client
 enderpin search iris
 enderpin list --target all
-enderpin prepare --target all
+enderpin sync --target all
 ```
 
 `--target client` が標準です。`--target server` はサーバーだけ、`--target all` の追加は共通指定を編集して両側を同期します。検索は1つの対象を指定します。
@@ -17,7 +16,6 @@ enderpin prepare --target all
 
 ```sh
 enderpin sync --target server --locked
-enderpin prepare --target server --locked
 ```
 
 `--locked` は構成とロックの不一致を拒否します。通常の `sync` は手編集された構成を解決し、既存の固定版を維持します。最新版へ進める場合は `update` を使います。
@@ -57,4 +55,4 @@ enderpin update --target all
 enderpin remove sodium --target client
 ```
 
-`update` は選んだ対象のModrinthパッケージを更新します。通常の `sync` は既存の固定版を維持します。依存されているパッケージは必要な限り残ります。更新後は差分を確認し、設定とロックを一緒にコミットしてください。
+`update` は選んだ対象のランタイムとModrinthパッケージを更新します。構成に明示したローダー版・Modrinth版ID・URLの固定内容は維持します。通常の `sync` は既存の固定版を維持します。依存されているパッケージは必要な限り残ります。更新後は差分を確認し、設定とロックを一緒にコミットしてください。

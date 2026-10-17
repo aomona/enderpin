@@ -15,21 +15,18 @@ use enderpin::{
 use serde::Serialize;
 
 #[derive(Parser)]
-#[command(version, about = "Reproducible Minecraft client and server workspaces")]
+#[command(
+    version,
+    about = "Reproducible Minecraft client and server workspaces",
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\nGetting started:\n  init         Create a workspace and download Minecraft, Java and packages\n\nEveryday:\n  add          Add a package and synchronize\n  remove       Remove a package and synchronize\n  search       Find packages on Modrinth\n  list         Show locked packages\n  sync         Prepare runtimes, packages and shared files without updating pins\n  run          Run a locked client or server\n  update       Update runtimes and Modrinth packages\n\nSettings & authentication:\n  permissions  Review, edit and approve game permissions\n  login        Sign in with Microsoft\n  logout       Remove this CLI's saved credential\n\nAutomation & recovery:\n  lock         Resolve packages without installing files\n  restore      Restore managed files, discarding local changes\n  help         Show command help\n\nOptions:\n{options}\n\nExamples:\n  enderpin init my-world --loader fabric\n  cd my-world\n  enderpin add sodium\n  enderpin login\n  enderpin run\n\nUse enderpin <COMMAND> --help for options and examples.\n"
+)]
 struct Cli {
-    #[arg(short = 'C', long, global = true)]
+    /// Workspace directory (default: current directory).
+    #[arg(short = 'C', long, global = true, value_name = "DIRECTORY")]
     directory: Option<PathBuf>,
-    #[arg(long, global = true)]
+    /// Shared download cache directory.
+    #[arg(long, global = true, value_name = "DIRECTORY")]
     cache_dir: Option<PathBuf>,
-    #[arg(long, global = true, value_enum, default_value = "client")]
-    target: Scope,
-    #[arg(long, global = true)]
-    json: bool,
-    #[arg(long, global = true)]
-    no_interactive: bool,
-    /// Accept defaults for optional dependency prompts.
-    #[arg(short, long, global = true)]
-    yes: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -57,107 +54,211 @@ impl Scope {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum SingleScope {
+    Client,
+    Server,
+}
+impl SingleScope {
+    fn scope(self) -> Scope {
+        match self {
+            Self::Client => Scope::Client,
+            Self::Server => Scope::Server,
+        }
+    }
+}
+
+#[derive(Args)]
+struct Selection {
+    /// Target to operate on; all selects both client and server.
+    #[arg(long, value_enum, default_value = "client")]
+    target: Scope,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct SingleSelection {
+    /// Operate on one client or server.
+    #[arg(long, global = true, value_enum, default_value = "client")]
+    target: SingleScope,
+    /// Emit machine-readable JSON.
+    #[arg(long, global = true)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct Prompts {
+    /// Disable prompts; supply required choices as options.
+    #[arg(long)]
+    no_interactive: bool,
+    /// Accept setup/default dependency choices; never approve game permissions.
+    #[arg(short, long)]
+    yes: bool,
+}
+
+#[derive(Args)]
+#[command(
+    after_help = "Examples:\n  enderpin init my-world\n  enderpin init my-server --target server --minecraft 1.21.1 --loader paper --no-interactive\n  enderpin init --minecraft 1.21.1 --loader fabric --loader-version 0.16.10 --mods sodium --no-interactive"
+)]
+struct Init {
+    /// New workspace directory (default: current directory).
+    #[arg(value_name = "DIRECTORY")]
+    path: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "client")]
+    target: Scope,
+    /// Minecraft version; prompts when omitted.
+    #[arg(long, value_name = "VERSION")]
+    minecraft: Option<String>,
+    /// Runtime type; Paper and Velocity require --target server.
+    #[arg(long, value_parser = ["vanilla", "fabric", "paper", "velocity"])]
+    loader: Option<String>,
+    /// Exact loader version/build (required for Velocity); otherwise resolve once and pin.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        requires = "loader",
+        required_if_eq("loader", "velocity")
+    )]
+    loader_version: Option<String>,
+    /// Fabric Modrinth IDs/slugs, separated by commas; includes required dependencies.
+    #[arg(long, value_delimiter = ',')]
+    mods: Vec<String>,
+    #[command(flatten)]
+    prompts: Prompts,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Set up Minecraft, a loader and mods here using searchable prompts; does not launch the game.
-    Quick {
-        /// Set up both client and server (default: client only).
-        #[arg(long, conflicts_with = "target")]
-        server: bool,
-        /// Skip the Minecraft version prompt.
-        #[arg(long = "version")]
-        minecraft_version: Option<String>,
-        /// Skip the loader prompt.
-        #[arg(long, value_parser = ["vanilla", "fabric"])]
-        loader: Option<String>,
-        /// Modrinth project IDs or slugs; required dependencies are added automatically.
-        #[arg(long, value_delimiter = ',')]
-        mods: Vec<String>,
-    },
-    /// Edit game permissions interactively, or inspect and approve them.
+    /// Create a workspace interactively or from explicit options; does not run or approve it.
+    Init(Init),
+    /// Edit permissions, inspect a plan or approve its exact fingerprint.
+    #[command(
+        after_help = "Examples:\n  enderpin permissions\n  enderpin permissions show --target server --json\n  enderpin permissions approve --target server <FINGERPRINT>"
+    )]
     Permissions {
+        #[command(flatten)]
+        selection: SingleSelection,
+        /// Disable interactive editing and approval prompts.
+        #[arg(long, global = true)]
+        no_interactive: bool,
         #[command(subcommand)]
         action: Option<PermissionCommand>,
     },
-    /// Sign in using the default Microsoft public-client application or your own.
+    /// Sign in using Microsoft's default public-client application or your own.
     Login {
         #[arg(long, default_value = "f8d68570-e721-4aba-9c3e-1052d41e431a")]
         client_id: String,
     },
-    /// Delete this CLI's credential from the OS credential store.
+    /// Remove this CLI's credential from the OS credential store.
     Logout,
-    /// Launch a pinned target in the OS sandbox; Ctrl-C stops the server gracefully.
-    Launch {
-        /// Run without reading terminal input; stop gracefully on SIGTERM or Ctrl-C.
+    /// Run a pinned target in the OS sandbox, downloading missing locked files as needed.
+    #[command(
+        after_help = "Examples:\n  enderpin run\n  enderpin run --target server --accept-eula --memory 1024\n  enderpin run --offline --demo\n\nRun never updates pinned versions. Change configuration with sync, or versions with update.\nPermission approval is always explicit; --offline controls downloads, --no-network controls the game."
+    )]
+    Run {
+        #[arg(long, value_enum, default_value = "client")]
+        target: SingleScope,
+        /// Disable interactive permission approval.
+        #[arg(long)]
+        no_interactive: bool,
+        /// Server only: ignore terminal input; stop gracefully on SIGTERM or Ctrl-C.
         #[arg(long)]
         service: bool,
-        /// Override the server port for this launch.
+        /// Server only: override the port for this run (Velocity uses velocity.toml).
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
-        /// Run a vanilla target without OS sandbox isolation.
+        /// Vanilla only: run without OS sandbox isolation.
         #[arg(long, conflicts_with = "no_network")]
         no_sandbox: bool,
+        /// Use only locked files already available in the local cache.
         #[arg(long)]
         offline: bool,
+        /// Deny game network access for this run.
         #[arg(long)]
         no_network: bool,
-        /// Explicit acceptance of https://aka.ms/MinecraftEULA for this local server.
+        /// Server only: explicitly accept https://aka.ms/MinecraftEULA.
         #[arg(long)]
         accept_eula: bool,
-        #[arg(long, default_value_t = 2048)]
+        /// Maximum Java heap in MiB.
+        #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u32).range(256..=1_048_576), value_name = "MIB")]
         memory: u32,
-        /// Launch the official Minecraft demo without an account (no multiplayer).
-        #[arg(long)]
+        /// Client only: run the official demo without an account (no multiplayer).
+        #[arg(long, conflicts_with = "connect")]
         demo: bool,
-        /// Join this server on launch (Minecraft versions supporting Quick Play).
-        #[arg(long)]
+        /// Client only: join a server (requires authentication and Quick Play support).
+        #[arg(long, conflicts_with = "no_network")]
         connect: Option<String>,
     },
-    /// Pin and download the target runtime, packages and a platform-specific Temurin JDK.
-    Prepare {
-        #[arg(long)]
-        locked: bool,
-        #[arg(long)]
-        offline: bool,
-        #[arg(long)]
-        update: bool,
+    /// Add a Modrinth project or a public HTTPS file URL and synchronize packages.
+    #[command(
+        after_help = "Examples:\n  enderpin add sodium\n  enderpin add lithium --target all\n  enderpin add https://example.com/pack.zip --kind resourcepack --name my-pack"
+    )]
+    Add {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        prompts: Prompts,
+        #[command(flatten)]
+        package: PackageArgs,
     },
-    /// Create a shared client/server workspace.
-    Init {
-        #[arg(long)]
-        minecraft: String,
-    },
-    /// Add a Modrinth project or a public HTTPS file URL and synchronize.
-    Add(Add),
     /// Remove a direct package; retain dependencies still needed by other packages.
-    Remove { name: String },
-    /// Search Modrinth, optionally choose a result and install it.
+    Remove {
+        name: String,
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Search Modrinth; choose and install a result in a terminal.
     Search {
         #[arg(default_value = "")]
         query: String,
+        #[command(flatten)]
+        selection: SingleSelection,
+        #[command(flatten)]
+        prompts: Prompts,
         #[arg(long, value_enum, default_value = "mod")]
         kind: Kind,
         #[arg(long, default_value_t = 0)]
         offset: u64,
     },
-    /// Reconcile files with the configuration, preserving existing locked versions.
-    Sync(Sync),
-    /// Resolve and write the lock without changing game directories.
+    /// Prepare Minecraft, Java, packages and shared files, preserving pinned versions.
+    #[command(
+        after_help = "Examples:\n  enderpin sync --target all\n  enderpin sync --target server --locked\n  enderpin sync --locked --offline\n\n--locked requires matching package and runtime locks. --offline also requires cached downloads.\nUse update to select newer versions; sync only resolves new or changed configuration."
+    )]
+    Sync {
+        #[command(flatten)]
+        selection: Selection,
+        #[command(flatten)]
+        options: SyncArgs,
+    },
+    /// Resolve and save package locks without installing files or preparing runtimes.
     Lock {
+        #[command(flatten)]
+        selection: Selection,
         #[arg(long)]
         offline: bool,
     },
-    /// Update Modrinth packages; URL packages retain their pinned content.
-    Update,
-    /// Explicitly restore modified managed files from the lock.
+    /// Update runtimes and Modrinth packages; explicit loader versions and URL pins stay fixed.
+    Update {
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Discard local changes to managed files and restore their locked/shared contents.
     Restore {
+        #[command(flatten)]
+        selection: Selection,
         #[arg(long)]
         offline: bool,
+        /// Ignore local package exclusions in .enderpinignore.
         #[arg(long)]
         no_ignore: bool,
     },
-    /// Show locked packages and whether each target's lock matches its configuration.
-    List,
+    /// Show locked packages and whether each target's package lock matches its configuration.
+    List {
+        #[command(flatten)]
+        selection: Selection,
+    },
 }
 
 #[derive(Subcommand)]
@@ -179,7 +280,7 @@ enum PermissionCommand {
 }
 
 #[derive(Args)]
-struct Add {
+struct PackageArgs {
     source: String,
     #[arg(long)]
     name: Option<String>,
@@ -198,30 +299,86 @@ struct Add {
 }
 
 #[derive(Args)]
-struct Sync {
+struct SyncArgs {
+    /// Require matching package and runtime locks; do not resolve configuration changes.
     #[arg(long)]
     locked: bool,
+    /// Use existing locks and cached downloads only.
     #[arg(long)]
     offline: bool,
+    /// Ignore local package exclusions in .enderpinignore.
     #[arg(long)]
     no_ignore: bool,
 }
 
 impl Cli {
+    fn target(&self) -> Scope {
+        match &self.command {
+            Command::Init(args) => args.target,
+            Command::Run { target, .. } => target.scope(),
+            Command::Permissions { selection, .. } | Command::Search { selection, .. } => {
+                selection.target.scope()
+            }
+            Command::Add { selection, .. }
+            | Command::Remove { selection, .. }
+            | Command::Sync { selection, .. }
+            | Command::Lock { selection, .. }
+            | Command::Update { selection }
+            | Command::Restore { selection, .. }
+            | Command::List { selection } => selection.target,
+            Command::Login { .. } | Command::Logout => Scope::Client,
+        }
+    }
+    fn json(&self) -> bool {
+        match &self.command {
+            Command::Permissions { selection, .. } | Command::Search { selection, .. } => {
+                selection.json
+            }
+            Command::Add { selection, .. }
+            | Command::Remove { selection, .. }
+            | Command::Sync { selection, .. }
+            | Command::Lock { selection, .. }
+            | Command::Update { selection }
+            | Command::Restore { selection, .. }
+            | Command::List { selection } => selection.json,
+            _ => false,
+        }
+    }
+    fn prompts(&self) -> Option<&Prompts> {
+        match &self.command {
+            Command::Init(args) => Some(&args.prompts),
+            Command::Add { prompts, .. } | Command::Search { prompts, .. } => Some(prompts),
+            _ => None,
+        }
+    }
     fn workspace_directory(&self) -> &std::path::Path {
         self.directory
             .as_deref()
             .unwrap_or_else(|| std::path::Path::new("."))
     }
     fn interactive(&self) -> bool {
-        !self.no_interactive
-            && !self.json
+        let disabled = self.prompts().is_some_and(|p| p.no_interactive)
+            || matches!(
+                &self.command,
+                Command::Run {
+                    no_interactive: true,
+                    ..
+                } | Command::Permissions {
+                    no_interactive: true,
+                    ..
+                }
+            );
+        !disabled
+            && !self.json()
             && io::stdin().is_terminal()
             && io::stdout().is_terminal()
             && io::stderr().is_terminal()
     }
+    fn yes(&self) -> bool {
+        self.prompts().is_some_and(|p| p.yes)
+    }
     fn emit(&self, value: &impl Serialize, message: impl AsRef<str>) -> Result<()> {
-        if self.json {
+        if self.json() {
             println!("{}", serde_json::to_string_pretty(value)?);
         } else {
             println!("{}", message.as_ref());
@@ -679,8 +836,8 @@ fn apply(
     plan: Lockfile,
     options: SyncOptions,
 ) -> Result<()> {
-    let report = ws.apply(manifest, plan, &cli.target.sides(), options, |p| {
-        if !cli.json {
+    let report = ws.apply(manifest, plan, &cli.target().sides(), options, |p| {
+        if !cli.json() {
             eprintln!("{}: {} {}", p.target.name(), p.action, clean(&p.package));
         }
     })?;
@@ -698,7 +855,7 @@ fn apply(
     cli.emit(&report, message)
 }
 
-fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
+fn add(cli: &Cli, ws: &mut Workspace, args: &PackageArgs) -> Result<()> {
     let (name, mut package) = if args.source.contains("://") {
         enderpin::model::https_url(&args.source)?;
         let kind = args
@@ -716,7 +873,7 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
         let project = ws.registry.project(&args.source)?;
         let kind = args.kind.unwrap_or(match project.project_type.as_str() {
             "mod"
-                if matches!(cli.target, Scope::Server)
+                if matches!(cli.target(), Scope::Server)
                     && matches!(ws.manifest.server.loader.as_str(), "paper" | "velocity") =>
             {
                 Kind::Plugin
@@ -738,15 +895,15 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
     package.filename = args.filename.clone();
     package.validate()?;
     let mut manifest = ws.manifest.clone();
-    packages_mut(&mut manifest, cli.target).insert(name.clone(), package);
-    for side in cli.target.sides() {
+    packages_mut(&mut manifest, cli.target()).insert(name.clone(), package);
+    for side in cli.target().sides() {
         manifest.target_mut(side).disabled.retain(|id| id != &name);
     }
     let options = SyncOptions::default();
-    let mut plan = ws.plan(&manifest, &cli.target.sides(), options)?;
-    if cli.interactive() && !cli.yes && args.optional.is_empty() {
+    let mut plan = ws.plan(&manifest, &cli.target().sides(), options)?;
+    if cli.interactive() && !cli.yes() && args.optional.is_empty() {
         let mut optional = BTreeMap::new();
-        for side in cli.target.sides() {
+        for side in cli.target().sides() {
             if let Some(target) = plan.targets.get(&side) {
                 for root in target.packages.iter().filter(|p| p.roots.contains(&name)) {
                     for dependency in &root.optional {
@@ -772,11 +929,11 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
                 .items(values.iter().map(|(_, text)| text))
                 .interact_opt()?
                 .context("cancelled")?;
-            packages_mut(&mut manifest, cli.target)
+            packages_mut(&mut manifest, cli.target())
                 .get_mut(&name)
                 .context("new package missing")?
                 .optional = selected.into_iter().map(|i| values[i].0.clone()).collect();
-            plan = ws.plan(&manifest, &cli.target.sides(), options)?;
+            plan = ws.plan(&manifest, &cli.target().sides(), options)?;
         }
     }
     apply(cli, ws, manifest, plan, options)
@@ -905,28 +1062,28 @@ fn choose_mods(
     Ok(())
 }
 
-fn quick_setup(
-    cli: &Cli,
-    server: bool,
-    version: Option<&str>,
-    loader: Option<&str>,
-    mods: &[String],
-) -> Result<()> {
+fn init(cli: &Cli, args: &Init) -> Result<()> {
     ensure!(
-        matches!(cli.target, Scope::Client),
-        "quick uses --server for both targets; do not use --target"
+        args.path.is_none() || cli.directory.is_none(),
+        "choose enderpin init DIRECTORY or enderpin -C DIRECTORY init; do not specify both"
     );
-    ensure!(!cli.json, "quick setup does not support --json");
+    let version = args.minecraft.as_deref();
+    let loader = args.loader.as_deref();
+    let scope = args.target;
     ensure!(
         cli.interactive() || (version.is_some() && loader.is_some()),
-        "quick needs a terminal for setup; use --version VERSION --loader vanilla|fabric in non-interactive mode"
+        "init needs a terminal or explicit choices; use enderpin init --minecraft VERSION --loader vanilla|fabric|paper|velocity --no-interactive"
     );
-    let root = cli.workspace_directory();
+    let root = args
+        .path
+        .as_deref()
+        .unwrap_or_else(|| cli.workspace_directory());
     ensure!(
         enderpin::storage::read_optional(root, "enderpin.toml")?.is_none()
             && enderpin::storage::read_optional(root, "enderpin.lock")?.is_none(),
-        "workspace already exists; use add, prepare or launch, or choose a new directory with -C"
+        "workspace already exists; use enderpin add, sync or run, or enderpin init <NEW_DIRECTORY>"
     );
+    let interactive = cli.interactive() && (version.is_none() || loader.is_none());
     let minecraft = if let Some(version) = version {
         identifier(version)?;
         version.to_owned()
@@ -949,30 +1106,53 @@ fn quick_setup(
     let loader = if let Some(loader) = loader {
         loader.to_owned()
     } else {
-        let loaders = ["Vanilla (no mods)".to_owned(), "Fabric".to_owned()];
-        ["vanilla", "fabric"][choose("Mod loader", &loaders, 0)?].to_owned()
+        let mut loaders = vec!["vanilla", "fabric"];
+        if matches!(scope, Scope::Server) {
+            loaders.extend(["paper", "velocity"]);
+        }
+        let labels = loaders
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        loaders[choose("Mod loader", &labels, 0)?].to_owned()
+    };
+    let loader_version = if loader == "velocity" && args.loader_version.is_none() {
+        Some(
+            Input::<String>::new()
+                .with_prompt("Velocity version (version or version+build)")
+                .validate_with(|version: &String| identifier(version))
+                .interact_text()?,
+        )
+    } else {
+        args.loader_version.clone()
     };
     ensure!(
-        ["vanilla", "fabric"].contains(&loader.as_str()),
-        "unsupported setup loader"
+        args.mods.is_empty() || loader == "fabric",
+        "--mods requires --loader fabric; use enderpin add for plugins or other packages"
     );
-    ensure!(
-        mods.is_empty() || loader != "vanilla",
-        "vanilla cannot load mods; select Fabric"
-    );
-    let scope = if server { Scope::All } else { Scope::Client };
+    let mut manifest = Workspace::quick_manifest(minecraft.clone())?;
+    for side in scope.sides() {
+        let target = manifest.target_mut(side);
+        target.loader = loader.clone();
+        target.loader_version = loader_version.clone();
+    }
+    manifest.validate()?;
     let mut registry = enderpin::registry::Modrinth::default();
     let mut selected = BTreeMap::new();
-    for id in mods {
+    for id in &args.mods {
         let (name, package) = setup_mod(&mut registry, id, &minecraft, &loader, scope)?;
         selected.insert(name, package);
     }
-    if cli.interactive() && loader != "vanilla" {
+    if interactive && !cli.yes() && loader == "fabric" {
         choose_mods(&mut registry, &minecraft, &loader, scope, &mut selected)?;
     }
     eprintln!(
         "\nMinecraft {minecraft} / {loader} / {}\nMods: {}\nDirectory: {}",
-        if server { "client + server" } else { "client" },
+        match scope {
+            Scope::Client => "client",
+            Scope::Server => "server",
+            Scope::All => "client + server",
+        },
         if selected.is_empty() {
             "none".into()
         } else {
@@ -980,7 +1160,7 @@ fn quick_setup(
         },
         root.display()
     );
-    if cli.interactive() {
+    if interactive && !cli.yes() {
         ensure!(
             Confirm::new()
                 .with_prompt("Create workspace and download files?")
@@ -989,12 +1169,8 @@ fn quick_setup(
             "setup cancelled"
         );
     }
-    let mut manifest = Workspace::quick_manifest(minecraft)?;
-    for side in scope.sides() {
-        manifest.target_mut(side).loader = loader.clone();
-    }
     *packages_mut(&mut manifest, scope) = selected;
-    Workspace::init_manifest(root, manifest, &Side::ALL)?;
+    Workspace::init_manifest(root, manifest, &scope.sides())?;
     let cache = cli
         .cache_dir
         .clone()
@@ -1009,37 +1185,40 @@ fn quick_setup(
         |side, message| {
             eprintln!("{}: {}", side.name(), clean(message));
         },
-    )?;
-    eprintln!("Setup complete. Start the client with enderpin launch.");
-    if server {
+    )
+    .with_context(|| {
+        format!(
+            "workspace saved in {}; from that directory retry enderpin sync --target {}",
+            root.display(),
+            match scope {
+                Scope::Client => "client",
+                Scope::Server => "server",
+                Scope::All => "all",
+            }
+        )
+    })?;
+    eprintln!("Setup complete. Workspace: {}", root.display());
+    eprintln!(
+        "From that directory, run: enderpin run{}",
+        if matches!(scope, Scope::Server) {
+            " --target server"
+        } else {
+            ""
+        }
+    );
+    if !matches!(scope, Scope::Client) && loader != "velocity" {
         eprintln!(
-            "Start the server with enderpin launch --target server (requires EULA acceptance)."
+            "Server: review the Minecraft EULA, then run enderpin run --target server --accept-eula."
         );
     }
     Ok(())
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    if let Command::Quick {
-        server,
-        minecraft_version,
-        loader,
-        mods,
-    } = &cli.command
-    {
-        return quick_setup(
-            cli,
-            *server,
-            minecraft_version.as_deref(),
-            loader.as_deref(),
-            mods,
-        );
+    if let Command::Init(args) = &cli.command {
+        return init(cli, args);
     }
     if let Command::Login { client_id } = &cli.command {
-        ensure!(
-            !cli.json,
-            "login displays an interactive authorization code; --json is not supported"
-        );
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let signal = cancelled.clone();
         ctrlc::set_handler(move || {
@@ -1068,13 +1247,6 @@ fn run(cli: &Cli) -> Result<()> {
         enderpin::auth::logout()?;
         return cli.emit(&serde_json::json!({"signed_out": true}), "Enderpin credential removed and broker access revoked. Existing server connections are not disconnected.");
     }
-    if let Command::Init { minecraft } = &cli.command {
-        Workspace::init(cli.workspace_directory(), minecraft.clone())?;
-        return cli.emit(
-            &serde_json::json!({"initialized": true, "minecraft": minecraft}),
-            "Created enderpin.toml and enderpin.lock (client + server)",
-        );
-    }
     let cache = cli
         .cache_dir
         .clone()
@@ -1082,9 +1254,9 @@ fn run(cli: &Cli) -> Result<()> {
         .unwrap_or_else(Cache::default_path)?;
     let mut ws = Workspace::open(cli.workspace_directory(), &cache)?;
     match &cli.command {
-        Command::Permissions { action } => {
+        Command::Permissions { action, .. } => {
             use enderpin::sandbox::permissions::{self, Local};
-            let side = cli.target.single()?;
+            let side = cli.target().single()?;
             let mut local = Local::load(&ws, side)?;
             match action {
                 None => return edit_permissions(cli, &mut ws, side),
@@ -1092,7 +1264,7 @@ fn run(cli: &Cli) -> Result<()> {
                     let plan = permissions::plan(&ws, side)?;
                     let fingerprint = plan.fingerprint()?;
                     let approved = local.approved.as_deref() == Some(&fingerprint);
-                    return cli.emit(&serde_json::json!({"fingerprint": fingerprint, "approved": approved, "plan": plan}), format!("{}\nApproval: {}{}", permission_text(&plan), if approved { "current" } else { "needed" }, if approved { String::new() } else { format!("\nReview and approve: enderpin --target {} permissions approve", side.name()) }));
+                    return cli.emit(&serde_json::json!({"fingerprint": fingerprint, "approved": approved, "plan": plan}), format!("{}\nApproval: {}{}", permission_text(&plan), if approved { "current" } else { "needed" }, if approved { String::new() } else { format!("\nReview and approve: enderpin permissions approve --target {}", side.name()) }));
                 }
                 Some(PermissionCommand::Approve { fingerprint }) => {
                     approve_permissions(cli, &ws, side, fingerprint.as_deref())?;
@@ -1122,7 +1294,7 @@ fn run(cli: &Cli) -> Result<()> {
                 "Local permissions updated",
             )
         }
-        Command::Launch {
+        Command::Run {
             service,
             port,
             no_sandbox,
@@ -1132,12 +1304,9 @@ fn run(cli: &Cli) -> Result<()> {
             memory,
             demo,
             connect,
+            ..
         } => {
-            ensure!(
-                !cli.json,
-                "launch streams game output; --json is not supported"
-            );
-            let side = cli.target.single()?;
+            let side = cli.target().single()?;
             ensure!(
                 !*service || side == Side::Server,
                 "--service is only for servers"
@@ -1251,40 +1420,44 @@ fn run(cli: &Cli) -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
-        Command::Prepare {
-            locked,
-            offline,
-            update,
-        } => {
-            let prepared = ws.prepare_runtime(
-                &cli.target.sides(),
-                SyncOptions {
-                    locked: *locked,
-                    offline: *offline,
+        Command::Sync { .. } | Command::Update { .. } => {
+            let options = match &cli.command {
+                Command::Sync { options, .. } => SyncOptions {
+                    locked: options.locked,
+                    offline: options.offline,
+                    no_ignore: options.no_ignore,
                     ..Default::default()
                 },
-                *update,
+                _ => SyncOptions {
+                    update: true,
+                    ..Default::default()
+                },
+            };
+            let prepared = ws.prepare_runtime(
+                &cli.target().sides(),
+                options,
+                options.update,
                 |side, message| {
-                    if !cli.json {
+                    if !cli.json() {
                         eprintln!("{}: {}", side.name(), clean(message));
                     }
                 },
             )?;
             let summary: Vec<_> = prepared.iter().map(|(side, runtime)| serde_json::json!({"target": side, "java": runtime.java, "classpath_entries": runtime.classpath.len(), "assets": runtime.assets})).collect();
-            cli.emit(&summary, "Runtime prepared and pinned in enderpin.lock")
+            cli.emit(&summary, "Runtimes, packages and shared files synchronized")
         }
-        Command::Quick { .. } | Command::Init { .. } | Command::Login { .. } | Command::Logout => {
+        Command::Init(_) | Command::Login { .. } | Command::Logout => {
             unreachable!()
         }
-        Command::Add(args) => add(cli, &mut ws, args),
-        Command::Remove { name } => {
+        Command::Add { package, .. } => add(cli, &mut ws, package),
+        Command::Remove { name, .. } => {
             identifier(name)?;
             let mut manifest = ws.manifest.clone();
-            let removed = packages_mut(&mut manifest, cli.target)
+            let removed = packages_mut(&mut manifest, cli.target())
                 .remove(name)
                 .is_some();
-            if !matches!(cli.target, Scope::All) && manifest.common.contains_key(name) {
-                let target = manifest.target_mut(cli.target.single()?);
+            if !matches!(cli.target(), Scope::All) && manifest.common.contains_key(name) {
+                let target = manifest.target_mut(cli.target().single()?);
                 if !target.disabled.contains(name) {
                     target.disabled.push(name.clone());
                 }
@@ -1295,15 +1468,16 @@ fn run(cli: &Cli) -> Result<()> {
                 );
             }
             let options = SyncOptions::default();
-            let plan = ws.plan(&manifest, &cli.target.sides(), options)?;
+            let plan = ws.plan(&manifest, &cli.target().sides(), options)?;
             apply(cli, &mut ws, manifest, plan, options)
         }
         Command::Search {
             query,
             kind,
             offset,
+            ..
         } => {
-            let side = cli.target.single()?;
+            let side = cli.target().single()?;
             let results = ws.registry.search(
                 query,
                 &ws.manifest.minecraft,
@@ -1372,17 +1546,18 @@ fn run(cli: &Cli) -> Result<()> {
                     .unwrap_or_else(|| "No compatible release".into())
             );
             if version.is_none()
-                || !Confirm::new()
-                    .with_prompt("Add this project?")
-                    .default(false)
-                    .interact()?
+                || (!cli.yes()
+                    && !Confirm::new()
+                        .with_prompt("Add this project?")
+                        .default(false)
+                        .interact()?)
             {
                 return Ok(());
             }
             add(
                 cli,
                 &mut ws,
-                &Add {
+                &PackageArgs {
                     source: hit.project_id.clone(),
                     name: None,
                     kind: Some(*kind),
@@ -1393,9 +1568,9 @@ fn run(cli: &Cli) -> Result<()> {
                 },
             )
         }
-        Command::List => {
+        Command::List { .. } => {
             let mut rows = vec![];
-            for side in cli.target.sides() {
+            for side in cli.target().sides() {
                 if let Some(target) = ws.lockfile.targets.get(&side) {
                     let stale = target.fingerprint != ws.manifest.fingerprint(side)?;
                     for package in &target.packages {
@@ -1403,7 +1578,7 @@ fn run(cli: &Cli) -> Result<()> {
                             serde_json::json!({"target": side, "stale": stale, "package": package}),
                         );
                     }
-                    if !cli.json {
+                    if !cli.json() {
                         println!(
                             "{}{}",
                             side.name(),
@@ -1424,29 +1599,21 @@ fn run(cli: &Cli) -> Result<()> {
                     }
                 }
             }
-            if cli.json {
+            if cli.json() {
                 cli.emit(&rows, "")?;
             }
             Ok(())
         }
         command => {
             let options = match command {
-                Command::Sync(s) => SyncOptions {
-                    locked: s.locked,
-                    offline: s.offline,
-                    no_ignore: s.no_ignore,
-                    ..Default::default()
-                },
-                Command::Lock { offline } => SyncOptions {
+                Command::Lock { offline, .. } => SyncOptions {
                     offline: *offline,
                     lock_only: true,
                     ..Default::default()
                 },
-                Command::Update => SyncOptions {
-                    update: true,
-                    ..Default::default()
-                },
-                Command::Restore { offline, no_ignore } => SyncOptions {
+                Command::Restore {
+                    offline, no_ignore, ..
+                } => SyncOptions {
                     locked: true,
                     restore: true,
                     offline: *offline,
@@ -1456,7 +1623,7 @@ fn run(cli: &Cli) -> Result<()> {
                 _ => unreachable!(),
             };
             let manifest = ws.manifest.clone();
-            let plan = ws.plan(&manifest, &cli.target.sides(), options)?;
+            let plan = ws.plan(&manifest, &cli.target().sides(), options)?;
             apply(cli, &mut ws, manifest, plan, options)
         }
     }
@@ -1465,7 +1632,7 @@ fn run(cli: &Cli) -> Result<()> {
 fn main() {
     let cli = Cli::parse();
     if let Err(error) = run(&cli) {
-        if cli.json {
+        if cli.json() {
             eprintln!("{}", serde_json::json!({"error": format!("{error:#}")}));
         } else {
             eprintln!("error: {}", clean(&format!("{error:#}")));
@@ -1477,66 +1644,217 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
     #[test]
-    fn setup_options_require_explicit_noninteractive_choices() -> Result<()> {
+    fn init_validates_before_writing_and_never_overwrites() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let directory = root.path().to_str().context("non-UTF8 temporary path")?;
+        let destination = root.path().join("new workspace");
+        let directory = destination.to_str().context("non-UTF8 temporary path")?;
         for flags in [
             vec![],
-            vec!["--version", "26.2"],
+            vec!["--minecraft", "1.21.1"],
             vec!["--loader", "vanilla"],
-            vec!["--version", "../bad", "--loader", "vanilla"],
+            vec!["--minecraft", "../bad", "--loader", "vanilla"],
             vec![
-                "--version",
-                "26.2",
+                "--minecraft",
+                "1.21.1",
                 "--loader",
                 "vanilla",
                 "--mods",
                 "sodium",
             ],
+            vec![
+                "--minecraft",
+                "1.21.1",
+                "--loader",
+                "vanilla",
+                "--loader-version",
+                "1",
+            ],
+            vec![
+                "--minecraft",
+                "1.21.1",
+                "--loader",
+                "fabric",
+                "--loader-version",
+                "../bad",
+            ],
+            vec!["--minecraft", "1.21.1", "--loader", "paper"],
+            vec![
+                "--minecraft",
+                "1.21.1",
+                "--loader",
+                "velocity",
+                "--loader-version",
+                "3.4.0-SNAPSHOT+563",
+                "--target",
+                "all",
+            ],
         ] {
             let cli = Cli::try_parse_from(
                 [
-                    vec!["enderpin", "-C", directory, "--no-interactive", "quick"],
+                    vec!["enderpin", "init", directory, "--no-interactive", "--yes"],
                     flags,
                 ]
                 .concat(),
             )?;
             assert!(run(&cli).is_err());
-            assert!(!root.path().join("enderpin.toml").exists());
+            assert!(!destination.exists(), "invalid setup must not create files");
         }
-        let cli = Cli::try_parse_from([
-            "enderpin",
-            "quick",
-            "--server",
-            "--version",
-            "26.2",
-            "--loader",
-            "fabric",
-            "--mods",
-            "lithium,sodium",
-        ])?;
-        assert!(matches!(cli.command, Command::Quick {server: true, mods, ..} if mods.len() == 2));
-        assert!(Cli::try_parse_from(["enderpin", "quick", "--no-sandbox"]).is_err());
-        Workspace::init_quick(root.path(), "26.2".into())?;
-        let original = std::fs::read(root.path().join("enderpin.toml"))?;
         let cli = Cli::try_parse_from([
             "enderpin",
             "-C",
             directory,
+            "init",
+            directory,
+            "--minecraft",
+            "1.21.1",
+            "--loader",
+            "vanilla",
+        ])?;
+        assert!(
+            run(&cli)
+                .expect_err("ambiguous destination")
+                .to_string()
+                .contains("do not specify both")
+        );
+        assert!(!destination.exists());
+        Workspace::init_quick(&destination, "1.21.1".into())?;
+        let original = std::fs::read(destination.join("enderpin.toml"))?;
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "init",
+            directory,
             "--no-interactive",
-            "quick",
-            "--version",
-            "26.2",
+            "--minecraft",
+            "1.21.1",
             "--loader",
             "vanilla",
         ])?;
         assert!(run(&cli).is_err());
-        assert_eq!(std::fs::read(root.path().join("enderpin.toml"))?, original);
+        assert_eq!(std::fs::read(destination.join("enderpin.toml"))?, original);
+        assert!(
+            !destination
+                .join(".enderpin/client/permissions.toml")
+                .exists()
+        );
         Ok(())
     }
+
     #[test]
-    fn cli_parses_target_and_optional_dependencies() {
+    fn command_options_and_help_match_their_scope() -> Result<()> {
+        Cli::command().debug_assert();
+        for args in [
+            vec!["run", "--target", "all"],
+            vec!["search", "--target", "all"],
+            vec!["permissions", "show", "--target", "all"],
+            vec!["init", "--version", "1.21.1"],
+            vec!["init", "--server"],
+            vec!["init", "--loader", "velocity"],
+            vec!["init", "--loader-version", "0.16.10"],
+            vec!["init", "--json"],
+            vec!["run", "--json"],
+            vec!["run", "--yes"],
+            vec!["run", "--memory", "255"],
+            vec!["run", "--demo", "--connect", "localhost"],
+            vec!["sync", "--update"],
+            vec!["lock", "--yes"],
+            vec!["permissions", "approve", "--yes"],
+            vec!["login", "--target", "server"],
+            vec!["quick"],
+            vec!["prepare"],
+            vec!["launch"],
+        ] {
+            assert!(
+                Cli::try_parse_from([vec!["enderpin"], args.clone()].concat()).is_err(),
+                "accepted {args:?}"
+            );
+        }
+        let help = Cli::command().render_help().to_string();
+        for heading in [
+            "Getting started:",
+            "Everyday:",
+            "Settings & authentication:",
+            "Automation & recovery:",
+        ] {
+            assert!(help.contains(heading));
+        }
+        for (command, absent) in [
+            ("init", "--json"),
+            ("run", "--json"),
+            ("sync", "--yes"),
+            ("login", "--target"),
+        ] {
+            let mut root = Cli::command();
+            let help = root
+                .find_subcommand_mut(command)
+                .context("command")?
+                .render_long_help()
+                .to_string();
+            assert!(!help.contains(absent), "{command} advertises {absent}");
+        }
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "permissions",
+            "show",
+            "--target",
+            "server",
+            "--json",
+        ])?;
+        assert!(matches!(cli.target(), Scope::Server));
+        assert!(cli.json());
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "init",
+            "my world",
+            "--target",
+            "all",
+            "--minecraft",
+            "1.21.1",
+            "--loader",
+            "fabric",
+            "--loader-version",
+            "0.16.10",
+            "--mods",
+            "lithium,sodium",
+        ])?;
+        let Command::Init(args) = cli.command else {
+            panic!("expected init")
+        };
+        assert_eq!(args.mods.len(), 2);
+        assert_eq!(args.loader_version.as_deref(), Some("0.16.10"));
+        Ok(())
+    }
+
+    #[test]
+    fn offline_sync_requires_a_runtime_lock_and_explains_recovery() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        Workspace::init_quick(root.path(), "1.21.1".into())?;
+        let original = std::fs::read(root.path().join("enderpin.lock"))?;
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "-C",
+            root.path().to_str().context("root")?,
+            "--cache-dir",
+            cache.path().to_str().context("cache")?,
+            "sync",
+            "--target",
+            "server",
+            "--locked",
+            "--offline",
+        ])?;
+        let error = run(&cli)
+            .expect_err("runtime must already be locked")
+            .to_string();
+        assert!(error.contains("enderpin sync --target server"), "{error}");
+        assert_eq!(std::fs::read(root.path().join("enderpin.lock"))?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn cli_parses_target_and_optional_dependencies() -> Result<()> {
         let cli = Cli::try_parse_from([
             "enderpin",
             "add",
@@ -1546,13 +1864,15 @@ mod tests {
             "--optional",
             "a,b",
             "--no-interactive",
-        ])
-        .expect("valid CLI");
-        assert!(matches!(cli.target, Scope::All));
-        let Command::Add(args) = cli.command else {
-            panic!("expected add");
+            "--yes",
+        ])?;
+        assert!(matches!(cli.target(), Scope::All));
+        assert!(cli.yes());
+        let Command::Add { package, .. } = cli.command else {
+            panic!("expected add")
         };
-        assert_eq!(args.optional, vec!["a", "b"]);
+        assert_eq!(package.optional, vec!["a", "b"]);
         assert_eq!(clean("hello\x1b[2J\u{202e}world"), "hello[2Jworld");
+        Ok(())
     }
 }

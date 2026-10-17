@@ -16,7 +16,7 @@ fn noninteractive_approval_is_explicit_and_folder_changes_revoke_it() -> Result<
             .args(args)
             .output()
     };
-    assert!(run(&["init", "--minecraft", "1.21.1"])?.status.success());
+    enderpin::Workspace::init(root.path(), "1.21.1".into())?;
     let show = || -> Result<serde_json::Value> {
         let output = run(&["permissions", "show", "--json"])?;
         assert!(
@@ -27,7 +27,7 @@ fn noninteractive_approval_is_explicit_and_folder_changes_revoke_it() -> Result<
         Ok(serde_json::from_slice(&output.stdout)?)
     };
     assert_eq!(show()?["approved"], false);
-    assert!(!run(&["--yes", "permissions", "approve"])?.status.success());
+    assert!(!run(&["permissions", "approve", "--yes"])?.status.success());
     assert!(
         !run(&["permissions", "approve", "wrong-fingerprint"])?
             .status

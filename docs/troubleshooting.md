@@ -6,9 +6,9 @@
 
 インストールに使ったnpmまたはBunのグローバル実行ファイルの場所をPATHへ追加します。Bunは `bun pm bin -g` で確認できます。[インストール方法](installation.md) を参照してください。
 
-## `quick` で既存設定を変えられない
+## `init` で既存設定を変えられない
 
-`quick` は初回用で、既存の `enderpin.toml` と `enderpin.lock` を上書きしません。MODの追加は `add`、取得のやり直しは `prepare`、別のMinecraft版は別ディレクトリでセットアップします。
+`init` は初回用で、既存の `enderpin.toml` と `enderpin.lock` を上書きしません。MODの追加は `add`、取得のやり直しは `sync`、別のMinecraft版は別ディレクトリでセットアップします。
 
 ## `configuration differs from the lock`
 
@@ -40,7 +40,7 @@ Enderpinが管理していない同名ファイルがあります。必要な内
 
 ## オンラインサーバーに参加できない
 
-`quick` の初期設定はアカウント認証が無効です。`enderpin permissions` でクライアントのアカウント認証を有効にして保存し、`enderpin login` を実行します。[ログインと起動](launch.md) の順序を確認してください。
+初期設定ではアカウント認証が有効です。無効にした場合は、`enderpin permissions` でクライアントのアカウント認証を有効にして保存し、`enderpin login` を実行します。[ログインと起動](launch.md) の順序を確認してください。
 
 ## 権限の承認を求められる
 

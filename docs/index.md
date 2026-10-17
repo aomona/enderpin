@@ -11,13 +11,14 @@ Minecraft・Java・Fabric・MODのバージョンを固定して、別のPCで�
 3. [ログインと起動](launch.md) — 権限を確認し、クライアントやサーバーを起動する。
 
 ```sh
-mkdir my-world
+enderpin init my-world --loader fabric
 cd my-world
-enderpin quick
-enderpin launch
+enderpin add sodium
+enderpin login  # 初回のアカウント認証
+enderpin run
 ```
 
-`quick` は準備、`launch` は起動です。初回のクライアントはオフラインの `Player` で起動します。認証が必要なサーバーへの参加には、アカウント認証の設定とログインが必要です。
+`init` は準備、`run` は起動です。クライアントのアカウント認証は既定で有効です。初回は `enderpin login` でログインしてください。アカウントなしで試す場合は `enderpin run --demo` を使います。
 
 ## やりたいことから探す
 

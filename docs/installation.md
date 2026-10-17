@@ -1,6 +1,6 @@
 # インストール
 
-npm版とソース版から選べます。**このサイトの `files/`・`run/` 構成はmainブランチの仕様です。公開済みv0.1.3にはまだ含まれません。** 新構成を使う場合は、下の「最新のソース版」を利用してください。
+npm版とソース版から選べます。**このサイトのCLIと `files/`・`run/` 構成はmainブランチの仕様です。公開済みv0.1.3にはまだ含まれません。** 新構成を使う場合は、下の「最新のソース版」を利用してください。
 
 npm版（v0.1.2から）は、次のコマンドでインストールします。
 
@@ -14,14 +14,14 @@ enderpin --version
 v0.1.3からは全5環境のネイティブバイナリをnpmパッケージに同梱し、OS・CPUに合うものを起動します。外部URLへの依存やインストール用スクリプト、`bun pm trust` は不要です。pnpmの `blockExoticSubdeps` を有効にしたまま使えます。
 
 ```sh
-pnpm dlx enderpin@latest quick
+pnpm dlx enderpin@latest --help
 # 版の確認
 pnpm dlx enderpin@latest --version
 ```
 
-`pnpm dlx enderpin` 単体はCLIの使い方を表示します。初期セットアップは末尾に `quick` を付けてください。
+`pnpm dlx enderpin` 単体はCLIの使い方を表示します。ソース版の初期セットアップは `init` です。公開版のコマンドはその版の `--help` を参照してください。
 
-入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun enderpin quick` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun enderpin --help` のように起動できます。更新は `bun update -g enderpin` または `npm install -g enderpin@latest` です。
 
 ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 

@@ -27,13 +27,13 @@ deploy/ansible/             # inventoryとplaybook
 Velocityの版は`minecraft`と独立しています。`minecraft`はパッケージの互換性判定に使用します。Paper/Velocityには`kind = "plugin"`のパッケージを指定します。Fabricには`kind = "mod"`を指定します。異なるバックエンドに異なるMinecraft版も指定できますが、プレイヤーのプロトコルやMODの互換性は別途揃える必要があります。
 
 ```sh
-enderpin -C servers/proxy --target server prepare
-enderpin -C servers/lobby --target server prepare
-enderpin -C servers/survival --target server prepare
+enderpin -C servers/proxy sync --target server
+enderpin -C servers/lobby sync --target server
+enderpin -C servers/survival sync --target server
 git add servers
 ```
 
-初回の`prepare`がランタイムjar、必要なJava、MODとその依存をlockに固定します。版を変更したときも`prepare`してlockをコミットします。自動更新はせず、CDは`prepare --locked`を使います。`files/server/`には共有する設定だけを置き、ワールド、アカウント、VPN鍵、SSH鍵をコミットしないでください。
+初回の`sync`がランタイムjar、必要なJava、MODとその依存をlockに固定します。版を変更したときも`sync`してlockをコミットします。自動更新はせず、CDは`sync --locked`を使います。`files/server/`には共有する設定だけを置き、ワールド、アカウント、VPN鍵、SSH鍵をコミットしないでください。
 
 ## 配置と認証
 
@@ -113,7 +113,7 @@ GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`
 
 承認後の変更は起動時に再検証します。配布前のダウンロード失敗では現在のサービスを停止しません。切り替え後に失敗した場合は停止してバックアップを残し、後続の配布も中断します。自動で古いワールドへ戻すことはありません。配布にはサービスの停止時間が発生し、複数ホスト全体の原子的な切り替えは保証しません。
 
-`launch --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス・アカウント・ワールドを自動削除する処理はありません。廃止するサービスは明示的に停止・無効化してください。
+`run --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス・アカウント・ワールドを自動削除する処理はありません。廃止するサービスは明示的に停止・無効化してください。
 
 ## 復旧と検証範囲
 

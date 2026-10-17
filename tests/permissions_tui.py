@@ -19,7 +19,8 @@ def main():
     binary = parser.parse_args().binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='enderpin-permissions-') as directory:
         root = Path(directory)
-        subprocess.run([str(binary), 'init', '--minecraft', '1.21.1'], cwd=root, check=True, capture_output=True)
+        (root / 'enderpin.toml').write_bytes((Path(__file__).parent / 'fixtures/empty-workspace.toml').read_bytes())
+        subprocess.run([str(binary), 'lock', '--target', 'all'], cwd=root, check=True, capture_output=True)
         original = (root / 'enderpin.toml').read_bytes()
         local = root / '.enderpin/client/permissions.toml'
         for cancel in [True, False]:
@@ -103,7 +104,7 @@ def main():
             assert saved['folders'] == [{'path': str(folder), 'write': True}]
             assert 'approved' not in saved
         # A server editor offers no desktop controls, and saving alone never approves.
-        terminal = Terminal(binary, root, ['--target', 'server', 'permissions'])
+        terminal = Terminal(binary, root, ['permissions', '--target', 'server'])
         try:
             terminal.expect('Game permissions')
             terminal.send('\x1b[B' * 3 + '\r')  # Save without approving.
@@ -114,7 +115,7 @@ def main():
             terminal.close()
         assert 'approved' not in tomllib.loads((root / '.enderpin/server/permissions.toml').read_text())
         # A direct review uses the same summary and defaults to declining approval.
-        terminal = Terminal(binary, root, ['--target', 'server', 'permissions', 'approve'])
+        terminal = Terminal(binary, root, ['permissions', '--target', 'server', 'approve'])
         try:
             terminal.expect('Approve this game and these packages on this PC?')
             terminal.send('\r')
