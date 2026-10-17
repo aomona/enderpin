@@ -214,16 +214,46 @@ fn desktop(command: &mut Command, audio: bool) -> Result<()> {
                     .context("audio requires a local unix: PULSE_SERVER")?,
             )),
             Err(_) => runtime
+                .as_ref()
                 .map(|p| p.join("pulse/native"))
                 .filter(|p| p.exists()),
         };
+        let pipewire = runtime
+            .as_ref()
+            .map(|p| p.join("pipewire-0"))
+            .filter(|p| p.exists());
         if let Some(pulse) = pulse {
             bind_socket(command, &pulse, Path::new("/run/enderpin/pulse"))?;
+            command
+                .env("PULSE_SERVER", "unix:/run/enderpin/pulse")
+                .env("ALSOFT_DRIVERS", "pulse");
+        } else if let Some(pipewire) = pipewire {
+            bind_socket(command, &pipewire, Path::new("/run/enderpin/pipewire-0"))?;
+            command
+                .env("PIPEWIRE_REMOTE", "pipewire-0")
+                .env("ALSOFT_DRIVERS", "pipewire");
+        } else if Path::new("/dev/snd").is_dir() {
+            for entry in fs::read_dir("/dev/snd")? {
+                let entry = entry?;
+                if entry.file_type()?.is_char_device() {
+                    command
+                        .arg("--dev-bind")
+                        .arg(entry.path())
+                        .arg(entry.path());
+                }
+            }
+            ro_if_present(command, "/etc/asound.conf");
+            command.env("ALSOFT_DRIVERS", "alsa");
+        } else {
+            anyhow::bail!(
+                "Audio is enabled but no local PulseAudio, PipeWire or ALSA device is available; configure host audio or disable it in permissions"
+            );
         }
+    } else {
+        command
+            .env("PULSE_SERVER", "unix:/run/enderpin/audio-disabled")
+            .env("ALSOFT_DRIVERS", "pulse");
     }
-    command
-        .env("PULSE_SERVER", "unix:/run/enderpin/pulse")
-        .env("ALSOFT_DRIVERS", "pulse");
     if let Ok(entries) = fs::read_dir("/dev/dri") {
         for entry in entries {
             let entry = entry?;
@@ -237,7 +267,28 @@ fn desktop(command: &mut Command, audio: bool) -> Result<()> {
             }
         }
     }
+    // Proprietary NVIDIA OpenGL also requires its character devices; DRM render nodes
+    // alone are insufficient. Never expose input, disks, or arbitrary host devices.
+    for entry in fs::read_dir("/dev")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if nvidia_device(&name.to_string_lossy()) && entry.file_type()?.is_char_device() {
+            command
+                .arg("--dev-bind")
+                .arg(entry.path())
+                .arg(entry.path());
+        }
+    }
     Ok(())
+}
+
+fn nvidia_device(name: &str) -> bool {
+    matches!(
+        name,
+        "nvidiactl" | "nvidia-modeset" | "nvidia-uvm" | "nvidia-uvm-tools"
+    ) || name.strip_prefix("nvidia").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 // Classic BPF inspects the native ABI and denies namespace escape, privileged
@@ -334,4 +385,23 @@ fn seccomp(network: bool) -> Result<Vec<u8>> {
         bytes.extend(value.to_ne_bytes());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gpu_device_allowlist_excludes_unrelated_devices() {
+        for name in [
+            "nvidia0",
+            "nvidia12",
+            "nvidiactl",
+            "nvidia-modeset",
+            "nvidia-uvm",
+        ] {
+            assert!(super::nvidia_device(name));
+        }
+        for name in ["nvidia", "nvidia-secret", "input", "sda", "nvidia0/escape"] {
+            assert!(!super::nvidia_device(name));
+        }
+    }
 }

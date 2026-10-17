@@ -1,6 +1,6 @@
 # Enderpin
 
-Minecraftのクライアントとサーバーを準備・共有するCLI。Minecraft・Java・Fabric・MODのバージョンを固定し、別のPCでも同じ構成を再現できます。
+Minecraftのクライアントとサーバーを準備・共有するCLI。Minecraft・Java・Fabric・Paper・Velocity・MODのバージョンを固定し、別のPCでも同じ構成を再現できます。
 
 [ドキュメント](https://enderpin-docs.aomona.workers.dev/) · [対応環境](https://enderpin-docs.aomona.workers.dev/platforms)
 
@@ -23,6 +23,7 @@ enderpin launch
 - [ログイン・サーバー起動](https://enderpin-docs.aomona.workers.dev/launch)
 - [MODの追加・更新](https://enderpin-docs.aomona.workers.dev/packages)
 - [設定を共有する](https://enderpin-docs.aomona.workers.dev/sharing)
+- [Velocity・複数サーバー・Ansible CD](docs/deployment.md)
 - [開発・ビルド手順](https://enderpin-docs.aomona.workers.dev/contributing)
 
 > ドキュメントはmainブランチの仕様です。`files/`・`run/` の新構成は公開版v0.1.3には含まれません。利用する場合は[ソース版](https://enderpin-docs.aomona.workers.dev/installation#最新のソース版)をインストールしてください。

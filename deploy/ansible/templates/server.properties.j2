@@ -1,0 +1,9 @@
+{% for key, value in instance.get('properties', {}).items() | sort %}
+{{ key }}={{ value | string | lower if value is boolean else value }}
+{% endfor %}
+# Connection and authentication settings are controlled by the deployment.
+server-ip={{ instance.address }}
+server-port={{ instance.port }}
+online-mode={{ 'true' if source.runtime == 'fabric' else 'false' }}
+enable-rcon=false
+enable-query=false

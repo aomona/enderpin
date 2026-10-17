@@ -18,6 +18,14 @@ impl Operations for Fixture {
     }
     fn execute(&mut self, command: &Command) -> Result<serde_json::Value, BrokerError> {
         match command {
+            Command::Realms {
+                method,
+                path,
+                body,
+                headers,
+            } if method == "POST" && path == "/worlds" && body == "probe" && headers.is_empty() => {
+                Ok(serde_json::json!({"status":503,"body":"busy","headers":{"retry-after":"9"}}))
+            }
             Command::Certificate {} => self
                 .0
                 .install(certificate(SystemTime::now()), SystemTime::now()),
@@ -124,6 +132,47 @@ fn native_bridge_signs_without_exporting_keys_and_enforces_denial() -> Result<()
             "broker probe did not complete"
         );
     }
+    std::fs::write(
+        game.join("HostBridgeSmoke.java"),
+        include_str!("../../../java/auth-bridge-smoke/HostBridgeSmoke.java"),
+    )?;
+    let broker = PreparedBroker::new(Box::new(Fixture(ChatKeys::default())), true)?;
+    let arguments: Vec<std::ffi::OsString> = vec![
+        format!(
+            "-javaagent:../bridge/auth-bridge.jar={}",
+            crate::storage::java_path(&crate::bridges::native(&bridge)).display()
+        )
+        .into(),
+        "-XX:-UsePerfData".into(),
+        crate::storage::java_path(&game.join("HostBridgeSmoke.java")).into(),
+    ];
+    #[cfg(unix)]
+    let output = {
+        let mut command = crate::sandbox::command(&java, &policy)?;
+        broker.configure(&mut command)?;
+        command.args(&arguments).output()?
+    };
+    #[cfg(windows)]
+    let output = {
+        use std::os::windows::io::AsRawHandle;
+        let mut args = arguments.clone();
+        args.insert(
+            1,
+            format!(
+                "-Dmonalauncher.auth.handle={}",
+                broker.child_handle().as_raw_handle() as usize
+            )
+            .into(),
+        );
+        crate::sandbox::windows::output_inherited(&java, &policy, &args, &[broker.child_handle()])?
+    };
+    ensure!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("HOST_HTTP_STATUS_BODY_RETRY_OK"),
+        "host HTTP bridge failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     std::fs::write(
         game.join("NarratorPolicySmoke.java"),
         include_str!("../../../java/narrator-bridge-smoke/NarratorPolicySmoke.java"),

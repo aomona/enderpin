@@ -1,0 +1,4 @@
+hackOnlineMode = true
+hackEarlySend = {{ instance.get('fabric_proxy_hack_early_send', false) | lower }}
+hackMessageChain = {{ instance.get('fabric_proxy_hack_message_chain', false) | lower }}
+secret = {{ enderpin_forwarding_secret | to_json }}

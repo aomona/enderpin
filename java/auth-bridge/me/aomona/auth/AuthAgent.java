@@ -44,10 +44,23 @@ public final class AuthAgent {
         instrumentation.addTransformer(new ClassFileTransformer() {
             @Override public byte[] transform(ClassLoader loader, String name, Class<?> redefined,
                                                ProtectionDomain domain, byte[] bytes) {
-                boolean crypt = "net/minecraft/util/Crypt".equals(name) || "net/minecraft/class_3515".equals(name) || "bax".equals(name);
-                if (!crypt && !"com/mojang/authlib/minecraft/client/MinecraftClient".equals(name)) return null;
+                String version = System.getProperty("enderpin.minecraft", "");
+                boolean crypt = "net/minecraft/util/Crypt".equals(name) || "net/minecraft/class_3515".equals(name) || ("1.21.8".equals(version) && "bax".equals(name)) || ("1.21.1".equals(version) && "axl".equals(name));
+                boolean desktop = java.util.Set.of("net/minecraft/util/Util$OS", "net/minecraft/Util$OS",
+                    "net/minecraft/class_156$class_158").contains(name)
+                    || ("1.21.1".equals(version) && "ad$a".equals(name)) || ("1.21.8".equals(version) && "ag$a".equals(name));
+                if ("26.3".equals(version)) desktop = "com/mojang/blaze3d/Blaze3D".equals(name);
+                boolean realms = java.util.Set.of("com/mojang/realmsclient/client/Request", "net/minecraft/class_4346", "fcb", "fou").contains(name);
+                // Obfuscated names are only selected for the current pinned Minecraft version.
+                if ("fcb".equals(name)) realms = "1.21.1".equals(version);
+                if ("fou".equals(name)) realms = "1.21.8".equals(version);
+                boolean fileDialog = "org/lwjgl/util/tinyfd/TinyFileDialogs".equals(name);
+                boolean drop = java.util.Set.of("net/minecraft/client/gui/screens/packs/PackSelectionScreen", "net/minecraft/class_5375").contains(name)
+                    || ("1.21.1".equals(version) && "frt".equals(name)) || ("1.21.8".equals(version) && "gjc".equals(name));
+                if (!crypt && !desktop && !realms && !fileDialog && !drop && !"com/mojang/authlib/minecraft/client/MinecraftClient".equals(name)) return null;
                 try {
-                    byte[] adapted = crypt ? MethodAdapter.transformPrivateKeys(bytes) : MethodAdapter.transform(bytes);
+                    byte[] adapted = fileDialog ? MethodAdapter.transformFileDialog(bytes) : drop ? MethodAdapter.transformDrop(bytes) : desktop ? MethodAdapter.transformDesktop(bytes) : realms ? MethodAdapter.transformRealms(bytes)
+                        : crypt ? MethodAdapter.transformPrivateKeys(bytes) : MethodAdapter.transform(bytes);
                     if (crypt) System.setProperty("monalauncher.auth.chat.adapter", "crypt-v1");
                     else System.setProperty("monalauncher.auth.adapter", "authlib-client-v1");
                     return adapted;
@@ -55,7 +68,7 @@ public final class AuthAgent {
                 catch (Throwable error) {
                     // Returning the original class after an adapter failure would silently change
                     // behavior. Abort this JVM; never fall back to credential-bearing arguments.
-                    System.err.println("MonaLauncher authentication adapter incompatible");
+                    System.err.println("Enderpin adapter incompatible: " + name + " (" + error.getClass().getSimpleName() + ")");
                     Runtime.getRuntime().halt(78);
                     return null;
                 }

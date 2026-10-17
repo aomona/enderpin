@@ -37,6 +37,7 @@ fn main() {
     for name in [
         "AuthAgent",
         "AuthBridge",
+        "RealmsConnection",
         "MethodAdapter",
         "NativeIO",
         "RemotePrivateKey",
@@ -73,6 +74,8 @@ fn main() {
         "auth-bootstrap.jar",
         &[
             "me/aomona/auth/AuthBridge.class",
+            "me/aomona/auth/RealmsConnection.class",
+            "me/aomona/auth/RealmsConnection$1.class",
             "me/aomona/auth/NativeIO.class",
             "me/aomona/auth/RemotePrivateKey.class",
             "me/aomona/auth/RemoteProvider.class",

@@ -88,6 +88,9 @@ enum Command {
     Logout,
     /// Launch a pinned target in the OS sandbox; Ctrl-C stops the server gracefully.
     Launch {
+        /// Run without reading terminal input; stop gracefully on SIGTERM or Ctrl-C.
+        #[arg(long)]
+        service: bool,
         /// Override the server port for this launch.
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
@@ -110,7 +113,7 @@ enum Command {
         #[arg(long)]
         connect: Option<String>,
     },
-    /// Pin and download Minecraft, Fabric and a platform-specific Temurin JDK.
+    /// Pin and download the target runtime, packages and a platform-specific Temurin JDK.
     Prepare {
         #[arg(long)]
         locked: bool,
@@ -261,7 +264,7 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
         ),
         format!(
             "Game folder: {}",
-            if settings.game_write {
+            if settings.files.game.writable() {
                 "read/write"
             } else {
                 "read-only"
@@ -276,10 +279,11 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
                 .map(|path| format!("  {}", clean(path))),
         );
     }
-    if settings.game_write && !settings.read_only.is_empty() {
+    if settings.files.game.writable() && !settings.files.read_only.is_empty() {
         lines.push(format!(
             "Read-only game folders: {}",
             settings
+                .files
                 .read_only
                 .iter()
                 .map(|d| d.name())
@@ -303,11 +307,20 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
             access(settings.desktop_integration),
             access(settings.graphics_cache)
         ));
+        lines.push(format!(
+            "Import files with host confirmation: {}",
+            access(settings.import_files)
+        ));
+        lines.push(format!(
+            "Open web links: {}; open folders/screenshots: {}",
+            access(settings.open_links),
+            access(settings.open_folders)
+        ));
         if plan.platform == "macos" {
             lines.push(format!(
                 "Microphone: {}; clipboard: {}",
                 access(settings.microphone == Some(true)),
-                access(settings.clipboard == Some(true))
+                access(settings.clipboard_allowed())
             ));
         }
     }
@@ -419,13 +432,13 @@ fn allow_folder(
 }
 
 fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
-    use enderpin::sandbox::permissions::{GameDirectory, Local};
+    use enderpin::sandbox::permissions::{Clipboard, FileAccess, GameDirectory, Local};
     ensure!(
         cli.interactive(),
         "permissions editor needs a terminal; use permissions show --json to inspect or edit enderpin.toml"
     );
     let mut manifest = ws.manifest.clone();
-    let settings = &mut manifest.target_mut(side).sandbox;
+    let settings = &mut manifest.target_mut(side).permissions;
     let mut local = Local::load(ws, side)?;
     eprintln!(
         "Editing {} permissions. All mods share these permissions. Cancel from the main menu discards unsaved changes.",
@@ -458,9 +471,10 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
                 );
             }
             Some("Game permissions") => {
+                let mut game_write = settings.files.game.writable();
                 let mut switches = vec![
                     ("Network (internet, LAN, listening)", &mut settings.network),
-                    ("Write to game folder", &mut settings.game_write),
+                    ("Write to game folder", &mut game_write),
                 ];
                 if side == Side::Client {
                     switches.push((
@@ -479,6 +493,11 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
                     }
                 }
                 edit_switches(&mut switches)?;
+                settings.files.game = if game_write {
+                    FileAccess::ReadWrite
+                } else {
+                    FileAccess::ReadOnly
+                };
                 if !settings.audio && settings.microphone == Some(true) {
                     settings.microphone = None;
                 }
@@ -506,12 +525,13 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
                     .defaults(
                         &folders
                             .iter()
-                            .map(|folder| settings.read_only.contains(folder))
+                            .map(|folder| settings.files.read_only.contains(folder))
                             .collect::<Vec<_>>(),
                     )
                     .interact_opt()?
                 {
-                    settings.read_only = selected.into_iter().map(|index| folders[index]).collect();
+                    settings.files.read_only =
+                        selected.into_iter().map(|index| folders[index]).collect();
                 }
             }
             Some("External folders") => {
@@ -560,8 +580,17 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
             }
             Some("Advanced desktop permissions") => {
                 let mut microphone = settings.microphone == Some(true);
-                let mut clipboard = settings.clipboard == Some(true);
+                let mut clipboard = settings.clipboard_allowed();
                 let mut switches = vec![
+                    (
+                        "Import selected files via host confirmation",
+                        &mut settings.import_files,
+                    ),
+                    ("Open web links via host", &mut settings.open_links),
+                    (
+                        "Open game/approved folders and screenshots via host",
+                        &mut settings.open_folders,
+                    ),
                     ("Narrator via host", &mut settings.narrator),
                     ("Write skin cache", &mut settings.skin_cache),
                 ];
@@ -580,8 +609,12 @@ fn edit_permissions(cli: &Cli, ws: &mut Workspace, side: Side) -> Result<()> {
                     if microphone != (settings.microphone == Some(true)) {
                         settings.microphone = Some(microphone);
                     }
-                    if clipboard != (settings.clipboard == Some(true)) {
-                        settings.clipboard = Some(clipboard);
+                    if clipboard != (settings.clipboard_allowed()) {
+                        settings.clipboard = if clipboard {
+                            Clipboard::ReadWrite
+                        } else {
+                            Clipboard::None
+                        };
                     }
                 }
                 eprintln!(
@@ -683,7 +716,8 @@ fn add(cli: &Cli, ws: &mut Workspace, args: &Add) -> Result<()> {
         let project = ws.registry.project(&args.source)?;
         let kind = args.kind.unwrap_or(match project.project_type.as_str() {
             "mod"
-                if matches!(cli.target, Scope::Server) && ws.manifest.server.loader == "paper" =>
+                if matches!(cli.target, Scope::Server)
+                    && matches!(ws.manifest.server.loader.as_str(), "paper" | "velocity") =>
             {
                 Kind::Plugin
             }
@@ -1089,6 +1123,7 @@ fn run(cli: &Cli) -> Result<()> {
             )
         }
         Command::Launch {
+            service,
             port,
             no_sandbox,
             offline,
@@ -1103,6 +1138,15 @@ fn run(cli: &Cli) -> Result<()> {
                 "launch streams game output; --json is not supported"
             );
             let side = cli.target.single()?;
+            ensure!(
+                !*service || side == Side::Server,
+                "--service is only for servers"
+            );
+            let stop_command = if ws.manifest.target(side).loader == "velocity" {
+                "end"
+            } else {
+                "stop"
+            };
             ensure!(
                 port.is_none() || side == Side::Server,
                 "--port is only for servers"
@@ -1165,7 +1209,7 @@ fn run(cli: &Cli) -> Result<()> {
                 game.id()
             );
             let (sender, receiver) = std::sync::mpsc::channel();
-            if side == Side::Server {
+            if side == Side::Server && !service {
                 std::thread::spawn(move || {
                     use std::io::BufRead;
                     for line in io::stdin().lock().lines() {
@@ -1176,7 +1220,7 @@ fn run(cli: &Cli) -> Result<()> {
                             return;
                         }
                     }
-                    let _ = sender.send("stop".into());
+                    let _ = sender.send(stop_command.into());
                 });
             }
             let mut stop_requested = false;
@@ -1196,7 +1240,7 @@ fn run(cli: &Cli) -> Result<()> {
                 }
                 while let Ok(line) = receiver.try_recv() {
                     game.console(&line)?;
-                    if line.trim() == "stop" {
+                    if line.trim() == stop_command {
                         stop_requested = true;
                     }
                 }

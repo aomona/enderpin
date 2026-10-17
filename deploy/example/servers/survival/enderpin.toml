@@ -1,0 +1,13 @@
+format = 3
+minecraft = "1.21.1"
+
+[client]
+loader = "fabric"
+
+[server]
+loader = "fabric"
+loader_version = "0.16.10"
+
+[server.packages.fabricproxy-lite]
+modrinth = "fabricproxy-lite"
+kind = "mod"

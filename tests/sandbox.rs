@@ -111,11 +111,17 @@ public class Probe {
             network,
             desktop: false,
             permissions: sandbox::permissions::Settings {
-                game_write,
-                read_only: if mods_readonly {
-                    vec![sandbox::permissions::GameDirectory::Mods]
-                } else {
-                    vec![]
+                files: sandbox::permissions::FilePermissions {
+                    game: if game_write {
+                        sandbox::permissions::FileAccess::ReadWrite
+                    } else {
+                        sandbox::permissions::FileAccess::ReadOnly
+                    },
+                    read_only: if mods_readonly {
+                        vec![sandbox::permissions::GameDirectory::Mods]
+                    } else {
+                        vec![]
+                    },
                 },
                 ..Default::default()
             },

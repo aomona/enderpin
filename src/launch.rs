@@ -42,9 +42,9 @@ impl Default for LaunchOptions {
 /// Owns the target lock until its JVM exits. Dropping it kills and reaps the child.
 pub struct RunningGame {
     child: Child,
+    stop_command: &'static str,
     _target: File,
     _temporary: tempfile::TempDir,
-    _bridges: Option<tempfile::TempDir>,
     _broker: Option<crate::auth::broker::channel::BrokerGuard>,
     relay_threads: Vec<std::thread::JoinHandle<()>>,
     #[cfg(target_os = "linux")]
@@ -92,7 +92,7 @@ impl RunningGame {
     }
     pub fn stop(&mut self, side: Side) -> Result<()> {
         if side == Side::Server {
-            return self.console("stop");
+            return self.console(self.stop_command);
         }
         #[cfg(unix)]
         {
@@ -167,7 +167,12 @@ pub fn start(
         );
     }
     let game = storage::directory(&workspace.root, side.game_directory())?.canonicalize()?;
-    if side == Side::Server {
+    let proxy = side == Side::Server && workspace.manifest.server.loader == "velocity";
+    ensure!(
+        !proxy || options.port.is_none(),
+        "configure the Velocity port in velocity.toml"
+    );
+    if side == Side::Server && !proxy {
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(
             options.accept_eula || eula.lines().any(|l| l.trim() == "eula=true"),
@@ -203,7 +208,7 @@ pub fn start(
             "sandbox permissions changed or are unapproved; run permissions approve in a terminal (automation: permissions show --json, then permissions approve <fingerprint>)"
         );
     }
-    if side == Side::Server && options.accept_eula {
+    if side == Side::Server && !proxy && options.accept_eula {
         let path = storage::safe_path(&game, "eula.txt")?;
         let mut file = File::create(path)?;
         file.write_all(
@@ -219,28 +224,48 @@ pub fn start(
         .and_then(|p| p.parent())
         .context("invalid Java path")?
         .canonicalize()?;
-    for directory in &plan.effective.read_only {
+    for directory in &plan.effective.files.read_only {
         storage::directory(&game, directory.name())?;
     }
     let mut extra: Vec<_> = plan.folders.clone();
-    let bridge_files = if side == Side::Client
-        && (workspace.manifest.client.loader != "vanilla"
-            || (!demo && plan.effective.account_authentication)
-            || plan.effective.narrator)
-    {
-        let root = storage::directory(&workspace.root, ".enderpin/client/launch")?;
-        let files = tempfile::tempdir_in(root)?;
-        crate::bridges::write_files(files.path())?;
-        Some(files)
+    let bridge_files = if side == Side::Client {
+        Some(crate::bridges::prepare(&workspace.root)?)
     } else {
         None
     };
-    let broker = if side == Side::Client && !demo && plan.effective.account_authentication {
+    let authenticated = side == Side::Client && !demo && plan.effective.account_authentication;
+    let account = if authenticated {
         crate::bridges::clear_profile_keys(&game)?;
-        Some(crate::bridges::broker(
+        Some(Box::new(crate::bridges::broker(
             &runtime,
             &workspace.lockfile.runtimes[&side],
             session.context("missing session")?,
+        )?)
+            as Box<dyn crate::auth::broker::service::Operations>)
+    } else {
+        None
+    };
+    let imports = if side == Side::Client {
+        let root =
+            storage::directory(&workspace.root, ".enderpin/client/imports")?.canonicalize()?;
+        sandbox::validate_data_tree(&root)?;
+        Some(root)
+    } else {
+        None
+    };
+    let broker = if side == Side::Client {
+        let mut settings = plan.effective.clone();
+        settings.network &= options.network;
+        Some(crate::auth::broker::channel::PreparedBroker::new(
+            Box::new(crate::desktop::HostOperations {
+                account,
+                settings,
+                game: game.clone(),
+                folders: plan.folders.clone(),
+                imports: imports.clone().context("client import directory missing")?,
+                last_open: None,
+            }),
+            true,
         )?)
     } else {
         None
@@ -253,10 +278,13 @@ pub fn start(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     let narrator = if side == Side::Client && plan.effective.narrator {
-        Some(std::sync::Arc::new(
-            crate::narrator::NarratorBroker::start(narrator_token.clone())
-                .map_err(anyhow::Error::msg)?,
-        ))
+        match crate::narrator::NarratorBroker::start(narrator_token.clone()) {
+            Ok(narrator) => Some(std::sync::Arc::new(narrator)),
+            Err(error) => {
+                progress(&format!("Narrator unavailable: {error}"));
+                None
+            }
+        }
     } else {
         None
     };
@@ -301,10 +329,13 @@ pub fn start(
         extra,
     };
     if let Some(files) = &bridge_files {
-        policy.readonly.push(files.path().canonicalize()?);
+        policy.readonly.push(files.as_path().canonicalize()?);
+    }
+    if let Some(imports) = imports {
+        policy.readonly.push(imports);
     }
     ensure!(
-        options.connect.is_none() || (policy.network && broker.is_some()),
+        options.connect.is_none() || (policy.network && authenticated),
         "--connect requires approved network and account authentication access"
     );
     let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
@@ -343,7 +374,7 @@ pub fn start(
     let classpath = std::env::join_paths(
         bridge_files
             .iter()
-            .map(|files| storage::java_path(&files.path().join("narrator-bridge.jar")))
+            .map(|files| storage::java_path(&files.as_path().join("narrator-bridge.jar")))
             .chain(runtime.classpath.iter().map(|p| storage::java_path(p))),
     )?
     .into_string()
@@ -356,6 +387,7 @@ pub fn start(
         ),
         format!("-Duser.home={}", storage::java_path(&policy.game).display()),
         "-XX:-UsePerfData".into(),
+        format!("-Denderpin.minecraft={}", workspace.manifest.minecraft),
     ];
     if workspace.manifest.target(side).loader == "fabric" {
         args.push(format!(
@@ -374,16 +406,16 @@ pub fn start(
             // workspace paths out of the agent filename portion.
             args.push(format!(
                 "-javaagent:{}={}",
-                std::path::Path::new("../launch")
+                std::path::Path::new("../../.enderpin/client/launch")
                     .join(
                         files
-                            .path()
+                            .as_path()
                             .file_name()
                             .context("bridge directory missing")?
                     )
                     .join("auth-bridge.jar")
                     .display(),
-                storage::java_path(&crate::bridges::native(files.path())).display()
+                storage::java_path(&crate::bridges::native(files.as_path())).display()
             ));
             #[cfg(unix)]
             broker.configure(&mut command)?;
@@ -404,18 +436,34 @@ pub fn start(
             .cloned(),
     );
     if side == Side::Server {
-        args.extend([
-            "-Djava.awt.headless=true".into(),
-            "-cp".into(),
-            classpath,
-            if workspace.manifest.server.loader == "vanilla" {
-                "net.minecraft.server.Main"
-            } else {
-                "net.fabricmc.loader.impl.launch.knot.KnotServer"
+        if matches!(
+            workspace.manifest.server.loader.as_str(),
+            "paper" | "velocity"
+        ) {
+            args.extend([
+                "-Djava.awt.headless=true".into(),
+                "-jar".into(),
+                storage::java_path(&runtime.game_jar)
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+            if !proxy {
+                args.push("nogui".into());
             }
-            .into(),
-            "nogui".into(),
-        ]);
+        } else {
+            args.extend([
+                "-Djava.awt.headless=true".into(),
+                "-cp".into(),
+                classpath,
+                if workspace.manifest.server.loader == "vanilla" {
+                    "net.minecraft.server.Main"
+                } else {
+                    "net.fabricmc.loader.impl.launch.knot.KnotServer"
+                }
+                .into(),
+                "nogui".into(),
+            ]);
+        }
         if let Some(port) = options.port {
             args.extend(["--port".into(), port.to_string()]);
         }
@@ -446,7 +494,7 @@ pub fn start(
             ),
             (
                 "auth_access_token",
-                if broker.is_some() {
+                if authenticated {
                     crate::auth::broker::protocol::GAME_TOKEN.into()
                 } else {
                     "0".into()
@@ -587,9 +635,9 @@ pub fn start(
     drop(workspace);
     Ok(RunningGame {
         child,
+        stop_command: if proxy { "end" } else { "stop" },
         _target: target,
         _temporary: temporary,
-        _bridges: bridge_files,
         _broker: broker.map(|broker| broker.into_guard()),
         relay_threads,
         #[cfg(target_os = "linux")]

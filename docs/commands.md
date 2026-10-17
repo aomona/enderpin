@@ -12,9 +12,9 @@
 | `update` | 選んだ対象のModrinthパッケージを更新 |
 | `restore` | 管理パッケージをロックへ、共有ファイルを現在の `files/` へ明示的に復元 |
 | `list` | ロックされたパッケージとロックの更新要否を表示 |
-| `prepare [--locked] [--update]` | Minecraft・Fabric・Javaを固定して準備 |
+| `prepare [--locked] [--update]` | Minecraft・Fabric・Paper・Velocity・Javaを固定して準備 |
 | `login --client-id ID` / `logout` | OS資格情報ストアを使ったログイン・削除 |
 | `permissions [show / approve / revoke / allow-folder / remove-folder]` | 対話編集・権限の確認と承認・外部フォルダの許可 |
-| `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048） |
+| `launch` | 選んだ片側をサンドボックス起動（`--memory` はMiB、既定2048。サーバー用`--service`は標準入力なしで稼働） |
 
 共通オプションは `-C DIRECTORY`、`--target client|server|all`、`--cache-dir DIRECTORY`、`--json`、`--no-interactive` です。`quick`・`login`・`launch` は `--json` 非対応、`launch` と `search` の対象は片側です。非対話環境の検索は一覧出力です。同期・復元の `--offline` は既存の固定内容とローカルキャッシュだけを使います。

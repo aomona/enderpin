@@ -39,8 +39,10 @@ pub fn resolve(
             continue;
         }
         let loader = &manifest.target(side).loader;
-        let wrong_runtime = (package.kind == Kind::Mod && loader == "paper")
-            || (package.kind == Kind::Plugin && loader != "paper");
+        let plugins = matches!(loader.as_str(), "paper" | "velocity");
+        let wrong_runtime = (package.kind == Kind::Mod && plugins)
+            || (package.kind == Kind::Plugin && !plugins)
+            || (loader == "velocity" && package.kind != Kind::Plugin);
         if wrong_runtime {
             ensure!(
                 !explicitly_enabled,
@@ -444,7 +446,9 @@ impl Resolver<'_> {
                     let kind = match dep_info.project_type.as_str() {
                         "resourcepack" => Kind::Resourcepack,
                         "shader" => Kind::Shader,
-                        "mod" if target.loader == "paper" => Kind::Plugin,
+                        "mod" if matches!(target.loader.as_str(), "paper" | "velocity") => {
+                            Kind::Plugin
+                        }
                         "mod" => Kind::Mod,
                         other => bail!("unsupported dependency type {other}"),
                     };
@@ -548,6 +552,52 @@ mod tests {
             project_id: Some(id.into()),
             dependency_type: kind.into(),
         }
+    }
+    #[test]
+    fn plugin_runtimes_keep_dependencies_in_plugins_and_reject_mods() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let cache = Cache::open(temp.path())?;
+        for loader in ["paper", "velocity"] {
+            let mut registry = Modrinth::default();
+            fixture(
+                &mut registry,
+                "plugin",
+                vec![dep("library", "required")],
+                "server_only",
+            );
+            fixture(&mut registry, "library", vec![], "server_only");
+            for version in registry.versions.values_mut() {
+                version.loaders = vec![loader.into()];
+            }
+            for versions in registry.project_versions.values_mut() {
+                for version in versions {
+                    version.loaders = vec![loader.into()];
+                }
+            }
+            let mut manifest = Manifest::new("1.21.1".into())?;
+            manifest.server.loader = loader.into();
+            manifest
+                .server
+                .packages
+                .insert("plugin".into(), Package::modrinth("plugin", Kind::Plugin));
+            // Common client mods must not be copied to a proxy or plugin server.
+            manifest
+                .common
+                .insert("client-mod".into(), Package::modrinth("missing", Kind::Mod));
+            let lock = resolve(&manifest, Side::Server, None, false, &mut registry, &cache)?;
+            assert_eq!(lock.packages.len(), 2);
+            assert!(
+                lock.packages
+                    .iter()
+                    .all(|package| package.kind == Kind::Plugin)
+            );
+            manifest.server.packages.insert(
+                "explicit-mod".into(),
+                Package::modrinth("missing", Kind::Mod),
+            );
+            assert!(resolve(&manifest, Side::Server, None, false, &mut registry, &cache).is_err());
+        }
+        Ok(())
     }
     #[test]
     fn sides_overrides_optional_ignore_and_cycles() -> Result<()> {

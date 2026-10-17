@@ -1,0 +1,23 @@
+port {{ enderpin_vpn.port }}
+proto udp4
+dev epvpn
+dev-type tun
+topology subnet
+server {{ hostvars.localhost.vpn_network.network }} {{ hostvars.localhost.vpn_network.netmask }} nopool
+client-config-dir /etc/openvpn/server/enderpin/ccd
+ccd-exclusive
+ca /etc/openvpn/server/enderpin/ca.crt
+cert /etc/openvpn/server/enderpin/enderpin-gateway.crt
+key /etc/openvpn/server/enderpin/enderpin-gateway.key
+dh none
+tls-crypt /etc/openvpn/server/enderpin/tls-crypt.key
+remote-cert-tls client
+tls-version-min 1.2
+data-ciphers AES-128-GCM:CHACHA20-POLY1305:AES-256-GCM
+allow-compression no
+keepalive 10 60
+persist-key
+persist-tun
+user nobody
+group nogroup
+verb 3

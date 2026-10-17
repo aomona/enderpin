@@ -1,0 +1,29 @@
+[Unit]
+Description=Enderpin {{ instance.name }}
+Requires=enderpin-firewall.service
+After=network-online.target enderpin-firewall.service
+Wants=network-online.target
+{% if inventory_hostname in groups.get('vpn_clients', []) %}
+Requires=openvpn-client@enderpin.service
+After=openvpn-client@enderpin.service
+{% elif inventory_hostname in groups.get('vpn_gateway', []) %}
+Requires=openvpn-server@enderpin.service
+After=openvpn-server@enderpin.service
+{% endif %}
+
+[Service]
+Type=simple
+User=ep_{{ instance.name }}
+Group=ep_{{ instance.name }}
+WorkingDirectory={{ enderpin_root }}/{{ instance.name }}/workspace
+ExecStart={{ enderpin_root }}/{{ instance.name }}/bin/enderpin -C {{ enderpin_root }}/{{ instance.name }}/workspace --cache-dir {{ enderpin_root }}/{{ instance.name }}/cache --target server --no-interactive launch --service --offline --memory {{ instance.memory_mib }}{% if source.runtime != 'velocity' %} --accept-eula{% endif %}
+
+StandardInput=null
+KillMode=mixed
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
