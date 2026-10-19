@@ -70,12 +70,12 @@ Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケー�
 5環境のOS別アーカイブを同じ版で揃えてから作成します。
 
 ```sh
-python3 scripts/package_npm.py --tag v0.1.5 --binaries packages
-python3 tests/npm_install.py target/npm/enderpin-0.1.5.tgz
-npm publish target/npm/enderpin-0.1.5.tgz --dry-run
+python3 scripts/package_npm.py --tag v0.1.6 --binaries packages
+python3 tests/npm_install.py target/npm/enderpin-0.1.6.tgz
+npm publish target/npm/enderpin-0.1.6.tgz --dry-run
 # npmレジストリへの公開も別途行う場合のみ
-npm publish target/npm/enderpin-0.1.5.tgz --access public
-python3 tests/npm_install.py target/npm/enderpin-0.1.5.tgz --registry
+npm publish target/npm/enderpin-0.1.6.tgz --access public
+python3 tests/npm_install.py target/npm/enderpin-0.1.6.tgz --registry
 ```
 
 バージョンはCargo.tomlから生成します。起動用JavaScript・メタデータ・README・LICENSEと、5種類の実行ファイルだけを同梱します。npm依存はありません。Releaseワークフローはビルド後に同梱版を5環境でnpm/Bun/pnpm検証し、全件成功後にアーカイブを下書きへ添付します。

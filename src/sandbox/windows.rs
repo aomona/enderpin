@@ -1,10 +1,12 @@
 //! AppContainer identity + exact filesystem grants + kill-on-close process job.
 //! Windows SDK owns enforcement; failures never launch with an ordinary token.
 #![allow(unsafe_code)]
+#[path = "windows_paths.rs"]
+mod paths;
 use super::Policy;
 use anyhow::{Context, Result, ensure};
 use std::{
-    ffi::{OsStr, c_void},
+    ffi::{OsStr, OsString, c_void},
     fs::{self, File},
     io,
     mem::size_of,
@@ -23,17 +25,10 @@ use windows_sys::Win32::{
         WAIT_OBJECT_0,
     },
     Security::{
-        Authorization::{
-            ConvertSidToStringSidW, ConvertStringSidToSidW, EXPLICIT_ACCESS_W,
-            GetNamedSecurityInfoW, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
-            TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
-        },
-        DACL_SECURITY_INFORMATION, FreeSid, GetSecurityDescriptorControl,
-        InitializeSecurityDescriptor,
+        Authorization::{ConvertSidToStringSidW, ConvertStringSidToSidW},
+        FreeSid,
         Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
-        SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
-        SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, SetFileSecurityW,
-        SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
     },
     System::{
         JobObjects::{
@@ -237,81 +232,6 @@ fn icacls(path: &Path, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn grant_traverse(path: &Path, sid: &Sid) -> Result<()> {
-    let path = wide(path.as_os_str())?;
-    let (mut old_acl, mut descriptor) = (null_mut(), null_mut());
-    // SAFETY: SDK initializes the output pointers; descriptor owns old_acl's storage.
-    let error = unsafe {
-        GetNamedSecurityInfoW(
-            path.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut old_acl,
-            null_mut(),
-            &mut descriptor,
-        )
-    };
-    if error != 0 {
-        return Err(io::Error::from_raw_os_error(error as i32).into());
-    }
-    let descriptor = Local(descriptor);
-    // A null DACL already grants everyone access. Do not accidentally restrict it.
-    if old_acl.is_null() {
-        return Ok(());
-    }
-    let entry = EXPLICIT_ACCESS_W {
-        // FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
-        // no listing, file read, write or inheritance permission.
-        grfAccessPermissions: 0x20 | 0x80 | 0x20000 | 0x100000,
-        // Replace this SID's previous ancestor ACE, including inheritance flags.
-        grfAccessMode: SET_ACCESS,
-        grfInheritance: 0,
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: null_mut(),
-            MultipleTrusteeOperation: 0,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_UNKNOWN,
-            ptstrName: sid.0.cast(),
-        },
-    };
-    let mut acl = null_mut();
-    // SAFETY: entry, SID and original descriptor remain alive for the merge.
-    let error = unsafe { SetEntriesInAclW(1, &entry, old_acl, &mut acl) };
-    if error != 0 {
-        return Err(io::Error::from_raw_os_error(error as i32).into());
-    }
-    let _acl = Local(acl.cast());
-    let (mut control, mut revision) = (0, 0);
-    let mut updated: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
-    let updated_ptr = (&mut updated as *mut SECURITY_DESCRIPTOR).cast();
-    // SAFETY: all SDK buffers and ACL allocations remain valid through the update.
-    unsafe {
-        check(GetSecurityDescriptorControl(
-            descriptor.0,
-            &mut control,
-            &mut revision,
-        ))?;
-        check(InitializeSecurityDescriptor(updated_ptr, 1))?;
-        check(SetSecurityDescriptorDacl(updated_ptr, 1, acl, 0))?;
-        let mask = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ;
-        check(SetSecurityDescriptorControl(
-            updated_ptr,
-            mask,
-            control & mask,
-        ))?;
-        // Intentionally use SetFileSecurity: unlike SetNamedSecurityInfo/icacls,
-        // it updates only this directory, without reapplying ACLs to every child.
-        check(SetFileSecurityW(
-            path.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            updated_ptr,
-        ))?;
-    }
-    Ok(())
-}
-
 fn grant_tree(path: &Path, sid: &str, rights: &str) -> Result<()> {
     // An inheritance-only grant can miss files whose inheritance was disabled.
     // Apply direct rights to every existing object, then add future-child rights.
@@ -329,21 +249,13 @@ fn grant_tree(path: &Path, sid: &str, rights: &str) -> Result<()> {
     Ok(())
 }
 
-fn grants(policy: &Policy, sid: &Sid, sid_text: &str) -> Result<()> {
+fn grants(policy: &Policy, sid_text: &str) -> Result<()> {
     // Only this target's SID is changed. Never grant ALL APPLICATION PACKAGES or
     // recurse through game-controlled junctions into the host's files.
     let grants = policy.grants();
     for grant in &grants {
         let (path, writable) = (&grant.path, grant.write);
         validate_tree(path)?;
-        for ancestor in path.ancestors().skip(1).filter(|p| p.parent().is_some()) {
-            // Managed ancestors receive their declared RX/M tree grant; do not
-            // narrow them to traversal when preparing nested Java/tmp roots.
-            if grants.iter().any(|grant| ancestor.starts_with(&grant.path)) {
-                continue;
-            }
-            grant_traverse(ancestor, sid)?;
-        }
         grant_tree(path, sid_text, if writable { "M" } else { "RX" })?;
         if writable {
             icacls(
@@ -488,10 +400,18 @@ pub(crate) fn spawn_configured(
     inherited: &[std::os::windows::io::BorrowedHandle<'_>],
     sandbox: bool,
 ) -> Result<Process> {
+    let prepared = if sandbox {
+        Some(paths::prepare(policy)?)
+    } else {
+        None
+    };
+    let policy = prepared
+        .as_ref()
+        .map_or(policy, |prepared| &prepared.policy);
     let sid = if sandbox {
         policy.validate(Path::new(command.get_program()))?;
         let (sid, sid_text) = identity(policy)?;
-        grants(policy, &sid, &sid_text)?;
+        grants(policy, &sid_text)?;
         Some(sid)
     } else {
         None
@@ -568,7 +488,14 @@ pub(crate) fn spawn_configured(
     })?;
     let application = wide(command.get_program())?;
     let mut line = String::new();
-    for value in std::iter::once(command.get_program()).chain(command.get_args()) {
+    for value in std::iter::once(command.get_program())
+        .chain(
+            prepared
+                .iter()
+                .flat_map(|prepared| prepared.arguments.iter().map(OsString::as_os_str)),
+        )
+        .chain(command.get_args())
+    {
         if !line.is_empty() {
             line.push(' ');
         }

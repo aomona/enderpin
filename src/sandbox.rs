@@ -13,6 +13,7 @@ use std::{
     process::Command,
 };
 
+#[derive(Clone)]
 pub struct Policy {
     pub game: PathBuf,
     pub temporary: PathBuf,
