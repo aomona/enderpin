@@ -10,11 +10,15 @@ fn jvm_file_and_network_isolation() -> Result<()> {
     )
     .canonicalize()?;
     let root = tempfile::tempdir()?;
-    // Exercise relative agent names under a realistically long, non-ASCII path
-    // with '=' (the JVM's agent filename/options separator).
-    let root_path = root
-        .path()
-        .join("workspace with spaces=日本語-and-a-long-name-for-Windows-agent-regression");
+    // Exercise long relative agent names and '=' (the JVM's agent separator).
+    // The Windows Java launcher reads ANSI command-line arguments: opt into
+    // Japanese paths only on hosts whose active code page can represent them.
+    let name = if std::env::var_os("ENDERPIN_TEST_JAPANESE_PATH").is_some() {
+        "workspace with spaces=日本語-and-a-long-name-for-Windows-agent-regression"
+    } else {
+        "workspace with spaces=and-a-long-name-for-Windows-agent-regression-with-ci-path-length"
+    };
+    let root_path = root.path().join(name);
     std::fs::create_dir(&root_path)?;
     let root_path = root_path.canonicalize()?;
     #[cfg(windows)]
