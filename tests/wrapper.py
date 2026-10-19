@@ -77,7 +77,7 @@ function Invoke-WebRequest {
     [IO.File]::AppendAllText($env:WRAPPER_NETWORK, "$Uri`n")
     [IO.File]::Copy($env:WRAPPER_ARCHIVE, $OutFile)
 }
-$forwarded = @(ConvertFrom-Json $env:WRAPPER_ARGS)
+$forwarded = ConvertFrom-Json $env:WRAPPER_ARGS
 & $env:WRAPPER_SCRIPT @forwarded
 exit $LASTEXITCODE
 ''', encoding="utf-8")
