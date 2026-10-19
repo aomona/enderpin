@@ -6,6 +6,7 @@
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+python3 -B tests/wrapper.py  # ローカルfixtureで取得・検証・キャッシュ・引数転送を確認
 
 # 実ネットワークを使う追加検証。Python 3.11以上。
 cargo build --locked

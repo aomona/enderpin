@@ -29,6 +29,8 @@ enderpin run
 
 > v0.1.4はGitHub Releaseから取得できます。npmレジストリのv0.1.3には新CLIと `files/`・`run/` の新構成が含まれないため、上のURLを指定してください。旧版から更新する場合は[移行手順](docs/migration.md)を確認してください。
 
+ソース版では `enderpin wrapper` でリポジトリ用Wrapperを生成できます。3ファイルを構成リポジトリへコミットすれば、共有先は `./enderpinw sync --locked` から使えます。Enderpin・Node.js・Bunの事前インストールは不要です。[Wrapperの使い方](docs/installation.md#repository-wrapper)を参照してください。
+
 ## ライセンス
 
 [GPL-3.0-only](LICENSE) · [第三者のコード・ライセンス](https://enderpin-docs.aomona.workers.dev/third-party)

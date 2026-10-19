@@ -1,0 +1,305 @@
+//! Repository-local launchers pinned to a verified GitHub release.
+use std::{io::Read, path::Path};
+
+use anyhow::{Context, Result, ensure};
+use flate2::read::GzDecoder;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use crate::{registry, storage};
+
+const PLATFORMS: [&str; 5] = [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-arm64",
+    "linux-x64",
+    "win32-x64",
+];
+const FILES: [&str; 3] = ["enderpinw", "enderpinw.ps1", "enderpin-wrapper.properties"];
+const MAX_ARCHIVE: u64 = 64 * 1024 * 1024;
+const MAX_EXPANDED: u64 = 256 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct Release {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    assets: Vec<Asset>,
+}
+
+#[derive(Deserialize)]
+struct Asset {
+    name: String,
+    digest: Option<String>,
+}
+
+fn version(value: &str) -> Result<&str> {
+    ensure!(
+        value.len() <= 128
+            && value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            && value
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b".+-".contains(&c)),
+        "invalid Enderpin release version"
+    );
+    Ok(value)
+}
+
+fn archive_hash(release: &Release, platform: &str) -> Result<String> {
+    let name = format!("enderpin-{platform}.tgz");
+    let assets: Vec<_> = release.assets.iter().filter(|a| a.name == name).collect();
+    ensure!(assets.len() == 1, "release needs exactly one {name}");
+    let hash = assets[0]
+        .digest
+        .as_deref()
+        .and_then(|v| v.strip_prefix("sha256:"))
+        .context("release asset is missing its GitHub SHA-256 digest")?;
+    ensure!(
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "invalid release asset SHA-256"
+    );
+    Ok(hash.to_owned())
+}
+
+fn binary_hash(bytes: &[u8], platform: &str, expected: &str) -> Result<String> {
+    ensure!(
+        format!("{:x}", Sha256::digest(bytes)) == expected,
+        "{platform}: archive SHA-256 mismatch"
+    );
+    let member = if platform == "win32-x64" {
+        "package/bin/enderpin.exe"
+    } else {
+        "package/bin/enderpin"
+    };
+    let reader = GzDecoder::new(bytes).take(MAX_EXPANDED);
+    let mut archive = tar::Archive::new(reader);
+    let mut hash = None;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.as_ref() == Path::new(member) {
+            ensure!(
+                hash.is_none()
+                    && entry.header().entry_type().is_file()
+                    && entry.size() <= MAX_ARCHIVE,
+                "{platform}: invalid or duplicate executable"
+            );
+            let mut binary = Vec::new();
+            entry.read_to_end(&mut binary)?;
+            ensure!(!binary.is_empty(), "{platform}: empty executable");
+            hash = Some(format!("{:x}", Sha256::digest(&binary)));
+        }
+    }
+    hash.context("release archive is missing its executable")
+}
+
+/// Refuse existing files unless replacement is explicit; links are never followed.
+pub fn check_destination(root: &Path, force: bool) -> Result<()> {
+    for name in FILES {
+        let existing = storage::read_optional(root, name)?;
+        ensure!(
+            force || existing.is_none(),
+            "{name} already exists; use enderpin wrapper --force to replace wrapper files"
+        );
+    }
+    Ok(())
+}
+
+pub struct Wrapper {
+    properties: String,
+}
+
+impl Wrapper {
+    /// Select a release once, recording archive and executable hashes for all platforms.
+    pub fn download(requested: Option<&str>) -> Result<Self> {
+        let endpoint = match requested {
+            Some(value) => format!(
+                "tags/v{}",
+                version(value.strip_prefix('v').unwrap_or(value))?
+            ),
+            None => "latest".into(),
+        };
+        let release: Release = registry::json(
+            &format!("https://api.github.com/repos/aomona/enderpin/releases/{endpoint}").parse()?,
+        )?;
+        let pinned = version(
+            release
+                .tag_name
+                .strip_prefix('v')
+                .context("release tag must start with v")?,
+        )?;
+        ensure!(
+            !release.draft && (requested.is_some() || !release.prerelease),
+            "expected a published stable release"
+        );
+        if let Some(requested) = requested {
+            ensure!(
+                pinned == requested.strip_prefix('v').unwrap_or(requested),
+                "release version does not match requested version"
+            );
+        }
+        // Validate every asset before starting downloads or writing files.
+        let hashes = PLATFORMS
+            .iter()
+            .map(|platform| archive_hash(&release, platform))
+            .collect::<Result<Vec<_>>>()?;
+        let mut properties = format!(
+            "# Generated by enderpin wrapper. Commit with both launchers.\nversion={pinned}\n"
+        );
+        for (platform, hash) in PLATFORMS.iter().zip(hashes) {
+            let url = format!(
+                "https://github.com/aomona/enderpin/releases/download/v{pinned}/enderpin-{platform}.tgz"
+            );
+            let mut bytes = Vec::new();
+            registry::response(&url)?
+                .take(MAX_ARCHIVE + 1)
+                .read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() as u64 <= MAX_ARCHIVE,
+                "release archive is too large"
+            );
+            let executable = binary_hash(&bytes, platform, &hash)?;
+            properties.push_str(&format!(
+                "archive.{platform}.sha256={hash}\nbinary.{platform}.sha256={executable}\n"
+            ));
+        }
+        Ok(Self { properties })
+    }
+
+    /// Replace the three files as one recoverable workspace transaction.
+    pub fn write(&self, root: &Path, force: bool) -> Result<()> {
+        std::fs::create_dir_all(root)?;
+        let root = root.canonicalize()?;
+        let _lock = storage::operation_lock(&root)?;
+        storage::recover(&root)?;
+        check_destination(&root, force)?;
+        let contents = [
+            include_str!("wrapper/enderpinw"),
+            include_str!("wrapper/enderpinw.ps1"),
+            &self.properties,
+        ];
+        storage::commit(
+            &root,
+            FILES
+                .into_iter()
+                .zip(contents)
+                .map(|(name, value)| storage::Change {
+                    path: name.into(),
+                    content: storage::Content::Bytes(value.as_bytes().to_vec()),
+                })
+                .collect(),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                storage::safe_path(&root, "enderpinw")?,
+                std::fs::Permissions::from_mode(0o755),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_versions_and_release_hashes() {
+        for invalid in ["", "../1", "1/2", "1\n2", "v1.2.3", "1%20"] {
+            assert!(version(invalid).is_err(), "{invalid}");
+        }
+        assert!(version("0.1.4-rc.1+build").is_ok());
+        let mut release = Release {
+            tag_name: "v0.1.4".into(),
+            draft: false,
+            prerelease: false,
+            assets: vec![],
+        };
+        assert!(archive_hash(&release, "linux-x64").is_err());
+        release.assets.push(Asset {
+            name: "enderpin-linux-x64.tgz".into(),
+            digest: Some(format!("sha256:{}", "a".repeat(64))),
+        });
+        assert_eq!(
+            archive_hash(&release, "linux-x64").expect("valid"),
+            "a".repeat(64)
+        );
+        release.assets.push(Asset {
+            name: "enderpin-linux-x64.tgz".into(),
+            digest: None,
+        });
+        assert!(archive_hash(&release, "linux-x64").is_err());
+    }
+
+    #[test]
+    fn extracts_only_one_regular_executable_and_checks_archive_hash() {
+        fn archive(names: &[(&str, tar::EntryType)]) -> Vec<u8> {
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut tar = tar::Builder::new(encoder);
+            for (name, kind) in names {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o755);
+                header.set_entry_type(*kind);
+                header.set_size(4);
+                header.set_cksum();
+                tar.append_data(&mut header, name, &b"test"[..])
+                    .expect("entry");
+            }
+            tar.into_inner().expect("tar").finish().expect("gzip")
+        }
+        for names in [
+            vec![("package/bin/enderpin", tar::EntryType::Regular)],
+            vec![("package/bin/enderpin", tar::EntryType::Regular); 2],
+            vec![("package/bin/enderpin", tar::EntryType::Symlink)],
+            vec![("other", tar::EntryType::Regular)],
+        ] {
+            let bytes = archive(&names);
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(
+                binary_hash(&bytes, "linux-x64", &hash).is_ok(),
+                names.len() == 1 && names[0].0 == "package/bin/enderpin" && names[0].1.is_file()
+            );
+            assert!(binary_hash(&bytes, "linux-x64", &"0".repeat(64)).is_err());
+        }
+    }
+
+    #[test]
+    fn writes_a_bundle_without_overwriting_unless_explicit() {
+        let dir = tempfile::tempdir().expect("directory");
+        let wrapper = Wrapper {
+            properties: "version=0.1.4\n".into(),
+        };
+        wrapper.write(dir.path(), false).expect("create");
+        assert!(wrapper.write(dir.path(), false).is_err());
+        wrapper.write(dir.path(), true).expect("replace");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FILES[2])).expect("properties"),
+            wrapper.properties
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            assert_ne!(
+                std::fs::metadata(dir.path().join(FILES[0]))
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+            let outside = dir.path().join("outside");
+            std::fs::write(&outside, "preserve").expect("outside");
+            std::fs::remove_file(dir.path().join(FILES[0])).expect("remove");
+            symlink(&outside, dir.path().join(FILES[0])).expect("link");
+            assert!(wrapper.write(dir.path(), true).is_err());
+            assert_eq!(
+                std::fs::read_to_string(outside).expect("outside"),
+                "preserve"
+            );
+        }
+    }
+}

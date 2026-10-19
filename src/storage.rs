@@ -251,6 +251,9 @@ pub(crate) fn valid_destination(relative: &str) -> Result<()> {
     if [
         "enderpin.toml",
         "enderpin.lock",
+        "enderpinw",
+        "enderpinw.ps1",
+        "enderpin-wrapper.properties",
         ".gitignore",
         ".enderpin/client/state.toml",
         ".enderpin/server/state.toml",

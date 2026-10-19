@@ -10,6 +10,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod storage;
 pub mod workspace;
+pub mod wrapper;
 
 pub use model::{Kind, Manifest, Package, Side};
 pub use workspace::{SyncOptions, SyncReport, Workspace};

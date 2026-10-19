@@ -10,7 +10,9 @@ cd my-world
 1. Minecraftのバージョンを検索して選択します。文字入力で一覧を絞り込めます。
 2. ローダーを選択します。クライアントと両側はVanilla / Fabric、サーバーだけならPaper / Velocityも選べます。Velocityでは使用するVelocity版も入力します。
 3. FabricではModrinthのMODを検索し、追加・取り消しできます。追加済みは `[x]` と表示し、ページ移動・再検索にも対応します。Vanilla・Paper・Velocityではこの選択を省略します。
-4. 構成を確認すると、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。
+4. 構成を確認すると、リポジトリ用Wrapperを生成し、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。
+
+ソース版の `init` は `enderpinw`・`enderpinw.ps1`・`enderpin-wrapper.properties` も作成します。生成時の最新の安定版EnderpinとSHA-256を固定するため、GitHubへの接続が必要です。既存のWrapperは上書きしません。[Wrapperの詳細](installation.md#repository-wrapper)を参照してください。公開済みv0.1.4の `init` にはこの生成処理はありません。
 
 MODを使う場合はFabricを選んでください。候補は選んだMinecraft版とローダーで絞り込み、対象側で利用できるリリースを確認します。任意依存は自動追加しません。
 

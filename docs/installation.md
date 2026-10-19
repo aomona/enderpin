@@ -43,6 +43,43 @@ enderpin --version
 
 このOS別パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
+## リポジトリ内のWrapperを使う {#repository-wrapper}
+
+この生成機能はソース版に含まれます。公開済みv0.1.4には `wrapper` コマンドがありませんが、生成したWrapperからv0.1.4を起動できます。
+
+構成を配る側で、一度だけソース版を使って生成します。新しい `init` でも自動生成します。
+
+```sh
+enderpin wrapper --version 0.1.4
+git add enderpinw enderpinw.ps1 enderpin-wrapper.properties
+git commit -m "Add pinned Enderpin wrapper"
+```
+
+`--version` を省略すると、生成時点の最新の安定版を選びます。GitHub APIのリリース情報と全5環境のアーカイブを取得し、GitHubのSHA-256と照合して、版・アーカイブ・実行ファイルのハッシュを設定ファイルへ固定します。APIの利用制限中やハッシュのないリリースでは生成を中止します。生成に使ったソース版と、固定される公開版は異なる場合があります。
+
+共有先はcloneしたディレクトリから実行します。
+
+```sh
+./enderpinw sync --locked
+./enderpinw run
+```
+
+WindowsではWindows PowerShell 5.1以上で実行します。実行ポリシーで禁止されている場合は、内容を確認してから、このプロセスだけ許可します。
+
+```powershell
+.\enderpinw.ps1 sync --locked
+# 必要な場合のみ
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\enderpinw.ps1 sync --locked
+```
+
+macOS / Linuxでは `sh`・`curl`・`tar` と `sha256sum` または `shasum`、WindowsではPowerShellと `tar.exe` が必要です。Enderpin・Rust・Node.js・Bunは不要ですが、[ゲーム起動のOS要件](platforms.md)は引き続き適用します。Windowsはx64のみ対応します。
+
+初回は対象環境のアーカイブを取得し、SHA-256を検証して実行ファイルだけをキャッシュします。以後も起動前にキャッシュを検証し、不一致なら停止します。`--offline` はEnderpin側の指定なので、Wrapperの初回取得にはネット接続が必要です。一度キャッシュすればWrapperの起動に通信は不要です。
+
+キャッシュはmacOSの `~/Library/Caches/enderpin/wrapper/`、Linuxの `${XDG_CACHE_HOME:-~/.cache}/enderpin/wrapper/`、Windowsの `%LOCALAPPDATA%\enderpin\wrapper\` に保存します。必要なら `ENDERPIN_WRAPPER_CACHE` で場所を指定できます。壊れたキャッシュは、エラーに表示したディレクトリを削除して再取得してください。
+
+更新するときだけ `enderpin wrapper --version VERSION --force` で3ファイルを再生成し、差分を確認してコミットします。通常の起動や `enderpin update` ではWrapperの固定版を変更しません。3ファイルは実行するコードとその検証値なので、Gitからの変更もレビューしてください。ゲーム権限の承認・ログイン・EULA同意は従来どおり明示的に行います。
+
 ## 最新のソース版
 
 ソースからビルドする場合はRust 1.89以上、JDK 17以上、Cコンパイラーが必要です。
