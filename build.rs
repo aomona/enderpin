@@ -49,8 +49,33 @@ fn main() {
     javac.args([
         "java/narrator-bridge/com/mojang/text2speech/Narrator.java",
         "java/narrator-bridge/com/mojang/text2speech/LauncherNarrator.java",
+        "java/windows-paths/me/aomona/sandbox/WindowsPaths.java",
+        "java/windows-paths/me/aomona/sandbox/NativePaths.java",
+        "java/windows-paths/me/aomona/sandbox/PathAdapter.java",
     ]);
     run(&mut javac);
+    let paths_manifest = output.join("windows-paths.mf");
+    fs::write(&paths_manifest,
+        "Manifest-Version: 1.0\nPremain-Class: me.aomona.sandbox.WindowsPaths\nCan-Retransform-Classes: true\n\n")
+        .expect("write Windows path manifest");
+    jar(
+        &output,
+        &classes,
+        "windows-paths.jar",
+        &[
+            "me/aomona/sandbox/WindowsPaths.class",
+            "me/aomona/sandbox/WindowsPaths$1.class",
+            "me/aomona/sandbox/PathAdapter.class",
+        ],
+        Some(&paths_manifest),
+    );
+    jar(
+        &output,
+        &classes,
+        "windows-paths-bootstrap.jar",
+        &["me/aomona/sandbox/NativePaths.class"],
+        None,
+    );
     let manifest = output.join("auth-manifest.mf");
     fs::write(
         &manifest,
@@ -141,5 +166,30 @@ fn main() {
             .arg(output.join(native));
     }
     run(&mut native_cmd);
+    if os == "windows" {
+        let mut paths_native = tool.to_command();
+        if tool.is_like_msvc() {
+            paths_native
+                .arg("/LD")
+                .arg("java/windows-paths/native.c")
+                .arg(format!("/Fo{}", output.join("windows-paths.obj").display()))
+                .arg(format!(
+                    "/Fe:{}",
+                    output.join("windows-paths.dll").display()
+                ));
+        } else {
+            paths_native
+                .args([
+                    "-shared",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "java/windows-paths/native.c",
+                    "-o",
+                ])
+                .arg(output.join("windows-paths.dll"));
+        }
+        run(&mut paths_native);
+    }
     println!("cargo:rustc-env=ENDERPIN_AUTH_NATIVE={native}");
 }

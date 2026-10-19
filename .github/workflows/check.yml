@@ -75,3 +75,14 @@ jobs:
         timeout-minutes: 5
         shell: bash
         run: ENDERPIN_TEST_JAVA_HOME="$JAVA_HOME" cargo test --locked -- --ignored --nocapture
+      - name: Select Java 25 for Windows sandbox regression
+        if: runner.os == 'Windows'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Probe Windows sandbox with Java 25
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: bash
+        run: ENDERPIN_TEST_JAVA_HOME="$JAVA_HOME" cargo test --locked -- --ignored --nocapture

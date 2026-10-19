@@ -10,7 +10,21 @@ fn jvm_file_and_network_isolation() -> Result<()> {
     )
     .canonicalize()?;
     let root = tempfile::tempdir()?;
-    let root_path = root.path().canonicalize()?;
+    // Exercise relative agent names under a realistically long, non-ASCII path
+    // with '=' (the JVM's agent filename/options separator).
+    let root_path = root
+        .path()
+        .join("workspace with spaces=日本語-and-a-long-name-for-Windows-agent-regression");
+    std::fs::create_dir(&root_path)?;
+    let root_path = root_path.canonicalize()?;
+    #[cfg(windows)]
+    let ancestor_acl = {
+        let output = std::process::Command::new("icacls.exe")
+            .arg(&root_path)
+            .output()?;
+        ensure!(output.status.success(), "cannot capture ancestor ACL");
+        output.stdout
+    };
     let game = root_path.join("game");
     let temporary = root_path.join("tmp");
     let readonly = root_path.join("readonly");
@@ -39,9 +53,28 @@ public class Probe {
   }
   public static void main(String[] args) throws Exception {
     System.out.println("probe started");
+    Path security = Path.of(System.getProperty("java.home"), "conf", "security", "java.security");
+    if (Files.readString(security).isEmpty()) throw new AssertionError("empty java.security");
+    if (!Files.isSameFile(security, security.toRealPath())) throw new AssertionError("wrong real path");
+    if (java.security.Security.getProviders().length == 0) throw new AssertionError("no security providers");
+    if (System.getProperty("os.name").startsWith("Windows")) {
+      String agent = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments().stream()
+        .filter(value -> value.startsWith("-javaagent:") && value.endsWith("windows-paths.jar"))
+        .findFirst().orElseThrow();
+      Path adapter = Path.of(agent.substring("-javaagent:".length()));
+      if (Files.size(adapter) == 0) throw new AssertionError("empty adapter");
+      denied("adapter write", () -> Files.writeString(adapter, "changed"));
+      denied("adapter delete", () -> Files.delete(adapter));
+      denied("adapter native write", () -> Files.writeString(adapter.getParent().resolve("windows-paths.dll"), "changed"));
+    }
     Path game=Path.of(args[0]), tmp=Path.of(args[1]), ro=Path.of(args[2]), secret=Path.of(args[3]);
+    java.io.File legacyTemp = java.io.File.createTempFile("native-library-probe", ".tmp", tmp.toFile());
+    if (!legacyTemp.delete()) throw new AssertionError("cannot remove legacy temp file");
     if (args[6].equals("write")) Files.writeString(game.resolve("allowed.txt"), "ok");
-    else denied("game write", () -> Files.writeString(game.resolve("allowed.txt"), "changed"));
+    else {
+      denied("game write", () -> Files.writeString(game.resolve("allowed.txt"), "changed"));
+      denied("legacy temp game write", () -> java.io.File.createTempFile("denied-probe", ".tmp", game.toFile()));
+    }
     if (args[7].equals("readonly")) {
       if (!Files.readString(game.resolve("mods/fixed.txt")).equals("mod")) throw new AssertionError();
       denied("mod write", () -> Files.writeString(game.resolve("mods/fixed.txt"), "changed"));
@@ -58,6 +91,8 @@ public class Probe {
     Files.writeString(tmp.resolve("allowed.txt"), "ok");
     if (!Files.readString(ro.resolve("fixed.txt")).equals("immutable")) throw new AssertionError();
     denied("private read", () -> Files.readString(secret));
+    denied("private real path", () -> secret.toRealPath());
+    denied("missing real path", () -> game.resolve("missing-file").toRealPath());
     denied("private write", () -> Files.writeString(secret, "changed"));
     denied("runtime write", () -> Files.writeString(ro.resolve("fixed.txt"), "changed"));
     if (System.getProperty("os.name").contains("Mac")) {
@@ -176,5 +211,16 @@ public class Probe {
         std::fs::read_to_string(&secret)? == "private-test-data",
         "host file changed"
     );
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("icacls.exe")
+            .arg(&root_path)
+            .output()?;
+        ensure!(output.status.success(), "cannot capture ancestor ACL");
+        ensure!(
+            output.stdout == ancestor_acl,
+            "sandbox changed its host ancestor ACL"
+        );
+    }
     Ok(())
 }
