@@ -18,7 +18,7 @@ use serde::Serialize;
 #[command(
     version,
     about = "Reproducible Minecraft client and server workspaces",
-    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\nGetting started:\n  init         Create a workspace and download Minecraft, Java and packages\n\nEveryday:\n  add          Add a package and synchronize\n  remove       Remove a package and synchronize\n  search       Find packages on Modrinth\n  list         Show locked packages\n  sync         Prepare runtimes, packages and shared files without updating pins\n  run          Run a locked client or server\n  update       Update runtimes and Modrinth packages\n\nSettings & authentication:\n  permissions  Review, edit and approve game permissions\n  login        Sign in with Microsoft\n  logout       Remove this CLI's saved credential\n\nAutomation & recovery:\n  lock         Resolve packages without installing files\n  restore      Restore managed files, discarding local changes\n  help         Show command help\n\nOptions:\n{options}\n\nExamples:\n  enderpin init my-world --loader fabric\n  cd my-world\n  enderpin add sodium\n  enderpin login\n  enderpin run\n\nUse enderpin <COMMAND> --help for options and examples.\n"
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\nGetting started:\n  init         Create a workspace and download Minecraft, Java and packages\n\nEveryday:\n  add          Add a package and synchronize\n  remove       Remove a package and synchronize\n  search       Find packages on Modrinth\n  list         Show locked packages\n  sync         Prepare runtimes, packages and shared files without updating pins\n  run          Run a locked client or server\n  update       Update runtimes and Modrinth packages\n\nSettings & authentication:\n  permissions  Review, edit and approve game permissions\n  login        Sign in with Microsoft\n  logout       Remove this CLI's saved credential\n\nAutomation & recovery:\n  wrapper      Generate repository launchers pinned to an Enderpin release\n  lock         Resolve packages without installing files\n  restore      Restore managed files, discarding local changes\n  help         Show command help\n\nOptions:\n{options}\n\nExamples:\n  enderpin init my-world --loader fabric\n  cd my-world\n  enderpin add sodium\n  enderpin login\n  enderpin run\n\nUse enderpin <COMMAND> --help for options and examples.\n"
 )]
 struct Cli {
     /// Workspace directory (default: current directory).
@@ -133,6 +133,15 @@ struct Init {
 enum Command {
     /// Create a workspace interactively or from explicit options; does not run or approve it.
     Init(Init),
+    /// Generate repository launchers pinned to a verified GitHub release.
+    Wrapper {
+        /// Enderpin release version (default: latest stable, resolved only when generating).
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        /// Replace all three existing wrapper files.
+        #[arg(long)]
+        force: bool,
+    },
     /// Edit permissions, inspect a plan or approve its exact fingerprint.
     #[command(
         after_help = "Examples:\n  enderpin permissions\n  enderpin permissions show --target server --json\n  enderpin permissions approve --target server <FINGERPRINT>"
@@ -326,7 +335,7 @@ impl Cli {
             | Command::Update { selection }
             | Command::Restore { selection, .. }
             | Command::List { selection } => selection.target,
-            Command::Login { .. } | Command::Logout => Scope::Client,
+            Command::Wrapper { .. } | Command::Login { .. } | Command::Logout => Scope::Client,
         }
     }
     fn json(&self) -> bool {
@@ -1170,7 +1179,11 @@ fn init(cli: &Cli, args: &Init) -> Result<()> {
         );
     }
     *packages_mut(&mut manifest, scope) = selected;
+    enderpin::wrapper::check_destination(root, false)?;
+    eprintln!("Preparing repository wrapper from the latest stable Enderpin release...");
+    let wrapper = enderpin::wrapper::Wrapper::download(None)?;
     Workspace::init_manifest(root, manifest, &scope.sides())?;
+    wrapper.write(root, false)?;
     let cache = cli
         .cache_dir
         .clone()
@@ -1215,6 +1228,16 @@ fn init(cli: &Cli, args: &Init) -> Result<()> {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    if let Command::Wrapper { version, force } = &cli.command {
+        let root = cli.workspace_directory();
+        enderpin::wrapper::check_destination(root, *force)?;
+        eprintln!("Verifying Enderpin release assets for all supported platforms...");
+        enderpin::wrapper::Wrapper::download(version.as_deref())?.write(root, *force)?;
+        eprintln!(
+            "Created enderpinw, enderpinw.ps1 and enderpin-wrapper.properties. Commit all three files."
+        );
+        return Ok(());
+    }
     if let Command::Init(args) = &cli.command {
         return init(cli, args);
     }
@@ -1446,7 +1469,7 @@ fn run(cli: &Cli) -> Result<()> {
             let summary: Vec<_> = prepared.iter().map(|(side, runtime)| serde_json::json!({"target": side, "java": runtime.java, "classpath_entries": runtime.classpath.len(), "assets": runtime.assets})).collect();
             cli.emit(&summary, "Runtimes, packages and shared files synchronized")
         }
-        Command::Init(_) | Command::Login { .. } | Command::Logout => {
+        Command::Init(_) | Command::Wrapper { .. } | Command::Login { .. } | Command::Logout => {
             unreachable!()
         }
         Command::Add { package, .. } => add(cli, &mut ws, package),
@@ -1780,6 +1803,19 @@ mod tests {
         ] {
             assert!(help.contains(heading));
         }
+        assert!(help.contains("wrapper"));
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "-C",
+            "my workspace",
+            "wrapper",
+            "--version",
+            "0.1.4",
+            "--force",
+        ])?;
+        assert!(
+            matches!(cli.command, Command::Wrapper { version: Some(ref v), force: true } if v == "0.1.4")
+        );
         for (command, absent) in [
             ("init", "--json"),
             ("run", "--json"),

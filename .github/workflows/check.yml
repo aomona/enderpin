@@ -54,6 +54,8 @@ jobs:
       - name: Verify permissions editor
         if: runner.os != 'Windows'
         run: python -B tests/permissions_tui.py --binary target/debug/enderpin
+      - name: Verify repository wrapper
+        run: python -B tests/wrapper.py
       - name: Install Linux sandbox
         if: runner.os == 'Linux'
         run: |

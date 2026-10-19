@@ -45,6 +45,7 @@ enderpin run
 
 | コマンド | 動作 |
 | --- | --- |
+| `wrapper [--version VERSION] [--force]` | リポジトリ用の起動スクリプトと、Enderpinの固定版・SHA-256を生成。既存ファイルの置き換えは `--force` が必要 |
 | `sync --locked` | パッケージとランタイムのロックが現在の構成と一致する場合だけ準備 |
 | `sync --locked --offline` | 一致するロックとローカルキャッシュだけを使って準備 |
 | `lock` | パッケージの解決結果を保存。ゲームファイルの配置・ランタイムの準備はしない |
@@ -65,6 +66,6 @@ enderpin run --target server --accept-eula --memory 1024
 - `--target` の既定は `client`。`init`・パッケージ操作・`sync`・`update`・`lock`・`restore`・`list` は `all` を指定でき、`run`・`search`・`permissions` は `client` / `server` の片側です。
 - `--json` はパッケージ操作・`sync`・`update`・`lock`・`restore`・`list`・`permissions` で利用できます。`init`・`run`・認証操作にはありません。
 - `--no-interactive` は `init`・`add`・`search`・`run`・`permissions`、`--yes` は `init`・`add`・`search` で利用できます。それ以外は対話操作を行いません。
-- `--version` はEnderpin自体の版の表示です。Minecraft版の指定には使いません。
+- `enderpin --version` はEnderpin自体の版の表示です。`enderpin wrapper --version VERSION` はWrapperで固定するEnderpin版の指定です。Minecraft版の指定には使いません。
 
 `enderpin --help` は用途別の一覧、`enderpin <COMMAND> --help` はそのコマンドの引数と使用例を表示します。旧CLIからの変更は [移行手順](migration.md#cli-changes) を参照してください。

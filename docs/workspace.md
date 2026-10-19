@@ -6,6 +6,9 @@
 workspace/
 ├── enderpin.toml
 ├── enderpin.lock
+├── enderpinw                  # ソース版initで生成。macOS / Linux用
+├── enderpinw.ps1              # Windows用
+├── enderpin-wrapper.properties # Enderpin版・SHA-256
 ├── files/                    # Git管理する共有ファイル
 │   ├── common/config/        # 両側へ反映
 │   ├── client/resourcepacks/ # クライアントだけへ反映
@@ -16,7 +19,7 @@ workspace/
 └── .enderpin/                # 権限・同期台帳・復旧用ファイル
 ```
 
-- `enderpin.toml`・`enderpin.lock`・`files/` をGitへ追加します。空のディレクトリはGitに保存されませんが、同期に必要な場所は自動作成されます。
+- `enderpin.toml`・`enderpin.lock`・`files/` と、生成したWrapperの3ファイルをGitへ追加します。空のディレクトリはGitに保存されませんが、同期に必要な場所は自動作成されます。
 - `run/client/` がクライアントの `.minecraft` 相当、`run/server/` がサーバーのゲームディレクトリです。`run/` はワールドも含むため、消して再生成できるキャッシュではありません。
 - 初期化時に `/run/`・`/.enderpin/`・`/.enderpinignore` を `.gitignore` へ追加します。認証資格情報はこれらとは別のOS資格情報ストアに保存します。
 
