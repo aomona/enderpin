@@ -16,7 +16,7 @@ enderpin sync --target all
 enderpin sync --target all --locked
 ```
 
-Gitへ追加するのは次のファイルです。ソース版の `init` はWrapperも生成します。既存の構成なら、ソース版で `enderpin wrapper --version 0.1.4` を一度実行してください。[生成手順と対応環境](installation.md#repository-wrapper)を参照してください。
+Gitへ追加するのは次のファイルです。v0.1.5以降の `init` はWrapperも生成します。既存の構成なら、v0.1.5以降で `enderpin wrapper --version 0.1.5` を一度実行してください。[生成手順と対応環境](installation.md#repository-wrapper)を参照してください。
 
 ```sh
 git add enderpin.toml enderpin.lock files/ .gitignore

@@ -6,7 +6,7 @@
 workspace/
 ├── enderpin.toml
 ├── enderpin.lock
-├── enderpinw                  # ソース版initで生成。macOS / Linux用
+├── enderpinw                  # v0.1.5以降のinitで生成。macOS / Linux用
 ├── enderpinw.ps1              # Windows用
 ├── enderpin-wrapper.properties # Enderpin版・SHA-256
 ├── files/                    # Git管理する共有ファイル

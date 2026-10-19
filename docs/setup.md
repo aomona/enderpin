@@ -12,7 +12,7 @@ cd my-world
 3. FabricではModrinthのMODを検索し、追加・取り消しできます。追加済みは `[x]` と表示し、ページ移動・再検索にも対応します。Vanilla・Paper・Velocityではこの選択を省略します。
 4. 構成を確認すると、リポジトリ用Wrapperを生成し、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。
 
-ソース版の `init` は `enderpinw`・`enderpinw.ps1`・`enderpin-wrapper.properties` も作成します。生成時の最新の安定版EnderpinとSHA-256を固定するため、GitHubへの接続が必要です。既存のWrapperは上書きしません。[Wrapperの詳細](installation.md#repository-wrapper)を参照してください。公開済みv0.1.4の `init` にはこの生成処理はありません。
+v0.1.5以降の `init` は `enderpinw`・`enderpinw.ps1`・`enderpin-wrapper.properties` も作成します。生成時の最新の安定版EnderpinとSHA-256を固定するため、GitHubへの接続が必要です。既存のWrapperは上書きしません。[Wrapperの詳細](installation.md#repository-wrapper)を参照してください。公開済みv0.1.4の `init` にはこの生成処理はありません。
 
 MODを使う場合はFabricを選んでください。候補は選んだMinecraft版とローダーで絞り込み、対象側で利用できるリリースを確認します。任意依存は自動追加しません。
 
