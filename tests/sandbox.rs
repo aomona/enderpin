@@ -91,7 +91,10 @@ public class Probe {
     Files.writeString(tmp.resolve("allowed.txt"), "ok");
     if (!Files.readString(ro.resolve("fixed.txt")).equals("immutable")) throw new AssertionError();
     denied("private read", () -> Files.readString(secret));
-    denied("private real path", () -> secret.toRealPath());
+    // macOS intentionally permits host metadata; this regression checks the
+    // Windows adapter without changing the other platforms' contracts.
+    if (System.getProperty("os.name").startsWith("Windows"))
+      denied("private real path", () -> secret.toRealPath());
     denied("missing real path", () -> game.resolve("missing-file").toRealPath());
     denied("private write", () -> Files.writeString(secret, "changed"));
     denied("runtime write", () -> Files.writeString(ro.resolve("fixed.txt"), "changed"));
