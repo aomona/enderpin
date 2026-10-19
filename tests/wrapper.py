@@ -66,6 +66,8 @@ with tempfile.TemporaryDirectory(prefix="enderpin wrapper ") as temporary:
            "WRAPPER_ARCHIVE": str(archive), "WRAPPER_NETWORK": str(root / "network"),
            "WRAPPER_SCRIPT": str(workspace / "enderpinw.ps1")}
     if WINDOWS:
+        # Do not inherit PowerShell 7 module paths when testing Windows PowerShell 5.1.
+        env = {key: value for key, value in env.items() if key.upper() != "PSMODULEPATH"}
         harness = root / "launch.ps1"
         harness.write_text(r'''
 $ErrorActionPreference = 'Stop'
@@ -77,6 +79,7 @@ function Invoke-WebRequest {
 }
 $forwarded = @(ConvertFrom-Json $env:WRAPPER_ARGS)
 & $env:WRAPPER_SCRIPT @forwarded
+exit $LASTEXITCODE
 ''', encoding="utf-8")
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(harness)]
     else:
