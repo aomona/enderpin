@@ -1,6 +1,8 @@
 //! AppContainer identity + exact filesystem grants + kill-on-close process job.
 //! Windows SDK owns enforcement; failures never launch with an ordinary token.
 #![allow(unsafe_code)]
+#[path = "windows_cursor.rs"]
+mod cursor;
 #[path = "windows_paths.rs"]
 mod paths;
 use super::Policy;
@@ -312,6 +314,7 @@ fn pipe(child_reads: bool) -> Result<(OwnedHandle, File)> {
 }
 
 pub struct Process {
+    _cursor: Option<cursor::Grant>,
     process: OwnedHandle,
     job: OwnedHandle,
     id: u32,
@@ -418,6 +421,16 @@ pub(crate) fn spawn_configured(
     };
     let mut allocations = vec![];
     let mut capabilities = vec![];
+    let cursor = if sandbox && policy.desktop {
+        let cursor = cursor::Grant::new()?;
+        capabilities.push(SID_AND_ATTRIBUTES {
+            Sid: cursor.sid(),
+            Attributes: 4,
+        });
+        Some(cursor)
+    } else {
+        None
+    };
     if sandbox && policy.network {
         for value in ["S-1-15-3-1", "S-1-15-3-2", "S-1-15-3-3"] {
             let value = wide(OsStr::new(value))?;
@@ -571,6 +584,7 @@ pub(crate) fn spawn_configured(
         return Err(io::Error::last_os_error().into());
     }
     Ok(Process {
+        _cursor: cursor,
         process,
         job,
         id: info.dwProcessId,

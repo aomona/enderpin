@@ -83,6 +83,8 @@ try {
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $binary
     $start.Arguments = $quoted -join ' '
+    # Set-Location changes PowerShell's provider location, not the native cwd.
+    $start.WorkingDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath('.')
     $start.UseShellExecute = $false
     $process = [Diagnostics.Process]::Start($start)
     $process.WaitForExit()

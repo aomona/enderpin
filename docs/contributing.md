@@ -24,6 +24,19 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 
 GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。PRの作成・更新時と`main`へのpush時に実行し、作業ブランチへのpushでは起動しません。`dev`もPRを通して検査します。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](verification.md) に今回実行した範囲を記載しています。
 
+## Windowsのカーソル閉じ込めテスト
+
+対話デスクトップ上のJava 25で次を実行できます。現在のカーソル制限範囲を再設定し、
+通常実行とクライアントAppContainerでは成功、サーバーAppContainerでは拒否されることを確認します。
+カーソルの移動や制限範囲の変更は行いません。ヘッドレスCIではこの実入力テストを実行せず、
+通常テストで専用ウィンドウステーション上の権限・並行する起動の権限除去を検証します。
+
+```powershell
+$env:ENDERPIN_TEST_JAVA_HOME = 'C:\path\to\jdk-25'
+$env:ENDERPIN_TEST_DESKTOP = '1'
+cargo test --locked --test windows_cursor -- --ignored --nocapture
+```
+
 ## 認証ブリッジの組込API
 
 Rustの利用側は `enderpin::auth::bridge` から、ビルド時に埋め込まれた認証ブリッジを取得できます。
@@ -70,12 +83,12 @@ Windowsでは実行ファイルを `target/release/enderpin.exe`、パッケー�
 5環境のOS別アーカイブを同じ版で揃えてから作成します。
 
 ```sh
-python3 scripts/package_npm.py --tag v0.1.6 --binaries packages
-python3 tests/npm_install.py target/npm/enderpin-0.1.6.tgz
-npm publish target/npm/enderpin-0.1.6.tgz --dry-run
+python3 scripts/package_npm.py --tag v0.1.7 --binaries packages
+python3 tests/npm_install.py target/npm/enderpin-0.1.7.tgz
+npm publish target/npm/enderpin-0.1.7.tgz --dry-run
 # npmレジストリへの公開も別途行う場合のみ
-npm publish target/npm/enderpin-0.1.6.tgz --access public
-python3 tests/npm_install.py target/npm/enderpin-0.1.6.tgz --registry
+npm publish target/npm/enderpin-0.1.7.tgz --access public
+python3 tests/npm_install.py target/npm/enderpin-0.1.7.tgz --registry
 ```
 
 バージョンはCargo.tomlから生成します。起動用JavaScript・メタデータ・README・LICENSEと、5種類の実行ファイルだけを同梱します。npm依存はありません。Releaseワークフローはビルド後に同梱版を5環境でnpm/Bun/pnpm検証し、全件成功後にアーカイブを下書きへ添付します。
