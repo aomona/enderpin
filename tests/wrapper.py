@@ -129,7 +129,8 @@ shutil.copyfile(os.environ["WRAPPER_ARCHIVE"], args[args.index("--output") + 1])
         env.update(PROBE_CWD="1", WRAPPER_LOCATION=str(location))
         result = run([])
         assert result.returncode == 0, (result.stdout, result.stderr)
-        assert Path(result.stdout.strip()) == location, (result.stdout, location)
+        # The native cwd expands 8.3 aliases (e.g. RUNNER~1 in hosted TEMP).
+        assert Path(result.stdout.strip()).samefile(location), (result.stdout, location)
         del env["PROBE_CWD"], env["WRAPPER_LOCATION"]
     cache = Path(env["ENDERPIN_WRAPPER_CACHE"]) / "0.1.4" / PLATFORM / binary_hash / EXE
     assert cache.read_bytes() == binary.read_bytes()
