@@ -9,8 +9,8 @@ Minecraftのクライアントとサーバーを準備・共有するCLI。Minec
 Node.js 18以上とnpm、またはBunを使います。
 
 ```sh
-npm install -g https://github.com/aomona/enderpin/releases/download/v0.1.6/enderpin-0.1.6.tgz
-# または: bun install -g https://github.com/aomona/enderpin/releases/download/v0.1.6/enderpin-0.1.6.tgz
+npm install -g https://github.com/aomona/enderpin/releases/download/v0.1.7/enderpin-0.1.7.tgz
+# または: bun install -g https://github.com/aomona/enderpin/releases/download/v0.1.7/enderpin-0.1.7.tgz
 
 enderpin init my-world --loader fabric
 cd my-world
@@ -27,7 +27,7 @@ enderpin run
 - [Velocity・複数サーバー・Ansible CD](docs/deployment.md)
 - [開発・ビルド手順](https://enderpin-docs.aomona.workers.dev/contributing)
 
-> v0.1.6はGitHub Releaseから取得できます。npmレジストリのv0.1.3には新CLIと `files/`・`run/` の新構成が含まれないため、上のURLを指定してください。旧版から更新する場合は[移行手順](docs/migration.md)を確認してください。
+> v0.1.7はGitHub Releaseから取得できます。npmレジストリのv0.1.3には新CLIと `files/`・`run/` の新構成が含まれないため、上のURLを指定してください。旧版から更新する場合は[移行手順](docs/migration.md)を確認してください。
 
 v0.1.5以降では `enderpin wrapper` でリポジトリ用Wrapperを生成できます。3ファイルを構成リポジトリへコミットすれば、共有先は `./enderpinw sync --locked` から使えます。Enderpin・Node.js・Bunの事前インストールは不要です。[Wrapperの使い方](docs/installation.md#repository-wrapper)を参照してください。
 

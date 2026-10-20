@@ -23,6 +23,10 @@ EXE = "enderpin.exe" if WINDOWS else "enderpin"
 PROBE = r'''
 use std::{io::{Read, Write}, time::Duration};
 fn main() {
+    if std::env::var_os("PROBE_CWD").is_some() {
+        println!("{}", std::env::current_dir().unwrap().display());
+        return;
+    }
     if let Ok(path) = std::env::var("PROBE_READY") {
         std::fs::write(path, std::process::id().to_string()).unwrap();
         loop { std::thread::sleep(Duration::from_millis(50)); }
@@ -78,6 +82,7 @@ function Invoke-WebRequest {
     [IO.File]::Copy($env:WRAPPER_ARCHIVE, $OutFile)
 }
 $forwarded = ConvertFrom-Json $env:WRAPPER_ARGS
+if ($env:WRAPPER_LOCATION) { Set-Location -LiteralPath $env:WRAPPER_LOCATION }
 & $env:WRAPPER_SCRIPT @forwarded
 exit $LASTEXITCODE
 ''', encoding="utf-8")
@@ -116,6 +121,17 @@ shutil.copyfile(os.environ["WRAPPER_ARCHIVE"], args[args.index("--output") + 1])
         assert result.stdout == expected, (result.stdout, expected)
 
     success()
+    if WINDOWS:
+        # PowerShell's provider location can differ from the native process cwd.
+        # Inherit the caller's location, not the script directory or original cwd.
+        location = root / "caller location with spaces"
+        location.mkdir()
+        env.update(PROBE_CWD="1", WRAPPER_LOCATION=str(location))
+        result = run([])
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        # The native cwd expands 8.3 aliases (e.g. RUNNER~1 in hosted TEMP).
+        assert Path(result.stdout.strip()).samefile(location), (result.stdout, location)
+        del env["PROBE_CWD"], env["WRAPPER_LOCATION"]
     cache = Path(env["ENDERPIN_WRAPPER_CACHE"]) / "0.1.4" / PLATFORM / binary_hash / EXE
     assert cache.read_bytes() == binary.read_bytes()
     network = Path(env["WRAPPER_NETWORK"])
