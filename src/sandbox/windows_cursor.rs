@@ -68,8 +68,10 @@ impl Grant {
         getrandom::fill(&mut random)
             .map_err(|_| anyhow::anyhow!("cursor capability randomness unavailable"))?;
         let suffix: String = random
-            .chunks_exact(4)
-            .map(|v| format!("-{}", u32::from_le_bytes(v.try_into().expect("four bytes"))))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| format!("-{}", u32::from_le_bytes(*v)))
             .collect();
         let text = wide(OsStr::new(&format!("S-1-15-3-1024{suffix}")))?;
         let mut sid = null_mut();
