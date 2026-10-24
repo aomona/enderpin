@@ -134,6 +134,20 @@ fn approvals_track_packages_settings_and_local_folders() -> Result<()> {
         Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
     );
     ws.manifest.client.permissions.network = false;
+
+    // Shared launch flags require approval again without invalidating the package lock.
+    ws.manifest.client.jvm_args = vec!["-XX:+UseZGC".into()];
+    let tuned = permissions::plan(&ws, Side::Client)?;
+    assert_eq!(tuned.jvm_args, ["-XX:+UseZGC"]);
+    assert_ne!(local.approved, Some(tuned.fingerprint()?));
+    ws.manifest.client.jvm_args.clear();
+    // Plans without JVM arguments keep the fingerprint approved before the key existed.
+    assert_eq!(
+        local.approved,
+        Some(permissions::plan(&ws, Side::Client)?.fingerprint()?)
+    );
+    assert!(!serde_json::to_string(&permissions::plan(&ws, Side::Client)?)?.contains("jvm_args"));
+
     local.folders.push(FolderGrant {
         path: external.path().canonicalize()?,
         write: false,

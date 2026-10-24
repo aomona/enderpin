@@ -130,6 +130,10 @@ pub struct Plan {
     pub packages: Vec<PackageIdentity>,
     pub shared_files: std::collections::BTreeMap<String, String>,
     pub folders: Vec<FolderGrant>,
+    /// Shared launch flags change the JVM itself, so they are approved like settings.
+    /// Omitted when empty so plans without them keep their existing fingerprint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jvm_args: Vec<String>,
     pub limitations: Vec<String>,
 }
 impl Plan {
@@ -203,6 +207,7 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
         packages: vec![],
         shared_files: ws.shared_file_hashes(side)?,
         folders: Local::load(ws, side)?.folders,
+        jvm_args: config.jvm_args.clone(),
         limitations: vec![
             "Grants apply to the entire Minecraft process, including every loaded mod.".into(),
         ],

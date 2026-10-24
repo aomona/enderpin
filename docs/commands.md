@@ -25,7 +25,7 @@ enderpin run
 
 `init` のMinecraft版は `--minecraft VERSION`、ローダーは `--loader vanilla|fabric|paper|velocity`、ローダーの固定版は `--loader-version VERSION` で指定します。PaperとVelocityは `--target server` 専用です。詳しくは [初期セットアップ](setup.md) を参照してください。
 
-`run --memory MIB` はJavaの最大ヒープで、既定は2048 MiBです。サーバーのEULA同意は `--accept-eula`、標準入力なしの常駐起動は `--service` です。`--offline` はEnderpinのダウンロードをオフラインにし、`--no-network` はゲームのネットワークを禁止します。[ログインと起動](launch.md) を参照してください。
+`run --memory MIB` はJavaの最大ヒープで、既定は2048 MiBです。`--jvm-arg ARG` はこの起動だけに `-XX:` オプション・`-D` プロパティを追加します（繰り返し指定可）。常に使う場合は [`jvm_args`](configuration.md#jvm-options) に記載します。サーバーのEULA同意は `--accept-eula`、標準入力なしの常駐起動は `--service` です。`--offline` はEnderpinのダウンロードをオフラインにし、`--no-network` はゲームのネットワークを禁止します。[ログインと起動](launch.md) を参照してください。
 
 ## 権限と認証
 
@@ -61,6 +61,7 @@ enderpin run
 enderpin -C my-world sync --target all --locked
 enderpin permissions show --target server --json
 enderpin run --target server --accept-eula --memory 1024
+enderpin run --target server --jvm-arg -XX:+UseZGC
 ```
 
 - `--target` の既定は `client`。`init`・パッケージ操作・`sync`・`update`・`lock`・`restore`・`list` は `all` を指定でき、`run`・`search`・`permissions` は `client` / `server` の片側です。

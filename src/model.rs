@@ -139,6 +139,9 @@ pub struct Target {
     pub disabled: Vec<String>,
     #[serde(default)]
     pub permissions: crate::sandbox::permissions::Settings,
+    /// Extra JVM options placed after Enderpin's own flags. Part of the permission plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jvm_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +164,7 @@ impl Manifest {
             enabled: vec![],
             disabled: vec![],
             permissions: Default::default(),
+            jvm_args: vec![],
         };
         let manifest = Self {
             format: FORMAT,
@@ -275,6 +279,8 @@ impl Manifest {
                     .all(|id| !target.disabled.contains(id)),
                 "a package cannot be both enabled and disabled"
             );
+            jvm_arguments(&target.jvm_args)
+                .with_context(|| format!("invalid {}.jvm_args", side.name()))?;
         }
         Ok(())
     }
@@ -557,6 +563,129 @@ pub fn https_url(raw: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
+pub const MAX_JVM_ARGUMENTS: usize = 64;
+
+/// Conservative allowlist for user JVM options: only `-XX:` flags and `-D`
+/// properties. Options that change the heap, classpath, main class, agents or
+/// security manager, run commands, or read further options from files are rejected.
+pub fn jvm_argument(argument: &str) -> Result<()> {
+    ensure!(
+        !argument.is_empty() && argument.len() <= 1024,
+        "JVM argument must be 1-1024 bytes"
+    );
+    ensure!(
+        !argument.chars().any(char::is_control),
+        "JVM argument contains control characters: {argument:?}"
+    );
+    let heap = || {
+        anyhow::anyhow!(
+            "{argument:?} is not allowed; set the heap with enderpin run --memory <MIB>"
+        )
+    };
+    if argument.starts_with("-Xmx") || argument.starts_with("-Xms") {
+        return Err(heap());
+    }
+    if let Some(option) = argument.strip_prefix("-XX:") {
+        let (name, value) = match option.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (
+                option.strip_prefix(['+', '-']).with_context(|| {
+                    format!("expected -XX:+Name, -XX:-Name or -XX:Name=value: {argument:?}")
+                })?,
+                None,
+            ),
+        };
+        ensure!(
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+            "invalid -XX option name: {argument:?}"
+        );
+        ensure!(
+            value.is_none_or(|value| !value.is_empty()),
+            "missing -XX option value: {argument:?}"
+        );
+        if matches!(name, "MaxHeapSize" | "InitialHeapSize" | "MinHeapSize") {
+            return Err(heap());
+        }
+        ensure!(
+            !matches!(
+                name,
+                // Run host commands or read further options from files.
+                "OnError"
+                    | "OnOutOfMemoryError"
+                    | "Flags"
+                    | "VMOptionsFile"
+                    | "CompileCommandFile"
+                    // Runtime agent loading and attach.
+                    | "EnableDynamicAgentLoading"
+                    | "StartAttachListener"
+                    // Set by Enderpin.
+                    | "UsePerfData"
+            ),
+            "JVM option {argument:?} is not allowed"
+        );
+        return Ok(());
+    }
+    if let Some(property) = argument.strip_prefix("-D") {
+        let name = property.split_once('=').map_or(property, |(name, _)| name);
+        ensure!(
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+            "invalid system property name: {argument:?}"
+        );
+        const RESERVED: [&str; 13] = [
+            "java.class.path",
+            "java.library.path",
+            "java.home",
+            "java.system.class.loader",
+            "java.security.manager",
+            "java.ext.dirs",
+            "java.endorsed.dirs",
+            "java.io.tmpdir",
+            "java.awt.headless",
+            "user.home",
+            "user.dir",
+            "sun.boot.library.path",
+            "sun.java.command",
+        ];
+        const RESERVED_PREFIXES: [&str; 8] = [
+            "java.security.",
+            "jdk.module.",
+            "jdk.attach.",
+            "jdk.internal.",
+            // Launcher contract: Enderpin, its bridges and Fabric Loader
+            // (fabric.addMods would load jars outside the lock).
+            "enderpin.",
+            "monalauncher.",
+            "fabric.",
+            "loader.",
+        ];
+        ensure!(
+            !RESERVED.contains(&name)
+                && !RESERVED_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix)),
+            "system property {name:?} is reserved by Enderpin or the sandbox"
+        );
+        return Ok(());
+    }
+    bail!(
+        "JVM argument {argument:?} is not allowed; only -XX: options and -D system properties are supported (heap, classpath, agents, argument files and main-class options are reserved)"
+    )
+}
+
+pub fn jvm_arguments(arguments: &[String]) -> Result<()> {
+    ensure!(
+        arguments.len() <= MAX_JVM_ARGUMENTS,
+        "at most {MAX_JVM_ARGUMENTS} JVM arguments are supported"
+    );
+    for argument in arguments {
+        jvm_argument(argument)?;
+    }
+    Ok(())
+}
+
 pub fn parse_ignores(text: &str, side: Side) -> Result<Vec<String>> {
     let mut result = vec![];
     for (index, line) in text.lines().enumerate() {
@@ -607,6 +736,102 @@ mod tests {
             )?,
             vec!["sodium", "common-mod"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn jvm_arguments_allow_only_safe_options() -> Result<()> {
+        for good in [
+            "-XX:+UseZGC",
+            "-XX:-UseCompressedOops",
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=50",
+            "-XX:SoftMaxHeapSize=1g",
+            "-Dfile.encoding=UTF-8",
+            "-Dlog4j2.formatMsgNoLookups=true",
+            "-Dpaper.disableChannelLimit",
+            "-Dmotd=hello world",
+        ] {
+            jvm_argument(good).with_context(|| good.to_owned())?;
+        }
+        for (bad, message) in [
+            ("-Xmx4G", "--memory"),
+            ("-Xms1G", "--memory"),
+            ("-XX:MaxHeapSize=4g", "--memory"),
+            ("-XX:InitialHeapSize=1g", "--memory"),
+            ("-cp", "only -XX:"),
+            ("-classpath", "only -XX:"),
+            ("--class-path=/tmp", "only -XX:"),
+            ("-jar", "only -XX:"),
+            ("--module-path=/tmp", "only -XX:"),
+            ("-p", "only -XX:"),
+            ("-javaagent:/tmp/a.jar", "only -XX:"),
+            ("-agentlib:jdwp=transport=dt_socket", "only -XX:"),
+            ("-agentpath:/tmp/a.so", "only -XX:"),
+            ("@/tmp/args", "only -XX:"),
+            ("-Xbootclasspath/a:/tmp", "only -XX:"),
+            ("--add-opens=java.base/java.lang=ALL-UNNAMED", "only -XX:"),
+            ("net.minecraft.server.Main", "only -XX:"),
+            ("-Djava.security.manager", "reserved"),
+            ("-Djava.security.manager=allow", "reserved"),
+            ("-Djava.security.policy==/tmp/p", "reserved"),
+            ("-Djava.class.path=/tmp", "reserved"),
+            ("-Djava.system.class.loader=Evil", "reserved"),
+            ("-Duser.home=/", "reserved"),
+            ("-Djava.io.tmpdir=/", "reserved"),
+            ("-Dfabric.addMods=/tmp/evil.jar", "reserved"),
+            ("-Dmonalauncher.narrator.token=x", "reserved"),
+            ("-Denderpin.minecraft=1.0", "reserved"),
+            ("-Djdk.attach.allowAttachSelf=true", "reserved"),
+            ("-XX:OnError=sh", "not allowed"),
+            ("-XX:OnOutOfMemoryError=sh", "not allowed"),
+            ("-XX:VMOptionsFile=/tmp/x", "not allowed"),
+            ("-XX:Flags=/tmp/x", "not allowed"),
+            ("-XX:+EnableDynamicAgentLoading", "not allowed"),
+            ("-XX:+UsePerfData", "not allowed"),
+            ("-XX:UseZGC", "expected"),
+            ("-XX:+Use ZGC", "invalid"),
+            ("-XX:Max=", "missing"),
+            ("-D", "invalid"),
+            ("-D=x", "invalid"),
+            ("-Dbad name=x", "invalid"),
+            ("-Da=b\n-Xmx1G", "control"),
+            ("", "1-1024"),
+        ] {
+            let error = jvm_argument(bad).expect_err(bad).to_string();
+            assert!(error.contains(message), "{bad:?}: {error}");
+        }
+        assert!(jvm_arguments(&vec!["-XX:+UseZGC".into(); MAX_JVM_ARGUMENTS + 1]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_jvm_args_are_optional_and_validated() -> Result<()> {
+        let m = Manifest::new("1.21.1".into())?;
+        assert!(!m.to_toml()?.contains("jvm_args"));
+        let text = m.to_toml()?.replace(
+            "[server]\n",
+            "[server]\njvm_args = [\"-XX:+UseZGC\", \"-Dfile.encoding=UTF-8\"]\n",
+        );
+        let parsed = Manifest::parse(&text)?;
+        assert_eq!(
+            parsed.server.jvm_args,
+            ["-XX:+UseZGC", "-Dfile.encoding=UTF-8"]
+        );
+        assert!(parsed.client.jvm_args.is_empty());
+        assert_eq!(
+            Manifest::parse(&parsed.to_toml()?)?.server.jvm_args,
+            parsed.server.jvm_args
+        );
+        // Launch flags are approved through the permission plan; the package lock stays valid.
+        assert_eq!(
+            parsed.fingerprint(Side::Server)?,
+            m.fingerprint(Side::Server)?
+        );
+        let error = Manifest::parse(&text.replace("-XX:+UseZGC", "-Xmx8G"))
+            .expect_err("heap override")
+            .to_string();
+        assert!(error.contains("server.jvm_args"), "{error}");
         Ok(())
     }
 }
