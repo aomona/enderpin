@@ -24,6 +24,8 @@ pub struct LaunchOptions {
     pub memory_mib: u32,
     pub connect: Option<String>,
     pub port: Option<u16>,
+    /// Ad-hoc JVM options for this run, after the approved `jvm_args` from enderpin.toml.
+    pub jvm_args: Vec<String>,
 }
 impl Default for LaunchOptions {
     fn default() -> Self {
@@ -35,6 +37,7 @@ impl Default for LaunchOptions {
             memory_mib: 2048,
             connect: None,
             port: None,
+            jvm_args: vec![],
         }
     }
 }
@@ -152,6 +155,15 @@ pub fn start(
             .is_none_or(|port| side == Side::Server && port > 0),
         "port requires a server and must be between 1 and 65535"
     );
+    let user_jvm: Vec<String> = workspace
+        .manifest
+        .target(side)
+        .jvm_args
+        .iter()
+        .chain(&options.jvm_args)
+        .cloned()
+        .collect();
+    crate::model::jvm_arguments(&user_jvm)?;
     if let Some(server) = &options.connect {
         ensure!(
             side == Side::Client && !demo && options.network,
@@ -433,24 +445,25 @@ pub fn start(
             .iter()
             .cloned(),
     );
+    // Main class (or -jar/-cp) and application arguments, kept after user JVM options.
+    let mut main = vec![];
     if side == Side::Server {
+        args.push("-Djava.awt.headless=true".into());
         if matches!(
             workspace.manifest.server.loader.as_str(),
             "paper" | "velocity"
         ) {
-            args.extend([
-                "-Djava.awt.headless=true".into(),
+            main.extend([
                 "-jar".into(),
                 storage::java_path(&runtime.game_jar)
                     .to_string_lossy()
                     .into_owned(),
             ]);
             if !proxy {
-                args.push("nogui".into());
+                main.push("nogui".into());
             }
         } else {
-            args.extend([
-                "-Djava.awt.headless=true".into(),
+            main.extend([
                 "-cp".into(),
                 classpath,
                 if workspace.manifest.server.loader == "vanilla" {
@@ -463,7 +476,7 @@ pub fn start(
             ]);
         }
         if let Some(port) = options.port {
-            args.extend(["--port".into(), port.to_string()]);
+            main.extend(["--port".into(), port.to_string()]);
         }
     } else {
         let game_assets = assets.context("client assets missing")?;
@@ -548,9 +561,9 @@ pub fn start(
                 runtime.metadata.main_class == "net.minecraft.client.main.Main",
                 "unsupported vanilla client main class"
             );
-            args.push(runtime.metadata.main_class.clone());
+            main.push(runtime.metadata.main_class.clone());
         } else {
-            args.push("net.fabricmc.loader.impl.launch.knot.KnotClient".into());
+            main.push("net.fabricmc.loader.impl.launch.knot.KnotClient".into());
         }
         let game_arguments =
             crate::runtime::arguments(&runtime.metadata.arguments.game, &features)?;
@@ -562,9 +575,10 @@ pub fn start(
             "this Minecraft version does not support --connect; join through its multiplayer menu"
         );
         for argument in game_arguments {
-            args.push(expand(&argument, &values)?);
+            main.push(expand(&argument, &values)?);
         }
     }
+    let args = jvm_command(args, &user_jvm, main);
     // Arguments contain only a placeholder token. Account credentials and signing
     // keys are held by the host broker, never by this file or the game process.
     let mut argument_file = tempfile::NamedTempFile::new_in(&policy.temporary)?;
@@ -685,6 +699,16 @@ fn relay(
             }
         }
     })
+}
+
+/// Enderpin's JVM flags, then user JVM options, then the main class and its arguments.
+/// Later -XX/-D options win in HotSpot, so user options can tune but the validator
+/// keeps them away from reserved launcher settings.
+fn jvm_command(launcher: Vec<String>, user: &[String], main: Vec<String>) -> Vec<String> {
+    let mut args = launcher;
+    args.extend(user.iter().cloned());
+    args.extend(main);
+    args
 }
 
 fn expand(argument: &str, values: &std::collections::BTreeMap<&str, String>) -> Result<String> {
@@ -851,6 +875,31 @@ mod tests {
         storage::target_lock(root.path(), Side::Server)?;
         Ok(())
     }
+    #[test]
+    fn user_jvm_arguments_follow_launcher_flags_and_precede_main_class() {
+        let strings = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let launcher = strings(&["-Xmx2048M", "-XX:-UsePerfData", "-Djava.awt.headless=true"]);
+        let main = strings(&["-jar", "paper.jar", "nogui"]);
+        assert_eq!(
+            jvm_command(launcher.clone(), &strings(&["-XX:+UseZGC"]), main.clone()),
+            strings(&[
+                "-Xmx2048M",
+                "-XX:-UsePerfData",
+                "-Djava.awt.headless=true",
+                "-XX:+UseZGC",
+                "-jar",
+                "paper.jar",
+                "nogui"
+            ])
+        );
+        assert_eq!(
+            jvm_command(launcher.clone(), &[], main.clone()),
+            [launcher, main].concat()
+        );
+        assert_eq!(LaunchOptions::default().memory_mib, 2048);
+        assert!(LaunchOptions::default().jvm_args.is_empty());
+    }
+
     #[test]
     fn argfile_quoting_does_not_reinterpret_values_as_templates() -> Result<()> {
         let values = std::collections::BTreeMap::from([("path", "a ${literal} # \\\"b".into())]);

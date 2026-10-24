@@ -51,4 +51,30 @@ Java・検証済みランタイム・一時領域のパスはEnderpinが準備�
 OSごとの強制可能範囲と認証の扱いは [サンドボックスと権限](sandbox.md) を参照してください。
 旧 `[client.sandbox]` / `[server.sandbox]` はエラーになります。移行方法は [移行手順](migration.md#権限設定の新形式へ移行する) を参照してください。
 
+## JVMオプション {#jvm-options}
+
+対象ごとに `jvm_args` でJVMオプションを追加できます。省略時は追加しません。Enderpin自体の既定のGC・メモリ設定は変わりません。
+
+```toml
+[server]
+loader = "fabric"
+jvm_args = ["-XX:+UseZGC"]
+
+[client]
+loader = "fabric"
+jvm_args = ["-XX:+UseZGC", "-Dfile.encoding=UTF-8"]
+```
+
+指定できるのは `-XX:` で始まるオプションと `-D` のシステムプロパティだけです（各対象64個まで）。
+起動時はEnderpin自身のJVMオプションの後、メインクラス（または `-jar`・`-cp`）の前に、記載順で渡します。
+
+- `-Xmx`・`-Xms`・`-XX:MaxHeapSize` 等のヒープ指定は拒否します。最大ヒープは `run --memory MIB`（既定2048 MiB）で指定してください。
+- `-cp`・`-classpath`・`-jar`・`--module-path`・`-javaagent`・`-agentlib`・`-agentpath`・`-Xbootclasspath`・`--add-opens`・`@引数ファイル` 等、`-XX:`・`-D` 以外は拒否します。
+- コマンド実行やオプションファイル読み込みを行う `-XX:OnError`・`-XX:OnOutOfMemoryError`・`-XX:Flags`・`-XX:VMOptionsFile`・`-XX:CompileCommandFile`、エージェントの動的ロード、Enderpinが設定する `-XX:UsePerfData` は拒否します。
+- `java.security.*`（`java.security.manager` を含む）・`java.class.path`・`java.library.path`・`java.system.class.loader`・`java.io.tmpdir`・`user.home` 等のJVM・サンドボックス関連プロパティと、`enderpin.*`・`monalauncher.*`・`fabric.*`・`loader.*`・`jdk.module.*`・`jdk.attach.*` は予約済みとして拒否します。
+
+`jvm_args` はゲームプロセス全体の起動内容を変えるため、権限と同じく承認の対象です。変更すると `run` の前に再承認が必要です。パッケージのロックは変わらないため、`sync` のやり直しは不要です。空の場合は承認のfingerprintに含めないため、既存の承認はそのまま有効です。
+
+一度だけ試す場合は `run --jvm-arg ARG` を繰り返し指定できます。同じ検査を行い、構成の `jvm_args` の後に渡します。コマンドラインで明示した指定のため、`--memory` と同様に承認の対象外で、保存もしません。
+
 サーバーの`loader`には`paper`と`velocity`も指定できます。Paperは`loader_version`にビルド番号、Velocityは`版`または`版+ビルド番号`を指定します。プラグインは`kind = "plugin"`です。[複数サーバーとAnsible CD](deployment.md)を参照してください。

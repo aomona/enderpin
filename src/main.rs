@@ -164,7 +164,7 @@ enum Command {
     Logout,
     /// Run a pinned target in the OS sandbox, downloading missing locked files as needed.
     #[command(
-        after_help = "Examples:\n  enderpin run\n  enderpin run --target server --accept-eula --memory 1024\n  enderpin run --offline --demo\n\nRun never updates pinned versions. Change configuration with sync, or versions with update.\nPermission approval is always explicit; --offline controls downloads, --no-network controls the game."
+        after_help = "Examples:\n  enderpin run\n  enderpin run --target server --accept-eula --memory 1024\n  enderpin run --offline --demo\n  enderpin run --target server --jvm-arg -XX:+UseZGC\n\nRun never updates pinned versions. Change configuration with sync, or versions with update.\nPermission approval is always explicit; --offline controls downloads, --no-network controls the game."
     )]
     Run {
         #[arg(long, value_enum, default_value = "client")]
@@ -199,6 +199,9 @@ enum Command {
         /// Client only: join a server (requires authentication and Quick Play support).
         #[arg(long, conflicts_with = "no_network")]
         connect: Option<String>,
+        /// Extra JVM option for this run only (repeatable; -XX: options and -D properties).
+        #[arg(long = "jvm-arg", value_name = "ARG", allow_hyphen_values = true, value_parser = jvm_arg)]
+        jvm_args: Vec<String>,
     },
     /// Add a Modrinth project or a public HTTPS file URL and synchronize packages.
     #[command(
@@ -396,6 +399,11 @@ impl Cli {
     }
 }
 
+fn jvm_arg(value: &str) -> Result<String> {
+    enderpin::model::jvm_argument(value)?;
+    Ok(value.to_owned())
+}
+
 fn clean(text: &str) -> String {
     text.chars()
         .filter(|c| {
@@ -489,6 +497,16 @@ fn permission_text(plan: &enderpin::sandbox::permissions::Plan) -> String {
                 access(settings.clipboard_allowed())
             ));
         }
+    }
+    if !plan.jvm_args.is_empty() {
+        lines.push(format!(
+            "JVM arguments from enderpin.toml: {}",
+            plan.jvm_args
+                .iter()
+                .map(|arg| clean(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
     }
     lines.push(format!("External folders: {}", plan.folders.len()));
     for folder in &plan.folders {
@@ -1327,6 +1345,7 @@ fn run(cli: &Cli) -> Result<()> {
             memory,
             demo,
             connect,
+            jvm_args,
             ..
         } => {
             let side = cli.target().single()?;
@@ -1385,6 +1404,7 @@ fn run(cli: &Cli) -> Result<()> {
                     memory_mib: *memory,
                     port: *port,
                     connect: connect.clone(),
+                    jvm_args: jvm_args.clone(),
                 },
                 session.as_ref(),
                 *demo,
@@ -1780,6 +1800,9 @@ mod tests {
             vec!["run", "--json"],
             vec!["run", "--yes"],
             vec!["run", "--memory", "255"],
+            vec!["run", "--jvm-arg", "-Xmx4G"],
+            vec!["run", "--jvm-arg", "-javaagent:/tmp/a.jar"],
+            vec!["run", "--jvm-arg"],
             vec!["run", "--demo", "--connect", "localhost"],
             vec!["sync", "--update"],
             vec!["lock", "--yes"],
@@ -1830,6 +1853,18 @@ mod tests {
                 .to_string();
             assert!(!help.contains(absent), "{command} advertises {absent}");
         }
+        let cli = Cli::try_parse_from([
+            "enderpin",
+            "run",
+            "--target",
+            "server",
+            "--jvm-arg",
+            "-XX:+UseZGC",
+            "--jvm-arg=-Dfile.encoding=UTF-8",
+        ])?;
+        assert!(
+            matches!(cli.command, Command::Run { ref jvm_args, memory: 2048, .. } if jvm_args == &["-XX:+UseZGC", "-Dfile.encoding=UTF-8"])
+        );
         let cli = Cli::try_parse_from([
             "enderpin",
             "permissions",
