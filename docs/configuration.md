@@ -1,6 +1,6 @@
 # enderpin.toml の設定
 
-`format = 4` は一つのmanifestとlockで、複数のクライアント・ゲームサーバー・プロキシを管理します。これはソース版の形式です。公開済みv0.1.8はformat 3のため、[ソースからビルド](installation.md#最新のソース版)してください。
+`format = 4` は一つのmanifestとlockで、複数のクライアント・ゲームサーバー・プロキシを管理します。v0.2.0以降に対応する形式です。旧版の環境は[移行手順](migration.md)を確認してください。
 
 ```toml
 format = 4

@@ -23,7 +23,7 @@ git add enderpin.toml enderpin.lock client/files/ survival/files/ .gitignore
 git commit -m "Pin Minecraft workspace"
 ```
 
-存在するディレクトリだけを追加します。`<名前>/run/`、`.enderpin/`、`.enderpinignore`はGit管理外です。format 4対応の公開版が出るまでは共有先にもソース版を用意してください。旧Wrapperは使用できません。
+存在するディレクトリだけを追加します。`<名前>/run/`、`.enderpin/`、`.enderpinignore`はGit管理外です。共有先にはv0.2.0以降を用意するか、[Wrapper](installation.md#repository-wrapper)でv0.2.0以降を固定してください。
 
 ## 別のPCで再現する
 

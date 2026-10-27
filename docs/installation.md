@@ -1,27 +1,27 @@
 # インストール
 
-GitHub Releaseの配布パッケージとソース版から選べます。公開版v0.1.8はformat 3です。このサイトで説明する名前付きターゲットとformat 4にはソース版が必要です。旧版からの更新前に[移行手順](migration.md)を確認してください。ワールドの自動移動や旧コマンドとの互換対応は行いません。
+GitHub Releaseの配布パッケージとソース版から選べます。v0.2.0は、このサイトで説明する名前付きターゲットとformat 4に対応しています。旧版からの更新前に[移行手順](migration.md)を確認してください。ワールドの自動移動や旧コマンドとの互換対応は行いません。
 
 全5環境のバイナリを同梱したパッケージを、次のURLからインストールします。
 
 ```sh
-bun install -g https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz
+bun install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
 # または
-npm install -g https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz
+npm install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
 enderpin --version
 ```
 
 v0.1.3からは全5環境のネイティブバイナリをnpmパッケージに同梱し、OS・CPUに合うものを起動します。外部URLへの依存やインストール用スクリプト、`bun pm trust` は不要です。pnpmの `blockExoticSubdeps` を有効にしたまま使えます。
 
 ```sh
-pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz --help
+pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --help
 # 版の確認
-pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz --version
+pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --version
 ```
 
 引数なしではCLIの使い方を表示します。初期セットアップは `init` です。コマンドはその版の `--help` を参照してください。
 
-入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz --help` のように起動できます。更新時も希望する版のURLを指定してください。npmレジストリの公開版はv0.1.3のため、`enderpin@latest` ではv0.1.8を取得できません。
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --help` のように起動できます。更新時も希望する版のURLを指定してください。npmレジストリの公開版はv0.1.3のため、`enderpin@latest` ではv0.2.0を取得できません。
 
 ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 
@@ -39,7 +39,7 @@ enderpin --version
 | Linux / ARM64（glibc 2.35以上） | `enderpin-linux-arm64.tgz` |
 | Windows / x64 | `enderpin-win32-x64.tgz` |
 
-表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.1.8/` のような公開済みタグのパスに置き換えます。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
+表のファイル名に置き換えてください。特定の版に固定する場合は、`releases/latest/download/` を `releases/download/v0.2.0/` のような公開済みタグのパスに置き換えます。URL版の更新時も希望する版のURLで `bun install -g` を実行します。Bun 1.4.2では旧バイナリが残る場合を確認しています。`enderpin --version` で確認し、更新されていなければ `bun remove -g enderpin` の後に同じインストールコマンドを再実行してください。ゲームの保存データは削除しません。
 
 このOS別パッケージには実行ファイルとJava/JNIブリッジを同梱しています。インストールにRust・JDK・Node.jsや `bun pm trust` は不要です。`enderpin` が見つからない場合は `bun pm bin -g` が示すディレクトリをPATHへ追加してください。Linuxのbubblewrapなど、ゲーム起動に必要なOS側の条件は引き続き必要です。Linuxの配布版はglibc向けで、Alpine Linux（musl）用ではありません。
 
@@ -47,10 +47,10 @@ enderpin --version
 
 v0.1.5以降には `wrapper` コマンドが含まれます。v0.1.4にはこのコマンドがありませんが、生成したWrapperからv0.1.4を起動することもできます。
 
-構成を配る側で、一度だけv0.1.5以降のEnderpinを使って生成します。新しい `init` でも自動生成します。
+構成を配る側で、一度だけ生成します。format 4ではv0.2.0以降を指定してください。`init`では自動生成しません。
 
 ```sh
-enderpin wrapper --version 0.1.8
+enderpin wrapper --version 0.2.0
 git add enderpinw enderpinw.ps1 enderpin-wrapper.properties
 git commit -m "Add pinned Enderpin wrapper"
 ```
@@ -90,6 +90,6 @@ cd enderpin
 cargo install --path . --locked
 ```
 
-## format 4のソース版
+## format 4とWrapper
 
-名前付きターゲットを使う場合はソース版をビルドしてください。v0.1.8以前のWrapperは対応しません。format 4の`init`ではWrapperを自動生成せず、対応する公開版が出てから`wrapper --version`で明示的に固定します。
+v0.2.0以降を使用してください。v0.1.8以前を固定したWrapperはformat 4に対応しません。既存のWrapperは`enderpin wrapper --version 0.2.0 --force`で更新し、差分を確認してコミットします。

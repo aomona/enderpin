@@ -4,12 +4,11 @@ Minecraftのクライアントとサーバーを準備・共有するCLI。Minec
 
 [ドキュメント](https://enderpin-docs.aomona.workers.dev/) · [対応環境](https://enderpin-docs.aomona.workers.dev/platforms)
 
-## ソース版の名前付きターゲット
+## 名前付きターゲット
 
 一つの`enderpin.toml`と`enderpin.lock`でクライアント・複数サーバー・プロキシを管理できます。構成形式は4です。設定ファイルは`survival/files/`、実行環境・ワールドは`survival/run/`のように対象ごとにまとめます。
 
 ```sh
-cargo install --path . --locked
 # enderpin.tomlを記述してから、全ターゲットと標準設定を準備
 enderpin init --target all
 enderpin run --target survival
@@ -17,15 +16,15 @@ enderpin run --target survival
 
 [設定と継承ルール](docs/configuration.md) · [初期設定の生成](docs/setup.md) · [配置と同期の仕組み](docs/workspace.md) · [旧形式からの移行](docs/migration.md)
 
-**公開済みv0.1.8はformat 3です。format 4にはソース版が必要で、既存ワールドは自動移動しません。**
+**v0.2.0はformat 4です。v0.1.8以前の環境は[移行手順](docs/migration.md)を確認してください。既存ワールドは自動移動しません。**
 
 ## 公開版ではじめる
 
 Node.js 18以上とnpm、またはBunを使います。
 
 ```sh
-npm install -g https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz
-# または: bun install -g https://github.com/aomona/enderpin/releases/download/v0.1.8/enderpin-0.1.8.tgz
+npm install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
+# または: bun install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
 
 enderpin init my-world --loader fabric
 cd my-world
@@ -42,7 +41,7 @@ enderpin run
 - [Velocity・複数サーバー・Ansible CD](docs/deployment.md)
 - [開発・ビルド手順](https://enderpin-docs.aomona.workers.dev/contributing)
 
-> v0.1.8はGitHub Releaseから取得できます。npmレジストリのv0.1.3には新CLIと `files/`・`run/` の新構成が含まれないため、上のURLを指定してください。旧版から更新する場合は[移行手順](docs/migration.md)を確認してください。
+> v0.2.0はGitHub Releaseから取得できます。npmレジストリのv0.1.3には新CLIと `files/`・`run/` の新構成が含まれないため、上のURLを指定してください。旧版から更新する場合は[移行手順](docs/migration.md)を確認してください。
 
 v0.1.5以降では `enderpin wrapper` でリポジトリ用Wrapperを生成できます。3ファイルを構成リポジトリへコミットすれば、共有先は `./enderpinw sync --locked` から使えます。Enderpin・Node.js・Bunの事前インストールは不要です。[Wrapperの使い方](docs/installation.md#repository-wrapper)を参照してください。
 

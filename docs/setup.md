@@ -43,4 +43,4 @@ enderpin run --target proxy
 
 実行権限は起動時に別途確認します。`--accept-eula`は内容を確認し同意した場合だけ指定します。
 
-format 4対応の公開版が出るまではソース版を使用します。`init`は旧形式の公開版を指すWrapperを自動生成しません。対応版の公開後に`enderpin wrapper --version <対応版>`を明示的に実行してください。
+`init`はWrapperを自動生成しません。リポジトリで実行版を固定するには、`enderpin wrapper --version 0.2.0`を実行してください。
