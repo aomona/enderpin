@@ -135,14 +135,16 @@ impl Drop for RunningGame {
 
 pub fn start(
     mut workspace: Workspace,
-    side: Side,
+    name: &str,
     options: LaunchOptions,
     session: Option<&crate::auth::Session>,
     demo: bool,
     mut progress: impl FnMut(&str),
 ) -> Result<RunningGame> {
+    let config = workspace.manifest.target(name)?;
+    let side = config.side();
     ensure!(
-        options.sandbox || (workspace.manifest.target(side).loader == "vanilla" && options.network),
+        options.sandbox || (config.loader == "vanilla" && options.network),
         "unconfined launch is only supported for vanilla targets; network denial requires the sandbox"
     );
     ensure!(
@@ -155,9 +157,7 @@ pub fn start(
             .is_none_or(|port| side == Side::Server && port > 0),
         "port requires a server and must be between 1 and 65535"
     );
-    let user_jvm: Vec<String> = workspace
-        .manifest
-        .target(side)
+    let user_jvm: Vec<String> = config
         .jvm_args
         .iter()
         .chain(&options.jvm_args)
@@ -178,8 +178,9 @@ pub fn start(
             "invalid server address"
         );
     }
-    let game = storage::directory(&workspace.root, side.game_directory())?.canonicalize()?;
-    let proxy = side == Side::Server && workspace.manifest.server.loader == "velocity";
+    let game =
+        storage::directory(&workspace.root, &crate::model::game_directory(name))?.canonicalize()?;
+    let proxy = side == Side::Server && config.loader == "velocity";
     ensure!(
         !proxy || options.port.is_none(),
         "configure the Velocity port in velocity.toml"
@@ -188,11 +189,11 @@ pub fn start(
         let eula = storage::read_optional(&game, "eula.txt")?.unwrap_or_default();
         ensure!(
             options.accept_eula || eula.lines().any(|l| l.trim() == "eula=true"),
-            "Minecraft EULA acceptance is required: https://aka.ms/MinecraftEULA ; review it, then run enderpin run --target server --accept-eula"
+            "Minecraft EULA acceptance is required: https://aka.ms/MinecraftEULA ; review it, then run enderpin run --target {name} --accept-eula"
         );
     }
     let mut runtimes = workspace.prepare_runtime(
-        &[side],
+        &[name],
         SyncOptions {
             locked: true,
             offline: options.offline,
@@ -201,9 +202,9 @@ pub fn start(
         false,
         |_, message| progress(message),
     )?;
-    let runtime: PreparedRuntime = runtimes.remove(&side).context("target runtime missing")?;
-    let target = storage::target_lock(&workspace.root, side)?;
-    let plan = sandbox::permissions::plan_locked(&workspace, side)?;
+    let runtime: PreparedRuntime = runtimes.remove(name).context("target runtime missing")?;
+    let target = storage::target_lock(&workspace.root, name)?;
+    let plan = sandbox::permissions::plan_locked(&workspace, name)?;
     ensure!(
         side != Side::Client
             || if demo {
@@ -214,7 +215,7 @@ pub fn start(
         "client requires a current account session when authentication is enabled"
     );
     if options.sandbox {
-        let approval = sandbox::permissions::Local::load(&workspace, side)?;
+        let approval = sandbox::permissions::Local::load(&workspace, name)?;
         ensure!(
             approval.approved.as_deref() == Some(&plan.fingerprint()?),
             "sandbox permissions changed or are unapproved; run permissions approve in a terminal (automation: permissions show --json, then permissions approve <fingerprint>)"
@@ -226,7 +227,7 @@ pub fn start(
         file.write_all(b"# Accepted explicitly through enderpin run --accept-eula\neula=true\n")?;
         file.sync_all()?;
     }
-    let temp_root = storage::directory(&workspace.root, &format!(".enderpin/{}/tmp", side.name()))?;
+    let temp_root = storage::directory(&workspace.root, &format!(".enderpin/{}/tmp", name))?;
     let temporary = tempfile::tempdir_in(temp_root)?;
     let java_home = runtime
         .java
@@ -239,7 +240,7 @@ pub fn start(
     }
     let mut extra: Vec<_> = plan.folders.clone();
     let bridge_files = if side == Side::Client {
-        Some(crate::bridges::prepare(&workspace.root)?)
+        Some(crate::bridges::prepare(&workspace.root, name)?)
     } else {
         None
     };
@@ -248,7 +249,7 @@ pub fn start(
         crate::bridges::clear_profile_keys(&game)?;
         Some(Box::new(crate::bridges::broker(
             &runtime,
-            &workspace.lockfile.runtimes[&side],
+            &workspace.lockfile.runtimes[name],
             session.context("missing session")?,
         )?)
             as Box<dyn crate::auth::broker::service::Operations>)
@@ -256,8 +257,8 @@ pub fn start(
         None
     };
     let imports = if side == Side::Client {
-        let root =
-            storage::directory(&workspace.root, ".enderpin/client/imports")?.canonicalize()?;
+        let root = storage::directory(&workspace.root, &format!(".enderpin/{name}/imports"))?
+            .canonicalize()?;
         sandbox::validate_data_tree(&root)?;
         Some(root)
     } else {
@@ -300,8 +301,8 @@ pub fn start(
     };
     let assets = if side == Side::Client {
         progress("Preparing local assets and skin cache");
-        let caches =
-            storage::directory(&workspace.root, ".enderpin/client/cache")?.canonicalize()?;
+        let caches = storage::directory(&workspace.root, &format!(".enderpin/{name}/cache"))?
+            .canonicalize()?;
         let assets = runtime.game_assets(&caches)?.canonicalize()?;
         let skins = storage::directory(&assets, "skins")?.canonicalize()?;
         extra.push(sandbox::permissions::FolderGrant {
@@ -348,7 +349,7 @@ pub fn start(
         options.connect.is_none() || (policy.network && authenticated),
         "--connect requires approved network and account authentication access"
     );
-    let graphics = sandbox::graphics_cache(&workspace.root, &mut policy)?;
+    let graphics = sandbox::graphics_cache(&workspace.root, name, &mut policy)?;
     #[cfg(not(windows))]
     let mut command = if options.sandbox {
         sandbox::command(&runtime.java, &policy)?
@@ -397,9 +398,9 @@ pub fn start(
         ),
         format!("-Duser.home={}", storage::java_path(&policy.game).display()),
         "-XX:-UsePerfData".into(),
-        format!("-Denderpin.minecraft={}", workspace.manifest.minecraft),
+        format!("-Denderpin.minecraft={}", config.minecraft),
     ];
-    if workspace.manifest.target(side).loader == "fabric" {
+    if config.loader == "fabric" {
         args.push(format!(
             "-Dfabric.gameJarPath={}",
             storage::java_path(&runtime.game_jar).display()
@@ -416,7 +417,7 @@ pub fn start(
             // workspace paths out of the agent filename portion.
             args.push(format!(
                 "-javaagent:{}={}",
-                std::path::Path::new("../../.enderpin/client/launch")
+                std::path::Path::new(&format!("../../.enderpin/{name}/launch"))
                     .join(
                         files
                             .as_path()
@@ -439,20 +440,12 @@ pub fn start(
             }
         }
     }
-    args.extend(
-        workspace.lockfile.runtimes[&side]
-            .fabric_jvm
-            .iter()
-            .cloned(),
-    );
+    args.extend(workspace.lockfile.runtimes[name].fabric_jvm.iter().cloned());
     // Main class (or -jar/-cp) and application arguments, kept after user JVM options.
     let mut main = vec![];
     if side == Side::Server {
         args.push("-Djava.awt.headless=true".into());
-        if matches!(
-            workspace.manifest.server.loader.as_str(),
-            "paper" | "velocity"
-        ) {
+        if matches!(config.loader.as_str(), "paper" | "velocity") {
             main.extend([
                 "-jar".into(),
                 storage::java_path(&runtime.game_jar)
@@ -466,7 +459,7 @@ pub fn start(
             main.extend([
                 "-cp".into(),
                 classpath,
-                if workspace.manifest.server.loader == "vanilla" {
+                if config.loader == "vanilla" {
                     "net.minecraft.server.Main"
                 } else {
                     "net.fabricmc.loader.impl.launch.knot.KnotServer"
@@ -513,7 +506,7 @@ pub fn start(
             ),
             ("user_type", "msa".into()),
             ("user_properties", "{}".into()),
-            ("version_name", workspace.manifest.minecraft.clone()),
+            ("version_name", config.minecraft.clone()),
             ("version_type", "release".into()),
             (
                 "game_directory",
@@ -556,7 +549,7 @@ pub fn start(
         for argument in crate::runtime::arguments(&runtime.metadata.arguments.jvm, &features)? {
             args.push(expand(&argument, &values)?);
         }
-        if workspace.manifest.client.loader == "vanilla" {
+        if config.loader == "vanilla" {
             ensure!(
                 runtime.metadata.main_class == "net.minecraft.client.main.Main",
                 "unsupported vanilla client main class"
@@ -841,7 +834,7 @@ mod tests {
             game.join("Hold.java"),
             "class Hold { public static void main(String[] args) throws Exception { System.out.println(\"ready\"); Thread.sleep(10000); } }",
         )?;
-        let lease = storage::target_lock(root.path(), Side::Server)?;
+        let lease = storage::target_lock(root.path(), "server")?;
         let policy = Policy {
             game: game.clone(),
             temporary,
@@ -864,7 +857,7 @@ mod tests {
         let mut line = String::new();
         std::io::BufReader::new(child.stdout.take().context("missing stdout")?)
             .read_line(&mut line)?;
-        let retained = storage::target_lock(root.path(), Side::Server).is_err();
+        let retained = storage::target_lock(root.path(), "server").is_err();
         let _ = child.kill();
         child.wait()?;
         assert_eq!(line.trim(), "ready");
@@ -872,7 +865,7 @@ mod tests {
             retained,
             "JVM must retain the target lock after parent descriptors close"
         );
-        storage::target_lock(root.path(), Side::Server)?;
+        storage::target_lock(root.path(), "server")?;
         Ok(())
     }
     #[test]

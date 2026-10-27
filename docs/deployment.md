@@ -1,24 +1,22 @@
 # Velocity・複数サーバーのデプロイ
 
-1つのGitリポジトリにサーバー別のワークスペースを置き、Ansible inventoryで配置先を指定します。VelocityとPaper/Fabricを同じホストにも別ホストにも配置できます。OSはDebian 12以降またはUbuntu 24.04以降のsystemd環境を対象としたテンプレートです。ハードウェアやクラウド事業者は固定しません。
+一つのmanifestに名前付きターゲットを宣言し、Ansible inventoryのworkspaceとtargetで配布対象・配置先を指定します。VelocityとPaper/Fabricを同じホストにも別ホストにも配置できます。OSはDebian 12以降またはUbuntu 24.04以降のsystemd環境を対象としたテンプレートです。ハードウェアやクラウド事業者は固定しません。
 
 ## リポジトリとバージョン
 
-Enderpinのソース版をビルドし、`deploy/`をサーバー設定用リポジトリへコピーします。`deploy/example/servers/`をリポジトリ直下の`servers/`へ、同ディレクトリの`.gitignore`もコピーしてください。
+Enderpinのソース版をビルドし、`deploy/`をサーバー設定用リポジトリへコピーします。`deploy/example/enderpin.toml`と同ディレクトリの`.gitignore`を設定リポジトリ直下へコピーしてください。
 
 ```text
-servers/
-  proxy/enderpin.toml       # Velocity
-  lobby/enderpin.toml       # Paper
-  survival/enderpin.toml    # Fabric + FabricProxy-Lite
-  .../enderpin.lock         # 各ディレクトリで生成してGitに追加
-  .../files/server/         # 追加のMOD設定など
-deploy/ansible/             # inventoryとplaybook
+enderpin.toml              # lobby・survival・proxy
+enderpin.lock             # 全ターゲットを固定
+survival/files/config/    # 追加のMOD設定
+proxy/files/plugins/      # 追加のプラグイン設定
+deploy/ansible/            # inventoryとplaybook
 ```
 
 サンプルのMinecraft 1.21.1、Paper 133、Fabric Loader 0.16.10、Velocity 3.4.0-SNAPSHOT+563は形式を示す固定例です。最新版や推奨版という意味ではありません。利用するMinecraft・MOD・プラグインに合わせて変更してください。
 
-| `server.loader` | `server.loader_version` |
+| `targets.<名前>.loader` | `targets.<名前>.loader_version` |
 | --- | --- |
 | `fabric` | Fabric Loader版。例: `"0.16.10"`。省略時は安定版を解決 |
 | `paper` | Minecraft版に対応するビルド番号。例: `"133"`。省略時はSTABLEチャンネルの最大ビルド |
@@ -27,13 +25,11 @@ deploy/ansible/             # inventoryとplaybook
 Velocityの版は`minecraft`と独立しています。`minecraft`はパッケージの互換性判定に使用します。Paper/Velocityには`kind = "plugin"`のパッケージを指定します。Fabricには`kind = "mod"`を指定します。異なるバックエンドに異なるMinecraft版も指定できますが、プレイヤーのプロトコルやMODの互換性は別途揃える必要があります。
 
 ```sh
-enderpin -C servers/proxy sync --target server
-enderpin -C servers/lobby sync --target server
-enderpin -C servers/survival sync --target server
-git add servers
+enderpin sync --target all
+git add enderpin.toml enderpin.lock
 ```
 
-初回の`sync`がランタイムjar、必要なJava、MODとその依存をlockに固定します。版を変更したときも`sync`してlockをコミットします。自動更新はせず、CDは`sync --locked`を使います。`files/server/`には共有する設定だけを置き、ワールド、アカウント、VPN鍵、SSH鍵をコミットしないでください。
+初回の`sync`がランタイムjar、必要なJava、MODとその依存をlockに固定します。版を変更したときも`sync`してlockをコミットします。自動更新はせず、CDは`sync --locked`を使います。`<名前>/files/`には共有する設定だけを置き、ワールド、アカウント、VPN鍵、SSH鍵をコミットしないでください。
 
 ## 配置と認証
 
@@ -52,13 +48,13 @@ openssl rand -hex 32
 
 `inventory.yml`で次を設定します。
 
-- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace、bind address、port、memory_mib。同じホストのポートと名前は重複できません。
+- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。同じホストのポートと名前は重複できません。
 - `enderpin_binary`: コントローラー上の検証済みLinuxバイナリ。配布先のCPUアーキテクチャに合わせてホストごとに変更できます。ホスト上ではビルドしません。
 - `enderpin_backends`と`enderpin_try`: Velocityから到達できるIPv4:portと接続順序。
 - `enderpin_proxy_address`と`enderpin_backend_interface`: バックエンドへの接続を許可するプロキシの送信元と受信インターフェース。
 - `enderpin_accept_eula`: Minecraft EULAに同意した場合だけ`true`にします。Velocityだけのホストでは不要です。
 
-Ansibleが`server.properties`、`velocity.toml`、`forwarding.secret`、`config/FabricProxy-Lite.toml`、`config/paper-global.yml`、`spigot.yml`を生成します。これらを`files/common/`や`files/server/`に重ねて置くと配布を拒否します。バックエンドの追加プロパティはinstanceの`properties`辞書で指定します。接続・認証・RCON設定は配布側が最後に固定します。
+この任意のAnsibleテンプレートでは、ネイティブ設定の生成元をAnsibleに統一します。`init`による初期設定生成は併用せず、`sync`で準備してください。Ansibleが`server.properties`、`velocity.toml`、`forwarding.secret`、`config/FabricProxy-Lite.toml`、`config/paper-global.yml`、`spigot.yml`を生成します。これらを`shared/<グループ>/files/`や`<名前>/files/`に重ねて置くと配布を拒否します。バックエンドの追加プロパティはinstanceの`properties`辞書で指定します。接続・認証・RCON設定は配布側が最後に固定します。
 
 Fabricワークスペースには有効な直接依存として`modrinth = "fabricproxy-lite"`を指定し、lockに含めてください。Ansibleは`hackOnlineMode = true`と共有secretを設定します。必要な構成ではinstanceに`fabric_proxy_hack_early_send` / `fabric_proxy_hack_message_chain`のbooleanを指定できます。Paperは1.19以降の設定形式を対象とし、modern forwardingを有効、legacy BungeeCordを無効にします。
 
@@ -122,3 +118,7 @@ GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`
 Enderpinの`--offline`はEnderpinの固定済み入力の準備に適用します。Paperの初回起動時のbootstrapやプラグイン自身の通信まで無効にする指定ではありません。ゲームのネットワーク権限は通常どおりsandboxで制御します。
 
 構文・設定生成・証明書発行・ロック処理の検証と、実ホストでの接続確認は別です。TCP待ち受け確認だけではMinecraftログイン、forwardingされたUUID/IP、MOD互換性、VPNの再接続、TPSやメモリ消費を保証しません。初回構築ではこれらを実環境で確認してください。
+
+## 旧配置の移行
+
+旧workspace/run/serverが残るホストへの配布は切り替え前に停止します。停止・バックアップした上で[format 4への移行](migration.md)を行ってください。配布処理はワールドを自動移動しません。ターゲットのファイル入力と選択された共有グループだけをステージし、共通manifest/lockは同じ内容を使用します。

@@ -184,12 +184,13 @@ pub struct RuntimeLock {
 }
 
 impl RuntimeLock {
-    pub fn fingerprint(manifest: &Manifest, side: Side) -> Result<String> {
+    pub fn fingerprint(manifest: &Manifest, name: &str) -> Result<String> {
+        let target = manifest.target(name)?;
         Ok(hash_bytes(&serde_json::to_vec(&(
-            &manifest.minecraft,
-            side,
-            &manifest.target(side).loader,
-            &manifest.target(side).loader_version,
+            target.kind,
+            &target.minecraft,
+            &target.loader,
+            &target.loader_version,
         ))?))
     }
     pub fn validate(&self) -> Result<()> {
@@ -592,18 +593,21 @@ fn java_lock(major: u32) -> Result<JavaLock> {
 
 pub fn resolve(
     manifest: &Manifest,
-    side: Side,
+    name: &str,
     previous: Option<&RuntimeLock>,
     update: bool,
     cache: &Cache,
 ) -> Result<RuntimeLock> {
-    let fingerprint = RuntimeLock::fingerprint(manifest, side)?;
+    let fingerprint = RuntimeLock::fingerprint(manifest, name)?;
+    let config = manifest.target(name)?;
+    let manifest = &config;
+    let side = manifest.side();
     if let Some(previous) = previous.filter(|p| !update && p.fingerprint == fingerprint) {
         previous.validate()?;
         return Ok(previous.clone());
     }
     ensure!(
-        ["fabric", "vanilla", "paper", "velocity"].contains(&manifest.target(side).loader.as_str()),
+        ["fabric", "vanilla", "paper", "velocity"].contains(&manifest.loader.as_str()),
         "runtime preparation supports Fabric, vanilla, Paper and Velocity"
     );
     let versions: VersionList = registry::json(&Url::parse(VERSION_MANIFEST)?)?;
@@ -629,7 +633,7 @@ pub fn resolve(
         .as_ref()
         .map(|j| j.major_version)
         .context("Minecraft metadata does not declare its Java version")?;
-    if matches!(manifest.target(side).loader.as_str(), "paper" | "velocity") {
+    if matches!(manifest.loader.as_str(), "paper" | "velocity") {
         ensure!(
             side == Side::Server,
             "server runtime requested for a client"
@@ -638,7 +642,7 @@ pub fn resolve(
         let runtime = RuntimeLock {
             fingerprint,
             minecraft: manifest.minecraft.clone(),
-            loader: manifest.target(side).loader.clone(),
+            loader: manifest.loader.clone(),
             loader_version,
             metadata,
             java: java_lock(java_major)?,
@@ -649,7 +653,7 @@ pub fn resolve(
         runtime.validate()?;
         return Ok(runtime);
     }
-    if manifest.target(side).loader == "vanilla" {
+    if manifest.loader == "vanilla" {
         let runtime = RuntimeLock {
             fingerprint,
             minecraft: manifest.minecraft.clone(),
@@ -672,7 +676,6 @@ pub fn resolve(
         .into_iter()
         .find(|entry| {
             manifest
-                .target(side)
                 .loader_version
                 .as_ref()
                 .map(|v| &entry.loader.version == v)
@@ -1187,9 +1190,9 @@ mod tests {
             "versions": [{"id": "26.3-rc-3", "type": "snapshot", "url": "https://example.org/snapshot", "sha1": "0"}]
         }))?;
         assert!(bad.release().is_err());
-        for side in Side::ALL {
+        for side in ["client", "server"] {
             let mut manifest = crate::Workspace::quick_manifest("26.2".into())?;
-            manifest.target_mut(side).packages.insert(
+            manifest.target_mut(side)?.packages.insert(
                 "mod".into(),
                 crate::Package::modrinth("mod", crate::Kind::Mod),
             );

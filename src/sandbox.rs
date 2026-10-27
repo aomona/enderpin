@@ -140,14 +140,18 @@ pub fn validate_data_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn graphics_cache(root: &Path, policy: &mut Policy) -> Result<Option<PathBuf>> {
+pub(crate) fn graphics_cache(
+    root: &Path,
+    target: &str,
+    policy: &mut Policy,
+) -> Result<Option<PathBuf>> {
     if !policy.desktop {
         return Ok(None);
     }
     #[cfg(target_os = "linux")]
     {
-        let path =
-            crate::storage::directory(root, ".enderpin/client/cache/graphics")?.canonicalize()?;
+        let path = crate::storage::directory(root, &format!(".enderpin/{target}/cache/graphics"))?
+            .canonicalize()?;
         policy.extra.push(FolderGrant {
             path: path.clone(),
             write: policy.permissions.graphics_cache,
@@ -172,7 +176,7 @@ pub(crate) fn graphics_cache(root: &Path, policy: &mut Policy) -> Result<Option<
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = root;
+        let _ = (root, target);
         Ok(None)
     }
 }

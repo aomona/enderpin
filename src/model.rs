@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
@@ -17,12 +17,6 @@ pub enum Side {
 
 impl Side {
     pub const ALL: [Self; 2] = [Self::Client, Self::Server];
-    pub fn game_directory(self) -> &'static str {
-        match self {
-            Self::Client => "run/client",
-            Self::Server => "run/server",
-        }
-    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Client => "client",
@@ -125,23 +119,77 @@ impl Package {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetType {
+    Client,
+    Server,
+    Proxy,
+}
+impl TargetType {
+    pub fn side(self) -> Side {
+        if self == Self::Client {
+            Side::Client
+        } else {
+            Side::Server
+        }
+    }
+}
+
+/// Only Enderpin settings belong here; native configuration stays in files/.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Target {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TargetType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minecraft: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub loader: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub loader_version: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub packages: BTreeMap<String, Package>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub enabled: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disabled: Vec<String>,
-    #[serde(default)]
-    pub permissions: crate::sandbox::permissions::Settings,
-    /// Extra JVM options placed after Enderpin's own flags. Part of the permission plan.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub jvm_args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_groups: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<crate::sandbox::permissions::Settings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jvm_args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(flatten)]
+    pub settings: Target,
+}
+impl std::ops::Deref for TargetEntry {
+    type Target = Target;
+    fn deref(&self) -> &Target {
+        &self.settings
+    }
+}
+impl std::ops::DerefMut for TargetEntry {
+    fn deref_mut(&mut self) -> &mut Target {
+        &mut self.settings
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Group {
+    pub packages: BTreeMap<String, Package>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,141 +197,292 @@ pub struct Target {
 pub struct Manifest {
     pub format: u32,
     pub minecraft: String,
-    #[serde(default)]
-    pub common: BTreeMap<String, Package>,
-    pub client: Target,
-    pub server: Target,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, Group>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, Target>,
+    pub targets: BTreeMap<String, TargetEntry>,
+}
+
+/// Fully resolved, target-local input to the existing dependency/runtime resolvers.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedTarget {
+    pub kind: TargetType,
+    pub minecraft: String,
+    pub loader: String,
+    pub loader_version: Option<String>,
+    pub memory_mib: u32,
+    pub packages: BTreeMap<String, Package>,
+    pub requests: BTreeMap<String, Package>,
+    pub file_groups: Vec<String>,
+    pub enabled: Vec<String>,
+    pub disabled: Vec<String>,
+    pub permissions: crate::sandbox::permissions::Settings,
+    pub jvm_args: Vec<String>,
+}
+impl ResolvedTarget {
+    pub fn side(&self) -> Side {
+        self.kind.side()
+    }
+    pub fn fingerprint(&self) -> Result<String> {
+        Ok(hash_bytes(&serde_json::to_vec(&(
+            FORMAT,
+            self.kind,
+            &self.minecraft,
+            &self.loader,
+            &self.requests,
+            &self.packages,
+            &self.enabled,
+            &self.disabled,
+        ))?))
+    }
 }
 
 impl Manifest {
     pub fn new(minecraft: String) -> Result<Self> {
-        let target = Target {
-            loader: "fabric".into(),
-            loader_version: None,
-            packages: BTreeMap::new(),
-            enabled: vec![],
-            disabled: vec![],
-            permissions: Default::default(),
-            jvm_args: vec![],
-        };
+        let mut targets = BTreeMap::new();
+        for (name, kind) in [
+            ("client", TargetType::Client),
+            ("server", TargetType::Server),
+        ] {
+            targets.insert(
+                name.into(),
+                TargetEntry {
+                    profile: None,
+                    settings: Target {
+                        kind: Some(kind),
+                        loader: "fabric".into(),
+                        ..Default::default()
+                    },
+                },
+            );
+        }
         let manifest = Self {
             format: FORMAT,
             minecraft,
-            common: BTreeMap::new(),
-            client: target.clone(),
-            server: target,
+            groups: BTreeMap::new(),
+            profiles: BTreeMap::new(),
+            targets,
         };
         manifest.validate()?;
         Ok(manifest)
     }
-    /// Keep shared configuration small; omitted permission keys use Settings::default().
     pub fn to_toml(&self) -> Result<String> {
         let mut value = toml::Value::try_from(self)?;
         let defaults = toml::Value::try_from(crate::sandbox::permissions::Settings::default())?;
-        for side in Side::ALL {
-            let target = value
-                .get_mut(side.name())
-                .and_then(toml::Value::as_table_mut)
-                .context("missing target settings")?;
-            let permissions = target
-                .get_mut("permissions")
-                .and_then(toml::Value::as_table_mut)
-                .context("missing permission settings")?;
-            omit_default_permissions(permissions, &defaults);
-            if permissions.is_empty() {
-                target.remove("permissions");
+        if let Some(targets) = value.get_mut("targets").and_then(toml::Value::as_table_mut) {
+            for (_, target) in targets.iter_mut() {
+                if let Some(permissions) = target
+                    .get_mut("permissions")
+                    .and_then(toml::Value::as_table_mut)
+                {
+                    omit_default_permissions(permissions, &defaults);
+                    if permissions.is_empty() {
+                        target
+                            .as_table_mut()
+                            .context("invalid target")?
+                            .remove("permissions");
+                    }
+                }
             }
         }
         Ok(toml::to_string_pretty(&value)?)
     }
     pub fn parse(text: &str) -> Result<Self> {
-        let result: Self = toml::from_str(text).context("invalid enderpin.toml")?;
+        let value: toml::Value = toml::from_str(text).context("invalid enderpin.toml")?;
+        ensure!(
+            value.get("format").and_then(toml::Value::as_integer) == Some(i64::from(FORMAT)),
+            "expected manifest format 4; back up worlds and follow docs/migration.md (no automatic directory migration)"
+        );
+        let result: Self = value.try_into().context("invalid enderpin.toml")?;
         result.validate()?;
         Ok(result)
     }
-    pub fn target(&self, side: Side) -> &Target {
-        match side {
-            Side::Client => &self.client,
-            Side::Server => &self.server,
+    pub fn target_mut(&mut self, name: &str) -> Result<&mut TargetEntry> {
+        self.targets
+            .get_mut(name)
+            .with_context(|| format!("unknown target {name:?}"))
+    }
+    pub fn target(&self, name: &str) -> Result<ResolvedTarget> {
+        target_name(name)?;
+        let entry = self
+            .targets
+            .get(name)
+            .with_context(|| format!("unknown target {name:?}"))?;
+        let mut merged = if let Some(profile) = &entry.profile {
+            toml::Value::try_from(
+                self.profiles
+                    .get(profile)
+                    .with_context(|| format!("unknown profile {profile:?}"))?,
+            )?
+        } else {
+            toml::Value::Table(Default::default())
+        };
+        let overrides = toml::Value::try_from(&entry.settings)?;
+        let table = merged.as_table_mut().context("invalid profile")?;
+        for (key, value) in overrides.as_table().context("invalid target")? {
+            if key == "packages" {
+                let packages = table
+                    .entry(key.clone())
+                    .or_insert_with(|| toml::Value::Table(Default::default()));
+                packages
+                    .as_table_mut()
+                    .context("invalid packages")?
+                    .extend(value.as_table().context("invalid packages")?.clone());
+            } else {
+                table.insert(key.clone(), value.clone());
+            }
         }
-    }
-    pub fn target_mut(&mut self, side: Side) -> &mut Target {
-        match side {
-            Side::Client => &mut self.client,
-            Side::Server => &mut self.server,
+        let config: Target = merged.try_into()?;
+        let kind = config
+            .kind
+            .context("target requires type = client, server or proxy")?;
+        let minecraft = config.minecraft.unwrap_or_else(|| self.minecraft.clone());
+        identifier(&minecraft)?;
+        ensure!(
+            ["vanilla", "fabric", "paper", "velocity", "neoforge"]
+                .contains(&config.loader.as_str()),
+            "unsupported loader {}",
+            config.loader
+        );
+        ensure!(
+            (kind == TargetType::Proxy) == (config.loader == "velocity"),
+            "Velocity requires type = proxy; proxies require loader = velocity"
+        );
+        ensure!(
+            kind != TargetType::Client || config.loader != "paper",
+            "Paper is a server runtime"
+        );
+        if let Some(version) = &config.loader_version {
+            identifier(version)?;
         }
+        if config.loader == "vanilla" {
+            ensure!(
+                config.loader_version.is_none(),
+                "vanilla has no loader version"
+            );
+        }
+        let mut requests = BTreeMap::new();
+        for group in config.groups.unwrap_or_default() {
+            let group = self
+                .groups
+                .get(&group)
+                .with_context(|| format!("unknown package group {group:?}"))?;
+            for (alias, package) in &group.packages {
+                if let Some(previous) = requests.insert(alias.clone(), package.clone()) {
+                    ensure!(
+                        previous == *package,
+                        "conflicting group package {alias}; use distinct groups or one shared declaration"
+                    );
+                }
+            }
+        }
+        requests.extend(config.packages.clone());
+        if config.loader == "vanilla" {
+            ensure!(
+                requests
+                    .values()
+                    .all(|p| !matches!(p.kind, Kind::Mod | Kind::Plugin)),
+                "vanilla cannot load mods or plugins"
+            );
+        }
+        let enabled = config.enabled.unwrap_or_default();
+        let disabled = config.disabled.unwrap_or_default();
+        for id in enabled.iter().chain(&disabled) {
+            identifier(id)?;
+        }
+        ensure!(
+            enabled.iter().all(|id| !disabled.contains(id)),
+            "a package cannot be both enabled and disabled"
+        );
+        for (name, package) in &requests {
+            identifier(name)?;
+            package.validate()?;
+        }
+        let file_groups = config.file_groups.unwrap_or_default();
+        for group in &file_groups {
+            target_name(group)?;
+        }
+        let memory_mib = config.memory_mib.unwrap_or(2048);
+        ensure!(
+            (256..=1_048_576).contains(&memory_mib),
+            "memory_mib must be between 256 and 1048576"
+        );
+        let jvm_args = config.jvm_args.unwrap_or_default();
+        jvm_arguments(&jvm_args)?;
+        Ok(ResolvedTarget {
+            kind,
+            minecraft,
+            loader: config.loader,
+            loader_version: config.loader_version,
+            memory_mib,
+            packages: config.packages,
+            requests,
+            file_groups,
+            enabled,
+            disabled,
+            permissions: config.permissions.unwrap_or_default(),
+            jvm_args,
+        })
     }
-    pub fn requests(&self, side: Side) -> BTreeMap<String, Package> {
-        let mut result = self.common.clone();
-        result.extend(self.target(side).packages.clone());
-        result
+    pub fn requests(&self, name: &str) -> Result<BTreeMap<String, Package>> {
+        Ok(self.target(name)?.requests)
     }
-    pub fn fingerprint(&self, side: Side) -> Result<String> {
-        Ok(hash_bytes(&serde_json::to_vec(&(
-            FORMAT,
-            &self.minecraft,
-            side,
-            &self.target(side).loader,
-            self.requests(side),
-            &self.target(side).enabled,
-            &self.target(side).disabled,
-        ))?))
+    pub fn fingerprint(&self, name: &str) -> Result<String> {
+        self.target(name)?.fingerprint()
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.format == FORMAT,
-            "unsupported manifest format {}; expected format 3 (see README manual migration)",
-            self.format
+            "unsupported manifest format; expected format 4"
         );
         identifier(&self.minecraft)?;
-        for side in Side::ALL {
-            let target = self.target(side);
-            if let Some(version) = &target.loader_version {
-                identifier(version)?;
-            }
+        ensure!(!self.targets.is_empty(), "at least one target is required");
+        for (name, profile) in &self.profiles {
+            target_name(name)?;
             ensure!(
-                ["vanilla", "fabric", "paper", "velocity", "neoforge"]
-                    .contains(&target.loader.as_str()),
-                "unsupported loader {}",
-                target.loader
+                profile.permissions.is_none(),
+                "permissions must be declared on targets, not profiles"
             );
+        }
+        for (name, group) in &self.groups {
+            target_name(name)?;
+            for (alias, package) in &group.packages {
+                identifier(alias)?;
+                package.validate()?;
+            }
+        }
+        for name in self.targets.keys() {
             ensure!(
-                side != Side::Client || !matches!(target.loader.as_str(), "paper" | "velocity"),
-                "Paper and Velocity are server runtimes"
+                !["shared", "run", "files", "enderpin", "target"].contains(&name.as_str()),
+                "reserved target name: {name}"
             );
-            if target.loader == "vanilla" {
-                ensure!(
-                    target.loader_version.is_none(),
-                    "vanilla has no loader version"
-                );
-                ensure!(
-                    self.requests(side)
-                        .values()
-                        .all(|p| !matches!(p.kind, Kind::Mod | Kind::Plugin)),
-                    "vanilla cannot load mods or plugins"
-                );
-            }
-            for (name, package) in self.requests(side) {
-                identifier(&name)?;
-                package
-                    .validate()
-                    .with_context(|| format!("invalid package {name}"))?;
-            }
-            for id in target.enabled.iter().chain(&target.disabled) {
-                identifier(id)?;
-            }
-            ensure!(
-                target
-                    .enabled
-                    .iter()
-                    .all(|id| !target.disabled.contains(id)),
-                "a package cannot be both enabled and disabled"
-            );
-            jvm_arguments(&target.jvm_args)
-                .with_context(|| format!("invalid {}.jvm_args", side.name()))?;
+            self.target(name)
+                .with_context(|| format!("invalid target {name}"))?;
         }
         Ok(())
     }
+}
+
+pub fn target_name(name: &str) -> Result<()> {
+    safe_filename(name)?;
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'),
+        "target/group/profile names use lowercase ASCII letters, digits, '-' or '_': {name:?}"
+    );
+    ensure!(
+        !["all"].contains(&name),
+        "reserved target/group/profile name: {name}"
+    );
+    Ok(())
+}
+
+pub fn game_directory(name: &str) -> String {
+    format!("{name}/run")
 }
 
 fn omit_default_permissions(
@@ -340,10 +539,10 @@ impl LockedPackage {
             || self.project.as_deref() == Some(id)
             || self.roots.iter().any(|root| root == id)
     }
-    pub fn relative_path(&self, side: Side) -> String {
+    pub fn relative_path(&self, side: &str) -> String {
         format!(
             "{}/{}/{}",
-            side.game_directory(),
+            game_directory(side),
             self.kind.directory(),
             self.filename
         )
@@ -458,9 +657,9 @@ impl TargetLock {
 pub struct Lockfile {
     pub format: u32,
     #[serde(default)]
-    pub targets: BTreeMap<Side, TargetLock>,
+    pub targets: BTreeMap<String, TargetLock>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub runtimes: BTreeMap<Side, crate::runtime::RuntimeLock>,
+    pub runtimes: BTreeMap<String, crate::runtime::RuntimeLock>,
 }
 impl Default for Lockfile {
     fn default() -> Self {
@@ -474,6 +673,9 @@ impl Default for Lockfile {
 impl Lockfile {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.format == FORMAT, "unsupported lock format");
+        for name in self.targets.keys().chain(self.runtimes.keys()) {
+            target_name(name)?;
+        }
         for target in self.targets.values() {
             target.validate()?;
         }
@@ -686,7 +888,7 @@ pub fn jvm_arguments(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub fn parse_ignores(text: &str, side: Side) -> Result<Vec<String>> {
+pub fn parse_ignores(text: &str, side: &str) -> Result<Vec<String>> {
     let mut result = vec![];
     for (index, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or_default().trim();
@@ -694,13 +896,12 @@ pub fn parse_ignores(text: &str, side: Side) -> Result<Vec<String>> {
             continue;
         }
         let (scope, id) = line.split_once(':').unwrap_or(("*", line));
-        ensure!(
-            ["*", "client", "server"].contains(&scope),
-            "invalid ignore scope on line {}",
-            index + 1
-        );
+        if scope != "*" {
+            target_name(scope)
+                .with_context(|| format!("invalid ignore scope on line {}", index + 1))?;
+        }
         identifier(id)?;
-        if scope == "*" || scope == side.name() {
+        if scope == "*" || scope == side {
             result.push(id.to_owned());
         }
     }
@@ -721,9 +922,12 @@ mod tests {
         assert!(Manifest::parse(&(toml::to_string(&m)? + "\n[unknown]\na = 1\n")).is_err());
         for loader in ["paper", "velocity"] {
             let mut server = m.clone();
-            server.server.loader = loader.into();
+            server.target_mut("server")?.loader = loader.into();
+            if loader == "velocity" {
+                server.target_mut("server")?.kind = Some(TargetType::Proxy);
+            }
             server.validate()?;
-            server.client.loader = loader.into();
+            server.target_mut("client")?.loader = loader.into();
             assert!(server.validate().is_err());
         }
         let mut old = m.clone();
@@ -732,7 +936,7 @@ mod tests {
         assert_eq!(
             parse_ignores(
                 "# mine\nclient:sodium\nserver:example\ncommon-mod",
-                Side::Client
+                "client"
             )?,
             vec!["sodium", "common-mod"]
         );
@@ -810,28 +1014,27 @@ mod tests {
         let m = Manifest::new("1.21.1".into())?;
         assert!(!m.to_toml()?.contains("jvm_args"));
         let text = m.to_toml()?.replace(
-            "[server]\n",
-            "[server]\njvm_args = [\"-XX:+UseZGC\", \"-Dfile.encoding=UTF-8\"]\n",
+            "[targets.server]\n",
+            "[targets.server]\njvm_args = [\"-XX:+UseZGC\", \"-Dfile.encoding=UTF-8\"]\n",
         );
         let parsed = Manifest::parse(&text)?;
         assert_eq!(
-            parsed.server.jvm_args,
+            parsed.target("server")?.jvm_args,
             ["-XX:+UseZGC", "-Dfile.encoding=UTF-8"]
         );
-        assert!(parsed.client.jvm_args.is_empty());
+        assert!(parsed.target("client")?.jvm_args.is_empty());
         assert_eq!(
-            Manifest::parse(&parsed.to_toml()?)?.server.jvm_args,
-            parsed.server.jvm_args
+            Manifest::parse(&parsed.to_toml()?)?
+                .target("server")?
+                .jvm_args,
+            parsed.target("server")?.jvm_args
         );
         // Launch flags are approved through the permission plan; the package lock stays valid.
-        assert_eq!(
-            parsed.fingerprint(Side::Server)?,
-            m.fingerprint(Side::Server)?
-        );
+        assert_eq!(parsed.fingerprint("server")?, m.fingerprint("server")?);
         let error = Manifest::parse(&text.replace("-XX:+UseZGC", "-Xmx8G"))
             .expect_err("heap override")
             .to_string();
-        assert!(error.contains("server.jvm_args"), "{error}");
+        assert!(error.contains("invalid target server"), "{error}");
         Ok(())
     }
 }

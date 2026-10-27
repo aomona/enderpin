@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    model::{FORMAT, Lockfile, Manifest, Side, parse_ignores, validate_hash},
+    model::{FORMAT, Lockfile, Manifest, game_directory, parse_ignores, validate_hash},
     registry::Modrinth,
     resolver,
     storage::{self, Cache, Change, Content},
@@ -26,7 +26,7 @@ pub struct SyncOptions {
 
 #[derive(Debug, Serialize)]
 pub struct Progress {
-    pub target: Side,
+    pub target: String,
     pub package: String,
     pub action: &'static str,
 }
@@ -36,7 +36,7 @@ pub struct SyncReport {
     pub added: Vec<String>,
     pub removed: Vec<String>,
     pub unchanged: Vec<String>,
-    pub targets: Vec<Side>,
+    pub targets: Vec<String>,
     pub lock_updated: bool,
 }
 
@@ -62,22 +62,24 @@ pub struct Workspace {
     pub manifest: Manifest,
     pub lockfile: Lockfile,
     pub registry: Modrinth,
-    cache: Cache,
+    pub(crate) cache: Cache,
     original_manifest: String,
     original_lock: Option<String>,
     _guard: File,
 }
 
 impl Workspace {
-    pub(crate) fn shared_file_hashes(&self, side: Side) -> Result<BTreeMap<String, String>> {
+    pub(crate) fn shared_file_hashes(&self, side: &str) -> Result<BTreeMap<String, String>> {
         let mut hashes = BTreeMap::new();
         // Include both current inputs and previously installed files awaiting removal.
-        let state_path = format!(".enderpin/{}/state.toml", side.name());
+        let state_path = format!(".enderpin/{}/state.toml", side);
         let state: Option<InstalledState> = storage::read_optional(&self.root, &state_path)?
             .map(|text| toml::from_str(&text))
             .transpose()?;
         let mut paths: std::collections::BTreeSet<_> =
-            shared_files(&self.root, side)?.into_keys().collect();
+            shared_files(&self.root, side, &self.manifest.target(side)?.file_groups)?
+                .into_keys()
+                .collect();
         if let Some(state) = state {
             ensure!(state.format == FORMAT, "unsupported installed state format");
             paths.extend(state.shared.into_keys());
@@ -85,7 +87,7 @@ impl Workspace {
         for path in paths {
             storage::valid_destination(&path)?;
             ensure!(
-                path.starts_with(&format!("{}/", side.game_directory())),
+                path.starts_with(&format!("{}/", &game_directory(side))),
                 "shared state contains a different target"
             );
             let file = storage::safe_path(&self.root, &path)?;
@@ -98,16 +100,17 @@ impl Workspace {
 
     pub fn prepare_runtime(
         &mut self,
-        sides: &[Side],
+        sides: &[&str],
         options: SyncOptions,
         update: bool,
-        mut progress: impl FnMut(Side, &str),
-    ) -> Result<BTreeMap<Side, crate::runtime::PreparedRuntime>> {
+        mut progress: impl FnMut(&str, &str),
+    ) -> Result<BTreeMap<String, crate::runtime::PreparedRuntime>> {
         let manifest = self.manifest.clone();
         let mut lock = self.plan(&manifest, sides, options)?;
         let mut prepared = BTreeMap::new();
         for &side in sides {
-            let previous = lock.runtimes.get(&side);
+            manifest.target(side)?;
+            let previous = lock.runtimes.get(side);
             if options.locked || options.offline {
                 ensure!(!update, "cannot update runtimes with --locked or --offline");
                 ensure!(
@@ -116,41 +119,48 @@ impl Workspace {
                     )
                     .is_ok_and(|fp| fp == runtime.fingerprint)),
                     "{} runtime is not locked or configuration changed; run enderpin sync --target {} first",
-                    side.name(),
-                    side.name()
+                    side,
+                    side
                 );
             }
             let runtime = crate::runtime::resolve(&manifest, side, previous, update, &self.cache)?;
-            let ready =
-                crate::runtime::prepare(&runtime, side, &self.cache, options.offline, |message| {
-                    progress(side, message)
-                })?;
-            lock.runtimes.insert(side, runtime);
-            prepared.insert(side, ready);
+            let ready = crate::runtime::prepare(
+                &runtime,
+                manifest.target(side)?.side(),
+                &self.cache,
+                options.offline,
+                |message| progress(side, message),
+            )?;
+            lock.runtimes.insert(side.into(), runtime);
+            prepared.insert(side.into(), ready);
         }
         self.apply(manifest, lock, sides, options, |event| {
-            progress(event.target, &event.package)
+            progress(&event.target, &event.package)
         })?;
         Ok(prepared)
     }
     pub fn init(root: &Path, minecraft: String) -> Result<()> {
-        Self::init_manifest(root, Manifest::new(minecraft)?, &Side::ALL)
+        Self::init_manifest(root, Manifest::new(minecraft)?, &["client", "server"])
     }
 
     pub fn init_quick(root: &Path, minecraft: String) -> Result<()> {
-        Self::init_manifest(root, Self::quick_manifest(minecraft)?, &Side::ALL)
+        Self::init_manifest(
+            root,
+            Self::quick_manifest(minecraft)?,
+            &["client", "server"],
+        )
     }
 
     pub fn quick_manifest(minecraft: String) -> Result<Manifest> {
         let mut manifest = Manifest::new(minecraft)?;
-        for side in Side::ALL {
-            manifest.target_mut(side).loader = "vanilla".into();
+        for side in ["client", "server"] {
+            manifest.target_mut(side)?.loader = "vanilla".into();
         }
         manifest.validate()?;
         Ok(manifest)
     }
 
-    pub fn init_manifest(root: &Path, manifest: Manifest, sides: &[Side]) -> Result<()> {
+    pub fn init_manifest(root: &Path, manifest: Manifest, sides: &[&str]) -> Result<()> {
         manifest.validate()?;
         fs::create_dir_all(root)?;
         let root = root.canonicalize()?;
@@ -165,28 +175,30 @@ impl Workspace {
             "enderpin.lock already exists"
         );
         for &side in sides {
-            storage::directory(&root, side.game_directory())?;
-            storage::directory(&root, &format!("files/{}", side.name()))?;
+            manifest.target(side)?;
+            storage::directory(&root, &game_directory(side))?;
+            storage::directory(&root, &format!("{side}/files"))?;
         }
-        storage::directory(&root, "files/common")?;
+
         let mut lock = Lockfile::default();
         for &side in sides {
-            if !manifest.requests(side).is_empty() {
+            manifest.target(side)?;
+            if !manifest.requests(side)?.is_empty() {
                 continue;
             }
             lock.targets.insert(
-                side,
+                side.into(),
                 crate::model::TargetLock {
                     fingerprint: manifest.fingerprint(side)?,
-                    minecraft: manifest.minecraft.clone(),
-                    loader: manifest.target(side).loader.clone(),
+                    minecraft: manifest.target(side)?.minecraft,
+                    loader: manifest.target(side)?.loader.clone(),
                     requests: BTreeMap::new(),
                     packages: vec![],
                 },
             );
         }
         let mut gitignore = storage::read_optional(&root, ".gitignore")?.unwrap_or_default();
-        for pattern in ["/run/", "/.enderpin/", "/.enderpinignore"] {
+        for pattern in ["/*/run/", "/.enderpin/", "/.enderpinignore"] {
             if !gitignore.lines().any(|line| line == pattern) {
                 if !gitignore.is_empty() && !gitignore.ends_with('\n') {
                     gitignore.push('\n');
@@ -212,6 +224,37 @@ impl Workspace {
                 },
             ],
         )
+    }
+    pub fn ensure_layout(&self, names: &[&str]) -> Result<()> {
+        for &name in names {
+            let target = self.manifest.target(name)?;
+            storage::directory(&self.root, &game_directory(name))?;
+            storage::directory(&self.root, &format!("{name}/files"))?;
+            for group in target.file_groups {
+                storage::directory(&self.root, &format!("shared/{group}/files"))?;
+            }
+        }
+        let mut ignore = storage::read_optional(&self.root, ".gitignore")?.unwrap_or_default();
+        let old = ignore.clone();
+        for pattern in ["/*/run/", "/.enderpin/", "/.enderpinignore"] {
+            if !ignore.lines().any(|line| line == pattern) {
+                if !ignore.is_empty() && !ignore.ends_with('\n') {
+                    ignore.push('\n');
+                }
+                ignore.push_str(pattern);
+                ignore.push('\n');
+            }
+        }
+        if ignore != old {
+            storage::commit(
+                &self.root,
+                vec![Change {
+                    path: ".gitignore".into(),
+                    content: Content::Bytes(ignore.into_bytes()),
+                }],
+            )?;
+        }
+        Ok(())
     }
     pub fn open(root: &Path, cache: &Path) -> Result<Self> {
         let root = root
@@ -244,7 +287,7 @@ impl Workspace {
     pub fn plan(
         &mut self,
         manifest: &Manifest,
-        sides: &[Side],
+        sides: &[&str],
         options: SyncOptions,
     ) -> Result<Lockfile> {
         manifest.validate()?;
@@ -255,14 +298,15 @@ impl Workspace {
         );
         let mut lock = self.lockfile.clone();
         for &side in sides {
+            manifest.target(side)?;
             let fingerprint = manifest.fingerprint(side)?;
-            let previous = self.lockfile.targets.get(&side);
+            let previous = self.lockfile.targets.get(side);
             let matches = previous.is_some_and(|old| old.fingerprint == fingerprint);
             if options.locked || options.offline {
                 ensure!(
                     matches,
                     "{} configuration differs from the lock; run sync or lock without --locked/--offline",
-                    side.name()
+                    side
                 );
             }
             if matches && !options.update {
@@ -277,8 +321,8 @@ impl Workspace {
                 &mut self.registry,
                 &self.cache,
             )
-            .with_context(|| format!("resolving {}", side.name()))?;
-            lock.targets.insert(side, resolved);
+            .with_context(|| format!("resolving {}", side))?;
+            lock.targets.insert(side.into(), resolved);
         }
         lock.validate()?;
         Ok(lock)
@@ -286,7 +330,7 @@ impl Workspace {
     pub fn sync(
         &mut self,
         manifest: Manifest,
-        sides: &[Side],
+        sides: &[&str],
         options: SyncOptions,
         progress: impl FnMut(Progress),
     ) -> Result<SyncReport> {
@@ -297,7 +341,7 @@ impl Workspace {
         &mut self,
         manifest: Manifest,
         lock: Lockfile,
-        sides: &[Side],
+        sides: &[&str],
         options: SyncOptions,
         mut progress: impl FnMut(Progress),
     ) -> Result<SyncReport> {
@@ -322,23 +366,24 @@ impl Workspace {
             storage::read_optional(&self.root, ".enderpinignore")?.unwrap_or_default()
         };
         let mut report = SyncReport {
-            targets: sides.to_vec(),
+            targets: sides.iter().map(|s| (*s).to_owned()).collect(),
             ..Default::default()
         };
         let mut changes = vec![];
         for &side in sides {
-            let target = lock.targets.get(&side).context("target is not locked")?;
+            manifest.target(side)?;
+            let target = lock.targets.get(side).context("target is not locked")?;
             ensure!(
                 target.fingerprint == manifest.fingerprint(side)?,
                 "plan does not match {} configuration",
-                side.name()
+                side
             );
             let desired = target.effective(&parse_ignores(&ignores, side)?)?;
             if options.lock_only {
                 continue;
             }
-            storage::directory(&self.root, side.game_directory())?;
-            let state_path = format!(".enderpin/{}/state.toml", side.name());
+            storage::directory(&self.root, &game_directory(side))?;
+            let state_path = format!(".enderpin/{}/state.toml", side);
             let old: InstalledState = storage::read_optional(&self.root, &state_path)?
                 .map(|s| toml::from_str(&s))
                 .transpose()
@@ -353,7 +398,7 @@ impl Workspace {
             for (path, record) in &old.files {
                 storage::valid_destination(path)?;
                 ensure!(
-                    path.starts_with(&format!("{}/", side.game_directory())),
+                    path.starts_with(&format!("{}/", &game_directory(side))),
                     "installed state contains a different target"
                 );
                 validate_hash(&record.sha512)?;
@@ -372,7 +417,7 @@ impl Workspace {
                 files: BTreeMap::new(),
                 shared: BTreeMap::new(),
             };
-            let shared = shared_files(&self.root, side)?;
+            let shared = shared_files(&self.root, side, &manifest.target(side)?.file_groups)?;
             for package in &desired {
                 let path = package.relative_path(side);
                 ensure!(
@@ -409,7 +454,7 @@ impl Workspace {
                     report.unchanged.push(path.clone());
                 } else {
                     progress(Progress {
-                        target: side,
+                        target: side.into(),
                         package: p.name.clone(),
                         action: "acquire",
                     });
@@ -484,7 +529,11 @@ impl Workspace {
 }
 
 /// Shared inputs are copied, never linked into the writable game directory.
-fn shared_files(root: &Path, side: Side) -> Result<BTreeMap<String, (PathBuf, InstalledFile)>> {
+fn shared_files(
+    root: &Path,
+    side: &str,
+    groups: &[String],
+) -> Result<BTreeMap<String, (PathBuf, InstalledFile)>> {
     fn visit(
         root: &Path,
         source: &str,
@@ -513,15 +562,29 @@ fn shared_files(root: &Path, side: Side) -> Result<BTreeMap<String, (PathBuf, In
         }
         Ok(())
     }
-    let mut files = BTreeMap::new();
-    for scope in ["common", side.name()] {
+    let mut files: BTreeMap<String, (PathBuf, InstalledFile)> = BTreeMap::new();
+    for group in groups {
+        crate::model::target_name(group)?;
+        let mut shared = BTreeMap::new();
         visit(
             root,
-            &format!("files/{scope}"),
-            side.game_directory(),
-            &mut files,
+            &format!("shared/{group}/files"),
+            &game_directory(side),
+            &mut shared,
         )?;
+        for (path, value) in shared {
+            if let Some(previous) = files.get(&path) {
+                ensure!(previous.1 == value.1, "conflicting file groups: {path}");
+            }
+            files.insert(path, value);
+        }
     }
+    visit(
+        root,
+        &format!("{side}/files"),
+        &game_directory(side),
+        &mut files,
+    )?;
     // Reject ambiguous trees before a transaction, also on case-sensitive hosts.
     let mut names = std::collections::BTreeSet::new();
     for path in files.keys() {
@@ -544,7 +607,7 @@ fn shared_files(root: &Path, side: Side) -> Result<BTreeMap<String, (PathBuf, In
 #[allow(clippy::too_many_arguments)]
 fn sync_shared(
     root: &Path,
-    side: Side,
+    side: &str,
     old: &BTreeMap<String, InstalledFile>,
     packages: &BTreeMap<String, InstalledFile>,
     desired: BTreeMap<String, (PathBuf, InstalledFile)>,
@@ -555,7 +618,7 @@ fn sync_shared(
     for (path, record) in old {
         storage::valid_destination(path)?;
         ensure!(
-            path.starts_with(&format!("{}/", side.game_directory())),
+            path.starts_with(&format!("{}/", &game_directory(side))),
             "shared state contains a different target"
         );
         validate_hash(&record.sha512)?;
@@ -564,7 +627,7 @@ fn sync_shared(
     for path in paths {
         storage::valid_destination(path)?;
         ensure!(
-            path.starts_with(&format!("{}/", side.game_directory())),
+            path.starts_with(&format!("{}/", &game_directory(side))),
             "shared state contains a different target"
         );
         ensure!(
@@ -623,27 +686,47 @@ fn paths_overlap(a: &str, b: &str) -> bool {
 }
 
 #[cfg(test)]
+fn test_quick_manifest(version: String) -> anyhow::Result<crate::Manifest> {
+    let mut m = test_manifest(version)?;
+    for entry in m.targets.values_mut() {
+        entry.loader = "vanilla".into();
+    }
+    Ok(m)
+}
+
+#[cfg(test)]
+fn test_manifest(version: String) -> anyhow::Result<crate::Manifest> {
+    let mut m = crate::Manifest::new(version)?;
+    m.groups.insert("common".into(), Default::default());
+    for entry in m.targets.values_mut() {
+        entry.groups = Some(vec!["common".into()]);
+        entry.file_groups = Some(vec!["common".into()]);
+    }
+    Ok(m)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn initial_mod_requests_must_be_resolved_before_locking() -> Result<()> {
         let root = tempfile::tempdir()?;
         let cache = tempfile::tempdir()?;
-        let mut manifest = Workspace::quick_manifest("1.21.1".into())?;
-        manifest.client.loader = "fabric".into();
+        let mut manifest = test_quick_manifest("1.21.1".into())?;
+        manifest.target_mut("client")?.loader = "fabric".into();
         manifest
-            .client
+            .target_mut("client")?
             .packages
             .insert("example".into(), Package::modrinth("example", Kind::Mod));
-        Workspace::init_manifest(root.path(), manifest, &Side::ALL)?;
+        Workspace::init_manifest(root.path(), manifest, &["client", "server"])?;
         let mut ws = Workspace::open(root.path(), cache.path())?;
-        assert!(!ws.lockfile.targets.contains_key(&Side::Client));
-        assert!(ws.lockfile.targets.contains_key(&Side::Server));
+        assert!(!ws.lockfile.targets.contains_key("client"));
+        assert!(ws.lockfile.targets.contains_key("server"));
         let manifest = ws.manifest.clone();
         assert!(
             ws.plan(
                 &manifest,
-                &[Side::Client],
+                &["client"],
                 SyncOptions {
                     locked: true,
                     ..Default::default()
@@ -663,7 +746,7 @@ mod tests {
             fs::copy(origin.path().join(file), clone.path().join(file))?;
         }
         let mut ws = Workspace::open(clone.path(), cache.path())?;
-        for side in Side::ALL {
+        for side in ["client", "server"] {
             ws.sync(
                 ws.manifest.clone(),
                 &[side],
@@ -674,7 +757,12 @@ mod tests {
                 },
                 |_| (),
             )?;
-            assert!(clone.path().join(side.game_directory()).is_dir());
+            assert!(
+                clone
+                    .path()
+                    .join(crate::model::game_directory(side))
+                    .is_dir()
+            );
         }
         assert!(!clone.path().join(".enderpin/client/game").exists());
         assert!(!clone.path().join(".enderpin/server/game").exists());
@@ -685,23 +773,23 @@ mod tests {
         let root = tempfile::tempdir()?;
         let cache = tempfile::tempdir()?;
         Workspace::init(root.path(), "1.21.1".into())?;
-        assert!(root.path().join("run/client").is_dir());
-        assert!(root.path().join("run/server").is_dir());
+        assert!(root.path().join("client/run").is_dir());
+        assert!(root.path().join("server/run").is_dir());
         assert!(!root.path().join(".enderpin/client/game").exists());
         let mut ws = Workspace::open(root.path(), cache.path())?;
-        let running = storage::target_lock(&ws.root, Side::Server)?;
+        let running = storage::target_lock(&ws.root, "server")?;
         let options = SyncOptions {
             locked: true,
             offline: true,
             ..Default::default()
         };
         assert!(
-            ws.sync(ws.manifest.clone(), &[Side::Server], options, |_| ())
+            ws.sync(ws.manifest.clone(), &["server"], options, |_| ())
                 .is_err()
         );
-        ws.sync(ws.manifest.clone(), &[Side::Client], options, |_| ())?;
+        ws.sync(ws.manifest.clone(), &["client"], options, |_| ())?;
         drop(running);
-        ws.sync(ws.manifest.clone(), &[Side::Server], options, |_| ())?;
+        ws.sync(ws.manifest.clone(), &["server"], options, |_| ())?;
         Ok(())
     }
     use crate::model::{Kind, LockedPackage, Package};
@@ -709,7 +797,11 @@ mod tests {
     fn locked_restore_ignore_and_unmanaged_files() -> Result<()> {
         let root = tempfile::tempdir()?;
         let cache_dir = tempfile::tempdir()?;
-        Workspace::init(root.path(), "1.21.1".into())?;
+        Workspace::init_manifest(
+            root.path(),
+            test_manifest("1.21.1".into())?,
+            &["client", "server"],
+        )?;
         let cache = Cache::open(cache_dir.path())?;
         let hash = cache.seed(b"test artifact")?;
         let mut ws = Workspace::open(root.path(), cache_dir.path())?;
@@ -717,12 +809,17 @@ mod tests {
         let mut package = Package::modrinth("example", Kind::Mod);
         package.modrinth = None;
         package.url = Some("https://example.org/example.jar".into());
-        manifest.common.insert("example".into(), package);
+        manifest
+            .groups
+            .get_mut("common")
+            .expect("fixture group")
+            .packages
+            .insert("example".into(), package);
         let mut lock = ws.lockfile.clone();
-        for side in Side::ALL {
-            let target = lock.targets.get_mut(&side).context("missing target")?;
+        for side in ["client", "server"] {
+            let target = lock.targets.get_mut(side).context("missing target")?;
             target.fingerprint = manifest.fingerprint(side)?;
-            target.requests = manifest.requests(side);
+            target.requests = manifest.requests(side)?;
             target.packages = vec![LockedPackage {
                 key: "url:example".into(),
                 name: "example".into(),
@@ -734,7 +831,7 @@ mod tests {
                 filename: "example.jar".into(),
                 sha512: hash.clone(),
                 size: 13,
-                default_sides: Side::ALL.to_vec(),
+                default_sides: crate::Side::ALL.to_vec(),
                 roots: vec!["example".into()],
                 required: vec![],
                 incompatible: vec![],
@@ -745,13 +842,19 @@ mod tests {
             offline: true,
             ..Default::default()
         };
-        ws.apply(manifest.clone(), lock, &Side::ALL, options, |_| ())?;
-        storage::directory(root.path(), "files/common/mods")?;
+        ws.apply(
+            manifest.clone(),
+            lock,
+            &["client", "server"],
+            options,
+            |_| (),
+        )?;
+        storage::directory(root.path(), "shared/common/files/mods")?;
         for name in ["example.jar", "EXAMPLE.jar"] {
-            let shared = root.path().join("files/common/mods").join(name);
+            let shared = root.path().join("shared/common/files/mods").join(name);
             fs::write(&shared, b"shared jar")?;
             let error = ws
-                .sync(manifest.clone(), &Side::ALL, options, |_| ())
+                .sync(manifest.clone(), &["client", "server"], options, |_| ())
                 .expect_err("shared files must not shadow managed packages");
             assert!(
                 error
@@ -760,25 +863,25 @@ mod tests {
             );
             fs::remove_file(shared)?;
         }
-        let client = root.path().join("run/client/mods/example.jar");
-        let server = root.path().join("run/server/mods/example.jar");
+        let client = root.path().join("client/run/mods/example.jar");
+        let server = root.path().join("server/run/mods/example.jar");
         let mut wrong_target: InstalledState = toml::from_str(&fs::read_to_string(
             root.path().join(".enderpin/client/state.toml"),
         )?)?;
         let original_state = toml::to_string(&wrong_target)?;
         let record = wrong_target
             .files
-            .remove("run/client/mods/example.jar")
+            .remove("client/run/mods/example.jar")
             .context("missing client state")?;
         wrong_target
             .files
-            .insert("run/server/mods/example.jar".into(), record);
+            .insert("server/run/mods/example.jar".into(), record);
         fs::write(
             root.path().join(".enderpin/client/state.toml"),
             toml::to_string(&wrong_target)?,
         )?;
         assert!(
-            ws.sync(manifest.clone(), &[Side::Client], options, |_| ())
+            ws.sync(manifest.clone(), &["client"], options, |_| ())
                 .is_err()
         );
         assert_eq!(fs::read(&server)?, b"test artifact");
@@ -793,12 +896,12 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            ws.sync(manifest.clone(), &[Side::Client], locked, |_| ())
+            ws.sync(manifest.clone(), &["client"], locked, |_| ())
                 .is_err()
         );
         ws.sync(
             manifest.clone(),
-            &[Side::Client],
+            &["client"],
             SyncOptions {
                 restore: true,
                 ..locked
@@ -807,12 +910,12 @@ mod tests {
         )?;
         assert_eq!(fs::read(&client)?, b"test artifact");
         fs::write(root.path().join(".enderpinignore"), "client:example\n")?;
-        ws.sync(manifest.clone(), &[Side::Client], locked, |_| ())?;
+        ws.sync(manifest.clone(), &["client"], locked, |_| ())?;
         assert!(!client.exists());
         assert!(server.exists());
         ws.sync(
             manifest,
-            &[Side::Client],
+            &["client"],
             SyncOptions {
                 no_ignore: true,
                 ..locked
@@ -823,7 +926,7 @@ mod tests {
         let before = fs::read(root.path().join("enderpin.lock"))?;
         let mut edited = ws.manifest.clone();
         edited.minecraft = "1.20.1".into();
-        assert!(ws.sync(edited, &[Side::Client], locked, |_| ()).is_err());
+        assert!(ws.sync(edited, &["client"], locked, |_| ()).is_err());
         assert_eq!(fs::read(root.path().join("enderpin.lock"))?, before);
         Ok(())
     }

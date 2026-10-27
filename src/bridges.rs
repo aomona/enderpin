@@ -36,12 +36,13 @@ pub(crate) fn write_files(root: &Path) -> Result<()> {
 
 /// Content-addressed launch support keeps AppContainer identities stable across launches.
 /// The caller holds the target lock; the game receives read-only access to this directory.
-pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
+pub(crate) fn prepare(root: &Path, target: &str) -> Result<PathBuf> {
+    crate::model::target_name(target)?;
     let mut hash = Sha256::new();
     for (_, bytes) in files() {
         hash.update(bytes);
     }
-    let relative = format!(".enderpin/client/launch/{:x}", hash.finalize());
+    let relative = format!(".enderpin/{target}/launch/{:x}", hash.finalize());
     let directory = storage::directory(root, &relative)?.canonicalize()?;
     crate::sandbox::validate_data_tree(&directory)?;
     for (name, bytes) in files() {
@@ -184,13 +185,13 @@ mod tests {
     #[test]
     fn launch_support_is_stable_and_rejects_tampering() -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
-        let first = super::prepare(root.path())?;
-        assert_eq!(first, super::prepare(root.path())?);
+        let first = super::prepare(root.path(), "client")?;
+        assert_eq!(first, super::prepare(root.path(), "client")?);
         for asset in bridge::ASSETS {
             assert_eq!(fs::read(first.join(asset.name))?, asset.bytes);
         }
         std::fs::write(first.join("auth-bridge.jar"), b"changed")?;
-        assert!(super::prepare(root.path()).is_err());
+        assert!(super::prepare(root.path(), "client").is_err());
         Ok(())
     }
 }

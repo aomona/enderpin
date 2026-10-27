@@ -1,37 +1,39 @@
 # ファイル構成と共有設定
 
-構成形式は `format = 3` です。共有する入力と、実際にゲームが読み書きする環境を分離します。
+構成形式は`format = 4`です。manifestとlockは一つ、各実行環境に`files/`と`run/`をまとめます。
 
 ```text
 workspace/
 ├── enderpin.toml
 ├── enderpin.lock
-├── enderpinw                  # v0.1.5以降のinitで生成。macOS / Linux用
-├── enderpinw.ps1              # Windows用
-├── enderpin-wrapper.properties # Enderpin版・SHA-256
-├── files/                    # Git管理する共有ファイル
-│   ├── common/config/        # 両側へ反映
-│   ├── client/resourcepacks/ # クライアントだけへ反映
-│   └── server/server.properties
-├── run/                      # Git管理外。セーブデータも含む
-│   ├── client/               # mods/、config/、saves/、options.txt など
-│   └── server/               # mods/、config/、world/、server.properties など
-└── .enderpin/                # 権限・同期台帳・復旧用ファイル
+├── client/
+│   ├── files/config/
+│   └── run/                 # クライアントの .minecraft 相当
+├── survival/
+│   ├── files/server.properties
+│   └── run/                 # mods・config・world・ログ
+├── creative/
+│   ├── files/server.properties
+│   └── run/
+├── proxy/
+│   ├── files/velocity.toml
+│   └── run/
+├── shared/                  # 選択されたファイルグループだけを共有
+│   └── backend/files/config/
+└── .enderpin/               # 同期台帳・権限承認・復旧用ファイル
 ```
 
-- `enderpin.toml`・`enderpin.lock`・`files/` と、生成したWrapperの3ファイルをGitへ追加します。空のディレクトリはGitに保存されませんが、同期に必要な場所は自動作成されます。
-- `run/client/` がクライアントの `.minecraft` 相当、`run/server/` がサーバーのゲームディレクトリです。`run/` はワールドも含むため、消して再生成できるキャッシュではありません。
-- 初期化時に `/run/`・`/.enderpin/`・`/.enderpinignore` を `.gitignore` へ追加します。認証資格情報はこれらとは別のOS資格情報ストアに保存します。
+`files/`を編集してGitへ追加し、`run/`はGit管理外にします。`run/`にはワールドがあり、削除して再生成できるキャッシュではありません。`init`は`/*/run/`・`/.enderpin/`・`/.enderpinignore`を`.gitignore`に追加します。ターゲット削除・改名で既存データは移動・削除しません。
 
-## 共有設定を使う
+## ファイルを同期する
 
-たとえば両側で使うMOD設定を `files/common/config/example.json` に置き、`enderpin sync --target all --locked` を実行します。`run/client/config/example.json` と `run/server/config/example.json` にコピーされます。サーバーだけ異なる設定にするには `files/server/config/example.json` を置きます。
+`survival/files/server.properties`を編集し、`enderpin sync --target survival --locked`を実行すると、`survival/run/server.properties`へ反映します。`lock`は配置を変更しません。任意のJSON・YAML・TOMLも、そのソフトの標準形式のまま置けます。
 
-- 対象ごとに `files/common/` → `files/client/` または `files/server/` の順で反映し、同じ相対パスは対象側が優先されます。ファイル単位の置き換えで、JSONやTOMLのキーのマージはしません。
-- `sync`・`run` の同期処理で反映します。`lock` はファイルを配置しません。`.enderpinignore` はパッケージ用で、共有ファイルには適用しません。
-- 取得するMODなどは従来どおり `enderpin.toml` と `enderpin.lock` で管理します。共有ファイルはGitのリビジョンで固定し、ロックファイルには追加しません。`--locked --offline` でも、現在チェックアウトしている `files/` の内容を反映します。
-- 管理パッケージと共有ファイルの配置先が重なる場合、大小文字だけが異なる共有パス、ファイルとディレクトリが重なる構成、シンボリックリンク・reparse pointは拒否します。
-- `files/` に認証情報・秘密鍵・個人のワールドを置かないでください。置いたファイルは共有・同期の対象になります。
+ファイルを共有する場合は`shared/backend/files/config/example.json`などを置き、対象に`file_groups = ["backend"]`を指定します。プロファイルにも指定できます。パッケージの`groups`とは独立しており、選ばれていないターゲットやプロキシへ混ざりません。
+
+グループ間の同じ相対パスは同一内容なら共有し、異なるならエラーです。最後に`<名前>/files/`のファイルが同じ相対パスを置換します。ファイル単位の置換で、JSONなどの中身のキーをマージしません。
+
+設定入力はGitのリビジョンで管理し、パッケージlockには含めません。`--locked --offline`でも現在のチェックアウトの設定を反映します。秘密情報やワールドは共有入力に置かず、ホスト側で管理してください。
 
 ## ゲーム内で設定を変えたとき {#editing-settings}
 
@@ -42,21 +44,16 @@ workspace/
 | 共有元だけ変更 | ゲーム側へ反映 |
 | ゲーム側だけ変更・削除 | ローカルの変更を保持 |
 | 両側が同じ内容へ変更 | 解決済みとして記録 |
-| 両側が異なる内容へ変更 | 競合として停止。同期対象のファイル変更はまとめて見送る |
+| 両側が異なる内容へ変更 | 競合として停止。ファイル変更はまとめて見送る |
 | 共有元から削除 | ゲーム側が未変更なら削除。編集済みなら競合 |
 | 配置先に管理外ファイルが存在 | 内容が同じでも停止。勝手に取り込まない |
 
-ローカルの設定を共有するには、対象ファイルを `files/client/` などへコピーして再同期します。共有元の内容へ戻す場合は `enderpin restore --target client` を使います。`restore` はその対象の管理パッケージと共有ファイルのローカル変更・削除を破棄しますが、管理外ファイルは上書きしません。初めて共有管理に入れる既存設定は、バックアップして `files/` に置き、ゲーム側の同名ファイルを退避してから同期してください。
+共有する変更を`<名前>/files/`へ戻して同期します。`restore --target <名前>`はその対象の管理ファイルのローカル変更を破棄しますが、管理外ファイルを上書きしません。既存ファイルを初めて管理する場合は、バックアップ・共有元へのコピー・ゲーム側の同名ファイルの退避を行ってから同期してください。
 
-対象側の上書きファイルを削除すると共通ファイルへ戻ります。共通ファイルもなければ削除になります。ディレクトリそのものや、共有管理していないワールド・ログなどは削除しません。
+## 独立性と復旧
 
-権限承認には、共有管理下のゲーム側ファイルのパスと内容ハッシュも含めます。共有ファイル経由でMODを追加した場合や、共有設定をゲーム内で変更した場合も再承認が必要になることがあります。`permissions show` で対象ファイルを確認できます。
+依存解決とランタイムlockはターゲット名ごとに保存します。`--target creative`はほかのターゲットの配置やlockを更新しません。共通宣言の変更は利用する対象のlockを古くします。全対象を揃えるには`sync --target all`を実行します。
 
-## ファイルの保護
+起動中の対象への同期は拒否します。別の対象は同期・起動でき、rootのmanifest/lock更新はワークスペースロックで直列化します。外部ランチャーで起動したゲームは検出しません。
 
-- ダウンロード済みファイルはOS標準のキャッシュディレクトリにハッシュで保存します。
-- 管理外ファイルとの衝突、管理パッケージの手動変更、シンボリックリンク・Windows reparse pointによるパス逸脱を拒否します。
-- 構成・ロック・ファイル変更をステージングし、復旧用ジャーナルを保存してから反映します。中断時は次の操作で元の状態へ戻します。復旧中に別の変更を見つけた場合はバックアップを保持して停止します。
-- 以前の構成とロックをGitで戻して `sync --locked` すれば、そのファイルへ戻せます。配布元またはキャッシュから取得できることが前提です。
-
-Enderpinで起動している対象への同期は拒否します。反対側は独立して操作できます。外部ランチャーで起動したゲームは検出しないため、終了してから同期してください。
+パッケージと共有ファイルの衝突、大小文字だけ異なるパス、ファイルとディレクトリの衝突、symlink・reparse pointによる逸脱を拒否します。変更は復旧用ジャーナルを保存してから反映し、中断時は復旧します。承認には対象名、実行種別、解決された設定、ランタイム、パッケージと管理ファイルのハッシュを含めます。

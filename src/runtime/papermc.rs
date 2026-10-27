@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use super::{Algorithm, Download};
 use crate::{
-    model::{Manifest, identifier},
+    model::{ResolvedTarget, identifier},
     registry,
 };
 
@@ -41,8 +41,8 @@ struct Artifact {
     checksums: BTreeMap<String, String>,
 }
 
-fn selection(manifest: &Manifest) -> Result<(String, Option<u64>)> {
-    let target = &manifest.server;
+fn selection(manifest: &ResolvedTarget) -> Result<(String, Option<u64>)> {
+    let target = manifest;
     let (version, build) = if target.loader == "paper" {
         (
             manifest.minecraft.as_str(),
@@ -104,11 +104,11 @@ fn artifact(mut builds: Vec<Build>, requested: Option<u64>) -> Result<(u64, Down
     Ok((build.id, download))
 }
 
-pub(super) fn resolve(manifest: &Manifest) -> Result<(String, Download, u32)> {
+pub(super) fn resolve(manifest: &ResolvedTarget) -> Result<(String, Download, u32)> {
     let (version, requested) = selection(manifest)?;
     let base = format!(
         "https://fill.papermc.io/v3/projects/{}/versions/{version}",
-        manifest.server.loader
+        manifest.loader
     );
     let info: VersionResponse = registry::json(&Url::parse(&base)?)?;
     ensure!(
@@ -122,7 +122,7 @@ pub(super) fn resolve(manifest: &Manifest) -> Result<(String, Download, u32)> {
     );
     let builds: Vec<Build> = registry::json(&Url::parse(&format!("{base}/builds"))?)?;
     let (id, download) = artifact(builds, requested)?;
-    let pinned = if manifest.server.loader == "paper" {
+    let pinned = if manifest.loader == "paper" {
         id.to_string()
     } else {
         format!("{version}+{id}")
@@ -160,15 +160,15 @@ mod tests {
     }
     #[test]
     fn independent_proxy_version_and_paper_build() -> Result<()> {
-        let mut manifest = Manifest::new("1.21.1".into())?;
-        manifest.server.loader = "velocity".into();
+        let mut manifest = crate::Manifest::new("1.21.1".into())?.target("server")?;
+        manifest.loader = "velocity".into();
         assert!(selection(&manifest).is_err());
-        manifest.server.loader_version = Some("3.4.0-SNAPSHOT+563".into());
+        manifest.loader_version = Some("3.4.0-SNAPSHOT+563".into());
         assert_eq!(selection(&manifest)?, ("3.4.0-SNAPSHOT".into(), Some(563)));
-        manifest.server.loader_version = Some("3.4.0-SNAPSHOT+0".into());
+        manifest.loader_version = Some("3.4.0-SNAPSHOT+0".into());
         assert!(selection(&manifest).is_err());
-        manifest.server.loader = "paper".into();
-        manifest.server.loader_version = Some("133".into());
+        manifest.loader = "paper".into();
+        manifest.loader_version = Some("133".into());
         assert_eq!(selection(&manifest)?, ("1.21.1".into(), Some(133)));
         Ok(())
     }

@@ -48,8 +48,8 @@ def main():
                 assert (root / 'enderpin.toml').read_bytes() == original
                 assert not local.exists()
         manifest = tomllib.loads((root / 'enderpin.toml').read_text())
-        assert manifest['client']['permissions'] == {'network': False}, manifest
-        assert 'permissions' not in manifest['server']
+        assert manifest['targets']['client']['permissions'] == {'network': False}, manifest
+        assert 'permissions' not in manifest['targets']['server']
         plan = json.loads(subprocess.check_output([str(binary), 'permissions', 'show', '--json'], cwd=root))
         assert plan['approved']
         assert plan['plan']['effective']['network'] is False
@@ -72,7 +72,7 @@ def main():
         finally:
             terminal.close()
         manifest = tomllib.loads((root / 'enderpin.toml').read_text())
-        assert manifest['client']['permissions'] == {
+        assert manifest['targets']['client']['permissions'] == {
             'network': False, 'files': {'game': 'read-only', 'read_only': ['mods']}
         }, manifest
         plan = json.loads(subprocess.check_output([str(binary), 'permissions', 'show', '--json'], cwd=root))

@@ -1,53 +1,26 @@
-# 旧形式から移行する
+# 旧形式からの移行
 
-自動移動・旧形式との互換対応は行いません。ゲームを終了し、旧ワークスペース全体をバックアップしてから、別の空ディレクトリで移行します。
+format 4は名前付きターゲットと`<名前>/files・run`の配置を使用します。format 3以前を読み込むと手順を示して停止し、ワールドや設定を自動で移動しません。公開済みv0.1.8のWrapperもformat 4を解釈できません。
 
-1. 旧環境の `enderpin.toml` と `enderpin.lock` を新しいディレクトリへコピーし、**両ファイルのトップレベルの** `format = 2` を `format = 3` に変更します。旧 `.enderpin/` とゲームディレクトリはコピーしません。
-2. 新しいディレクトリに `files/common/`・`files/client/`・`files/server/` を作り、共有したい設定だけを旧 `client/`・`server/` から対応する `files/` へコピーします。
-3. `.gitignore` に `/run/`・`/.enderpin/`・`/.enderpinignore` を追加します。`enderpin sync --target all` を実行して、新形式の指紋と配置を生成します。この最初の同期は `--locked`・`--offline` を付けず、`update` は使いません。既存ロックの固定版を維持して解決するため、変更されたロックを確認してください。
-4. 旧 `client/saves/`・`server/world/` などの必要なプレイデータを、それぞれ新 `run/client/`・`run/server/` へコピーします。個人設定も必要に応じてコピーしますが、手順2で共有したファイルと生成済みの管理MODは上書きしません。サーバーの `level-name` を変えている場合は、そのワールドもコピーします。
-5. 手順3の `sync` は実行環境も準備します。必要な対象が片側だけなら、手順3で `--target client` または `--target server` を指定します。既存の固定版は維持し、未準備だった対象はそこで固定します。その後、必要な権限・外部フォルダを設定して再承認します。起動してワールドと設定を確認できるまで旧環境を残してください。新しい構成・ロック・`files/` をGitへ追加します。
+## format 3 → 4
+
+1. ゲームを正常終了し、manifest・lock・`files/`・`run/`・`.enderpin/`を含む環境全体をバックアップします。
+2. 新しい作業ディレクトリに`format = 4`のmanifestを作ります。`[client]`は`[targets.client]`と`type = "client"`、`[server]`は`[targets.<名前>]`と`type = "server"`にします。Velocityは`type = "proxy"`です。パッケージの子テーブルも同様に移します。
+3. `[common.<MOD名>]`は`[groups.common.packages.<MOD名>]`へ移し、必要なターゲットだけに`groups = ["common"]`を指定します。複数manifestを統合する場合は、各Minecraft版・ローダー・パッケージを確認して共通化します。
+4. 旧`files/client/`・`files/server/`を新しい`<名前>/files/`へコピーします。旧`files/common/`は`shared/common/files/`へコピーし、必要な対象に`file_groups = ["common"]`を指定します。パッケージ共有とファイル共有は独立しています。
+5. 旧lockのファイルを保管し、旧環境の実際のloader版・直接パッケージ版をmanifestへ固定してから、新ディレクトリで`enderpin sync --target all`します。これは新しいlockを生成するため、推移依存やJavaを含む版・ハッシュの差分を旧lockと比較してください。数字のformatだけを書き換えて同じ解決結果とみなすことはできません。
+6. 旧`run/<旧名>/`のワールド、プレイヤーデータ、必要なローカル設定を新`<名前>/run/`へコピーします。新しく同期されたMOD・ランタイムを旧ファイルで丸ごと上書きしないでください。共有管理に入れる既存設定は`files/`へコピーし、未管理ファイルと衝突しないよう退避します。
+7. `permissions show --target <名前>`で新しい実行計画を確認し、対象ごとに承認します。旧承認をコピーして再利用しません。EULAの同意、秘密情報、外部フォルダもホストごとに確認します。
+8. ワールドとプレイヤーデータが正しいことを確認してから運用を切り替えます。検証が終わるまで旧環境とバックアップを保持します。
+
+## ターゲットの改名・削除
+
+manifestから名前を消しても、そのディレクトリとlockの旧エントリを自動削除しません。改名は新しい名前の対象を作る操作として扱います。停止・バックアップした上で必要なデータを明示的に移し、新しい名前で同期・再承認してください。
 
 ## 権限設定の新形式へ移行する
 
-MXCへの移行準備として、権限の共有設定を `permissions` にまとめました。
-この段階では起動エンジンは既存のSeatbelt / bubblewrap / AppContainerです。MXCへの切り替えはまだ完了していません。
-ワークスペース・ロックの `format = 3` と `files/`・`run/` の配置は変えません。
+旧`[client.sandbox]`、MOD単位の権限宣言、古い`game_write`等はサポートしません。`[targets.<名前>.permissions]`と`permissions.files`でゲームプロセス全体の設定を指定します。詳細は[設定](configuration.md)と[サンドボックス](sandbox.md)を参照してください。
 
-ゲームを終了し、設定をバックアップしてから、`enderpin.toml` を次のように変更します。自動変換は行いません。
+## CLIの変更 {#cli-changes}
 
-| 旧指定 | 新指定 |
-| --- | --- |
-| `[client.sandbox]` / `[server.sandbox]` | `[client.permissions]` / `[server.permissions]` |
-| `game_write = true` / `false` | `[<side>.permissions.files]` の `game = "read-write"` / `"read-only"` |
-| `read_only = [...]` | `[<side>.permissions.files]` の `read_only = [...]` |
-| `clipboard = true` / `false` | `clipboard = "read-write"` / `"none"`（Windowsの個別指定、Linuxの `"none"` は拒否） |
-| `clipboard` を省略 | 省略のまま、または `clipboard = "system"` |
-| その他のキー | 名前と値を変えずに `permissions` へ移す |
-
-ファイルのキー以外を `permissions.files` 内に入れないようにします。未知のキーや旧 `sandbox` テーブルは拒否し、既存の禁止を黙って標準値へ戻しません。
-Windowsではクリップボードの個別指定をまだ強制できないため、省略または `"system"` のみ受け付けます。
-Linuxでもdisplayへのアクセスとクリップボードの禁止を分離できないため、`"none"` は拒否します。
-マイクを省略した場合のOS依存の動作も変更していません。
-
-外部フォルダとプレイデータを削除する必要はありません。以前の承認は無効になるため、
-`enderpin permissions show` で計画を確認し、`enderpin permissions approve` で再承認します。
-
-## CLIコマンドの変更 {#cli-changes}
-
-| 以前 | 現在 |
-| --- | --- |
-| `quick` | `init [DIRECTORY]` |
-| `quick --server` | `init --target all`（サーバーだけなら `--target server`） |
-| `quick --version VERSION` | `init --minecraft VERSION` |
-| `init --minecraft VERSION`（設定ファイルだけ作成） | `init --minecraft VERSION --loader LOADER`（実行環境も取得） |
-| `prepare` | `sync` |
-| `prepare --update` | `update`（ランタイムとパッケージ） |
-| `launch` | `run` |
-
-旧コマンドの別名は残していません。スクリプトとsystemdサービスも変更してください。
-`--target`・`--json`・`--no-interactive`・`--yes` は対応するコマンドの後ろへ指定します。
-`permissions` の `--target`・`--json`・`--no-interactive` は、そのサブコマンドの前後どちらにも指定できます。
-`--version` はEnderpin自体の版を表示するためのオプションです。`--yes` でゲーム権限を自動承認することはありません。
-`sync --json` と `update --json` は、対象・Javaパス・クラスパス数・assets数の配列を返します。以前の `sync` のファイル変更レポートとは形式が異なるため、JSONを読むスクリプトも更新してください。
-設定・ロックの形式と、既存のワールド配置は変わりません。
+`--target`は固定のclient/serverではなくmanifestの名前を選びます。`init --target survival --type server`で名前付き環境を作り、既存manifestは`init --target all`で初期化します。以前のformat 3 CLIを使う場合は、対応する旧バージョンのドキュメントを参照してください。

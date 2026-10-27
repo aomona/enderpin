@@ -113,9 +113,18 @@ fn noninteractive_approval_is_explicit_and_folder_changes_revoke_it() -> Result<
     let lock = fs::read(root.path().join("enderpin.lock"))?;
     let manifest_path = root.path().join("enderpin.toml");
     let mut manifest = enderpin::Manifest::parse(&fs::read_to_string(&manifest_path)?)?;
-    manifest.client.permissions.files.game = enderpin::sandbox::permissions::FileAccess::ReadOnly;
-    manifest.client.permissions.files.read_only =
-        vec![enderpin::sandbox::permissions::GameDirectory::Mods];
+    manifest
+        .target_mut("client")?
+        .permissions
+        .get_or_insert_with(Default::default)
+        .files
+        .game = enderpin::sandbox::permissions::FileAccess::ReadOnly;
+    manifest
+        .target_mut("client")?
+        .permissions
+        .get_or_insert_with(Default::default)
+        .files
+        .read_only = vec![enderpin::sandbox::permissions::GameDirectory::Mods];
     fs::write(&manifest_path, manifest.to_toml()?)?;
     let changed = show()?;
     assert_eq!(changed["approved"], false);

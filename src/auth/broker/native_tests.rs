@@ -104,7 +104,7 @@ fn native_bridge_signs_without_exporting_keys_and_enforces_denial() -> Result<()
             let mut command = crate::sandbox::command(&java, &policy)?;
             #[cfg(target_os = "macos")]
             {
-                let lease = crate::storage::target_lock(&root, crate::Side::Client)?;
+                let lease = crate::storage::target_lock(&root, "client")?;
                 crate::launch::inherit_target_lock(&mut command, &lease)?;
             }
             broker.configure(&mut command)?;

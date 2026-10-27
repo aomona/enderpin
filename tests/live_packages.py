@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     assert inspect(clone, "server") == server
 
     sodium = next(p for p in client if p["name"] == "sodium")
-    path = clone / "run/client/mods" / sodium["filename"]
+    path = clone / "client/run/mods" / sodium["filename"]
     path.write_bytes(b"manually modified")
     assert "modified" in run(clone, cache, "sync", "--locked", "--offline", success=False)
     run(clone, cache, "restore", "--offline")
@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix="enderpin-smoke-") as directory:
     url_package = inspect(urls, "client")[0]
     assert url_package["sha512"] == sodium["sha512"]
     run(urls, cache, "remove", "custom-sodium")
-    assert not list((urls / "run/client/mods").iterdir())
+    assert not list((urls / "client/run/mods").iterdir())
     print(json.dumps({
         "search": "passed", "update_preserves_explicit_pins": "passed", "client_artifacts": len(client), "server_artifacts": len(server),
         "offline_clone": "passed", "manual_change_and_restore": "passed", "ignore_dependency_check": "passed",
