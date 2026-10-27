@@ -87,7 +87,7 @@ impl Workspace {
         for path in paths {
             storage::valid_destination(&path)?;
             ensure!(
-                path.starts_with(&format!("{}/", &game_directory(side))),
+                path.starts_with(&format!("{}/", game_directory(side))),
                 "shared state contains a different target"
             );
             let file = storage::safe_path(&self.root, &path)?;
@@ -398,7 +398,7 @@ impl Workspace {
             for (path, record) in &old.files {
                 storage::valid_destination(path)?;
                 ensure!(
-                    path.starts_with(&format!("{}/", &game_directory(side))),
+                    path.starts_with(&format!("{}/", game_directory(side))),
                     "installed state contains a different target"
                 );
                 validate_hash(&record.sha512)?;
@@ -618,7 +618,7 @@ fn sync_shared(
     for (path, record) in old {
         storage::valid_destination(path)?;
         ensure!(
-            path.starts_with(&format!("{}/", &game_directory(side))),
+            path.starts_with(&format!("{}/", game_directory(side))),
             "shared state contains a different target"
         );
         validate_hash(&record.sha512)?;
@@ -627,7 +627,7 @@ fn sync_shared(
     for path in paths {
         storage::valid_destination(path)?;
         ensure!(
-            path.starts_with(&format!("{}/", &game_directory(side))),
+            path.starts_with(&format!("{}/", game_directory(side))),
             "shared state contains a different target"
         );
         ensure!(
