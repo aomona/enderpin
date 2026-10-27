@@ -59,16 +59,16 @@ GUIは `sandbox::permissions::plan` と `Local` を利用できます。
 標準値は省略でき、Enderpinも変更された項目だけを書き出します。
 
 ```toml
-[client.permissions]
+[targets.client.permissions]
 account_authentication = false
 
-[client.permissions.files]
+[targets.client.permissions.files]
 read_only = ["mods", "resourcepacks", "shaderpacks"]
 
-[server.permissions]
+[targets.server.permissions]
 network = false
 
-[server.permissions.files]
+[targets.server.permissions.files]
 game = "read-only"
 ```
 
@@ -106,7 +106,7 @@ enderpin permissions remove-folder /absolute/path/to/schematics         # 許可
 起動時にはランタイムとの重複も検査します。正規化した絶対パスを保存し、起動前に再検証します。
 MODのパス設定は自動変更しません。必要に応じてMOD側にも同じパスを指定してください。
 
-旧形式の `[client.permissions.<mod>]` / `[server.permissions.<mod>]`、ローカルの `[bindings]` は廃止しました。
+旧形式の `[targets.client.permissions.<mod>]` / `[targets.server.permissions.<mod>]`、ローカルの `[bindings]` は廃止しました。
 旧設定を使っている場合は該当のMOD宣言を削除し、古い `.enderpin/<client|server>/permissions.toml` を削除してから、
 編集画面で外部フォルダを指定し直して承認してください。JAR内の `enderpin.permissions.json` は読みません。
 
@@ -128,7 +128,7 @@ MODのパス設定は自動変更しません。必要に応じてMOD側にも�
 例えばmacOSで個別に拒否する場合は、次のように指定します。
 
 ```toml
-[client.permissions]
+[targets.client.permissions]
 microphone = false
 clipboard = "none"
 ```

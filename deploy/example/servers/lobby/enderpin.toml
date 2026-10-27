@@ -1,9 +1,0 @@
-format = 3
-minecraft = "1.21.1"
-
-[client]
-loader = "fabric"
-
-[server]
-loader = "paper"
-loader_version = "133"

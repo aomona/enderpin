@@ -1,62 +1,46 @@
-# 初期セットアップ
+# 初期設定
 
-`init` は版・ローダー・MODを選び、実行に必要なファイルを取得します。セットアップではゲームを起動せず、権限も自動承認しません。
-
-```sh
-enderpin init my-world
-cd my-world
-```
-
-1. Minecraftのバージョンを検索して選択します。文字入力で一覧を絞り込めます。
-2. ローダーを選択します。クライアントと両側はVanilla / Fabric、サーバーだけならPaper / Velocityも選べます。Velocityでは使用するVelocity版も入力します。
-3. FabricではModrinthのMODを検索し、追加・取り消しできます。追加済みは `[x]` と表示し、ページ移動・再検索にも対応します。Vanilla・Paper・Velocityではこの選択を省略します。
-4. 構成を確認すると、リポジトリ用Wrapperを生成し、Minecraft・Java・ローダー・MODと必須依存関係を取得して終了します。
-
-v0.1.5以降の `init` は `enderpinw`・`enderpinw.ps1`・`enderpin-wrapper.properties` も作成します。生成時の最新の安定版EnderpinとSHA-256を固定するため、GitHubへの接続が必要です。既存のWrapperは上書きしません。[Wrapperの詳細](installation.md#repository-wrapper)を参照してください。公開済みv0.1.4の `init` にはこの生成処理はありません。
-
-MODを使う場合はFabricを選んでください。候補は選んだMinecraft版とローダーで絞り込み、対象側で利用できるリリースを確認します。任意依存は自動追加しません。
-
-ディレクトリを省略すると現在地に作成します。`enderpin -C my-world init` でも保存先を指定できますが、位置引数のディレクトリと `-C` の併用はできません。既存の構成・ロックを `init` で上書きしません。パッケージの追加は `add`、準備の再実行は `sync` を使います。
-
-## 対象・バージョンを指定する
+`init`は構成・ランタイム・パッケージと、編集を始めるための標準設定を用意します。通常のゲームセッションは起動せず、ゲームの権限やEULAを自動承認しません。
 
 ```sh
-# Minecraft版だけ対話で選び、Fabricを使う
-enderpin init my-world --loader fabric
-
-# クライアントとサーバーの両側を非対話で準備
-enderpin init my-network --target all --minecraft 1.21.1 \
-  --loader fabric --loader-version 0.16.10 --mods lithium,sodium --no-interactive
-
-# Paperサーバーだけを準備
-enderpin init my-server --target server --minecraft 1.21.1 \
-  --loader paper --loader-version 133 --no-interactive
-
-# Velocityだけを準備（minecraftはパッケージの互換性判定に使う）
-enderpin init my-proxy --target server --minecraft 1.21.1 \
-  --loader velocity --loader-version 3.4.0-SNAPSHOT+563 --no-interactive
+enderpin init my-world --minecraft 26.3 --loader fabric --no-interactive
+enderpin init my-network --target survival --type server \
+  --minecraft 26.3 --loader fabric --loader-version 0.19.5 --no-interactive
 ```
 
-版は指定例です。`--target` の既定は `client`、`server` はサーバーだけ、`all` は両側です。`all` では選んだローダーを両側に設定し、MODは各側の対応状況に従って配置します。異なるローダーや版のサーバーを管理する場合は [複数ワークスペース](deployment.md) を使います。
+省略した版やローダーは端末で選べます。`--mods lithium`はFabric用です。`--yes`は選択を省略する指定で、実行権限の承認には使いません。`--type proxy --loader velocity`には`--loader-version`が必要です。
 
-`--minecraft` と `--loader` は対応する選択画面を省略します。両方を指定した場合は対話せず実行し、非対話環境では両方の指定が必須です。片方を対話で選ぶ場合の `--yes` は、任意のMOD選択と最後の確認を省略します。必要な版・ローダーの選択やゲーム権限の承認を省略する指定ではありません。
+## 一つのmanifestから複数環境を用意する
 
-`--loader-version` はFabric Loader版・Paperビルド・Velocity版を固定します。Velocityでは必須で、ほかでは省略すると初回に解決してロックします。Vanillaには指定できません。`--mods` はFabric専用で、ModrinthのIDまたはslugをカンマ区切りで指定します。
-
-共有設定は `enderpin.toml`・`enderpin.lock`・`files/`、ゲームの保存先は `run/client/`・`run/server/` です。指定した側だけを準備し、初回に選んだ版をロックします。古いMinecraftなど実行環境が未対応の場合は、準備時に理由を示して停止します。ダウンロード途中で失敗した場合は、保存された構成のディレクトリで `enderpin sync`（サーバーなら `--target server`、両側なら `--target all`）を実行してください。
-
-## セットアップ後
+[設定例](configuration.md)の`enderpin.toml`を先に書き、次を実行します。
 
 ```sh
-# FabricクライアントへMODを追加
-enderpin add sodium
-enderpin login
-enderpin run
-
-# サーバーはEULAを確認し、同意した場合に起動
-enderpin run --target server --accept-eula --port 25566
+enderpin init --target all --no-interactive
 ```
 
-クライアントはアカウント認証が既定で有効です。初期設定はナレーター、クリップボード、リンク・フォルダ表示、ホストの確認付きファイル取り込みも許可します。`run` で現在の権限を確認して承認します。`--port`・`--memory`・`--no-sandbox`・`--accept-eula` は `run` に指定してください。サンドボックスを無効にできるのはVanillaだけです。
+既存manifestの内容を読み、全対象の準備と未作成の初期設定生成を行います。既存manifestに対して`--minecraft`などの作成オプションを併用するとエラーです。設定を変更するにはmanifestを編集してください。失敗した準備は同じコマンドで再実行できます。`init --target survival`なら一つだけ対象にします。
 
-次は [ファイル構成と共有設定](workspace.md)、[ログインと起動](launch.md)、[サンドボックス](sandbox.md) を参照してください。
+## 標準設定の生成方法
+
+- **Vanilla・Fabric・Paperのserver.properties**: 固定されたMinecraft版の公式サーバーを、MODやプラグインを読み込まない一時領域で`--initSettings`付き実行します。サンドボックスはネットワーク・デスクトップ・ワークスペースへのアクセスを与えず、一時領域と検証済みランタイムだけを使用します。生成した`server.properties`だけを`<名前>/files/`へ取り込みます。
+- **Velocity**: 固定JAR内の`default-velocity.toml`を検証・抽出して`<名前>/files/velocity.toml`へ配置します。プロキシを起動しません。
+- **クライアント、MOD・プラグイン固有設定、Paper固有YAML**: 通常起動や操作が必要なものは自動生成の対象外です。ソフトが生成した設定をレビューし、共有したいものだけ`files/`へ移します。
+
+PaperにもMinecraft標準のpropertiesを初期値として使い、Paper独自の既定値を再現したと主張しません。古いMinecraftで`--initSettings`が利用できない場合やVelocityに標準設定が同梱されていない場合は、説明付きで停止します。通常起動への自動フォールバックはありません。
+
+初期化は最大60秒で打ち切り、子プロセスを終了して一時領域を破棄します。`eula.txt`、生成された秘密情報、ログ、ワールドは共有入力へ取り込みません。`server.properties`の初期化にはJVM実行が含まれますが、選択したMOD・プラグインやユーザーJVM引数を実行しません。
+
+既存の`files/`や選択された共有元の設定は上書きしません。`run/`だけに同名の設定がある場合も自動取り込みせず、移行手順を表示します。生成後の編集は[通常の同期](workspace.md)で反映し、`sync`や`update`では初期値を再生成しません。
+
+## 起動
+
+初期設定を編集してから、対象を指定して起動します。
+
+```sh
+enderpin run --target survival --accept-eula
+enderpin run --target proxy
+```
+
+実行権限は起動時に別途確認します。`--accept-eula`は内容を確認し同意した場合だけ指定します。
+
+format 4対応の公開版が出るまではソース版を使用します。`init`は旧形式の公開版を指すWrapperを自動生成しません。対応版の公開後に`enderpin wrapper --version <対応版>`を明示的に実行してください。

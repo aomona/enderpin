@@ -1,80 +1,81 @@
 # enderpin.toml の設定
 
+`format = 4` は一つのmanifestとlockで、複数のクライアント・ゲームサーバー・プロキシを管理します。これはソース版の形式です。公開済みv0.1.8はformat 3のため、[ソースからビルド](installation.md#最新のソース版)してください。
+
 ```toml
-format = 3
-minecraft = "1.21.1"
+format = 4
+minecraft = "26.3"
 
-[common.lithium]
-modrinth = "lithium"
-kind = "mod"
+[groups.common.packages]
+lithium = { modrinth = "lithium", version = "xS0Q8LSi" }
 
-[client]
+[profiles.backend]
+type = "server"
 loader = "fabric"
-# 配布元の対象側の指定を上書きする場合に利用します。
-enabled = []
-disabled = []
+loader_version = "0.19.5"
+groups = ["common"]
+jvm_args = ["-XX:+UseZGC"]
+memory_mib = 4096
 
-[client.packages.sodium]
-modrinth = "sodium"
-kind = "mod"
-
-[server]
+[targets.client]
+type = "client"
 loader = "fabric"
-# Minecraft版と独立したFabric Loader版。省略時は安定版を解決します。
-loader_version = "0.16.10"
+loader_version = "0.19.5"
+groups = ["common"]
+
+[targets.survival]
+profile = "backend"
+
+[targets.creative]
+profile = "backend"
+memory_mib = 3072
+jvm_args = []
+
+[targets.proxy]
+type = "proxy"
+loader = "velocity"
+loader_version = "4.2.0+30"
+memory_mib = 512
 ```
 
-構成内のModrinth識別子はIDまたはslugです。CLIから追加すると安定したプロジェクトIDを保存します。特定の配布版を固定するには `version` にModrinthのバージョンIDを指定します。semver範囲は扱いません。
+版は記法の例で、最新版を意味しません。`type`は`client`・`server`・`proxy`。`proxy`はVelocity用です。`--target survival`は名前を選び、`--target all`は宣言された全ターゲットを選びます。省略時は`client`を選択し、存在しなければエラーです。`run`と`permissions`は一つの名前だけを受け付けます。
 
-共通指定は両側へ展開し、配布元の環境情報から初期対象を選びます。対象側の `packages` に明示した項目、または `enabled` で指定した項目は対象側のメタデータ判定を上書きします。`disabled` は導入しません。実際のローダー互換性・必須依存の検証は引き続き行います。
+## 設定の境界
 
-同じ名前の対象別パッケージ指定は、共通指定の項目全体を置き換えます。変更後は対象ごとにロックを更新してください。片側だけの操作で反対側のファイルを取得・変更しません。共通指定を手編集した後は `enderpin lock --target all` で両側の解決結果だけを保存できます。
+Enderpinが扱うのは実行種別、Minecraft・ローダーの版、パッケージ、メモリ、JVM引数、共有元と権限です。`server.properties`、`velocity.toml`、MOD・プラグインの設定は各ターゲットの`files/`に元の形式で置きます。ポート・ゲームモード・接続先をmanifestへ重複して書きません。任意の設定本文の埋め込み、文字列展開、シェルコマンド、条件式はありません。
 
-## ゲーム全体の権限
+ルートの`minecraft`は既定値で、ターゲットまたはプロファイルの`minecraft`で置換できます。Velocityの配布版は`loader_version`で独立して選択します。現在のランタイム解決はプロキシでもMinecraftメタデータを保存し、プラグイン解決では指定Minecraft版で互換性を検証します。
 
-権限はMODごとではなく、Minecraftのプロセス全体に適用します。
-標準値は省略でき、`enderpin permissions` の編集画面も変更した項目だけを保存します。
+## プロファイルとグループ
+
+`profiles`は起動設定のひな形で、実行ディレクトリを持ちません。ターゲットが参照できるプロファイルは一つです。プロファイルから別のプロファイルを継承することはできません。
+
+- 文字列・数値はターゲットの指定が優先します。
+- 配列（`groups`・`file_groups`・`jvm_args`・`enabled`・`disabled`）は全体を置換します。省略は継承、`[]`は空への置換です。
+- `packages`は名前単位で合成します。同名の宣言はターゲット側の項目全体で置換し、URLとModrinth指定を混ぜません。
+- パッケージグループは`groups.<名前>.packages`だけを持ちます。グループ間の同名宣言は同一なら一つにまとめ、異なるなら記述順によらずエラーです。その後、プロファイル・ターゲットの直接宣言を適用します。
+- 権限は`targets.<名前>.permissions`に直接指定します。プロファイルへの権限指定は拒否し、承認は各PC・各ターゲットに分離します。
+
+グループのパッケージは配布元のクライアント／サーバー情報に従って選択します。直接の`packages`指定や`enabled`は環境情報の判定を上書きしますが、ローダー互換性と必須依存は常に検証します。`disabled`は導入を除外し、必須依存を欠く場合は停止します。
+
+`add --target all`は各ターゲットへ直接追加します。共有宣言にしたい場合はmanifestの`groups`を編集します。`remove`は対象の直接宣言を削除し、共有・プロファイルから再導入されないよう対象の`disabled`に記録します。ほかの対象や共有宣言は変更しません。
+
+## パッケージと起動条件 {#jvm-options}
+
+Modrinthの`version`は版のIDで、semver範囲ではありません。省略すると互換版を解決してlockに固定します。URL指定では既存と同様に公開HTTPSと取得内容のハッシュ検証を使用します。Paper/Velocityのプラグインは`kind = "plugin"`、MODは`kind = "mod"`です。
+
+`memory_mib`の既定値は2048、範囲は256〜1048576です。`run --memory`はその実行だけ上書きします。`jvm_args`は許可された`-XX:`と`-D`だけで、classpath・agent・認証などの予約オプションは拒否します。
+
+名前は1〜64文字の小文字ASCII英数字・`-`・`_`です。パスやWindows予約名は使えず、ターゲットには`all`・`shared`・`run`・`files`・`enderpin`・`target`を使えません。
 
 ```toml
-[client.permissions]
+[targets.client.permissions]
 network = true
-audio = true
 clipboard = "system"
 
-[client.permissions.files]
+[targets.client.permissions.files]
 game = "read-write"
 read_only = ["mods", "resourcepacks"]
 ```
 
-Java・検証済みランタイム・一時領域のパスはEnderpinが準備します。設定への列挙は不要です。
-外部フォルダの絶対パスと承認は各PCの `.enderpin/<client|server>/permissions.toml` に保存し、共有設定には含めません。
-OSごとの強制可能範囲と認証の扱いは [サンドボックスと権限](sandbox.md) を参照してください。
-旧 `[client.sandbox]` / `[server.sandbox]` はエラーになります。移行方法は [移行手順](migration.md#権限設定の新形式へ移行する) を参照してください。
-
-## JVMオプション {#jvm-options}
-
-対象ごとに `jvm_args` でJVMオプションを追加できます。省略時は追加しません。Enderpin自体の既定のGC・メモリ設定は変わりません。
-
-```toml
-[server]
-loader = "fabric"
-jvm_args = ["-XX:+UseZGC"]
-
-[client]
-loader = "fabric"
-jvm_args = ["-XX:+UseZGC", "-Dfile.encoding=UTF-8"]
-```
-
-指定できるのは `-XX:` で始まるオプションと `-D` のシステムプロパティだけです（各対象64個まで）。
-起動時はEnderpin自身のJVMオプションの後、メインクラス（または `-jar`・`-cp`）の前に、記載順で渡します。
-
-- `-Xmx`・`-Xms`・`-XX:MaxHeapSize` 等のヒープ指定は拒否します。最大ヒープは `run --memory MIB`（既定2048 MiB）で指定してください。
-- `-cp`・`-classpath`・`-jar`・`--module-path`・`-javaagent`・`-agentlib`・`-agentpath`・`-Xbootclasspath`・`--add-opens`・`@引数ファイル` 等、`-XX:`・`-D` 以外は拒否します。
-- コマンド実行やオプションファイル読み込みを行う `-XX:OnError`・`-XX:OnOutOfMemoryError`・`-XX:Flags`・`-XX:VMOptionsFile`・`-XX:CompileCommandFile`、エージェントの動的ロード、Enderpinが設定する `-XX:UsePerfData` は拒否します。
-- `java.security.*`（`java.security.manager` を含む）・`java.class.path`・`java.library.path`・`java.system.class.loader`・`java.io.tmpdir`・`user.home` 等のJVM・サンドボックス関連プロパティと、`enderpin.*`・`monalauncher.*`・`fabric.*`・`loader.*`・`jdk.module.*`・`jdk.attach.*` は予約済みとして拒否します。
-
-`jvm_args` はゲームプロセス全体の起動内容を変えるため、権限と同じく承認の対象です。変更すると `run` の前に再承認が必要です。パッケージのロックは変わらないため、`sync` のやり直しは不要です。空の場合は承認のfingerprintに含めないため、既存の承認はそのまま有効です。
-
-一度だけ試す場合は `run --jvm-arg ARG` を繰り返し指定できます。同じ検査を行い、構成の `jvm_args` の後に渡します。コマンドラインで明示した指定のため、`--memory` と同様に承認の対象外で、保存もしません。
-
-サーバーの`loader`には`paper`と`velocity`も指定できます。Paperは`loader_version`にビルド番号、Velocityは`版`または`版+ビルド番号`を指定します。プラグインは`kind = "plugin"`です。[複数サーバーとAnsible CD](deployment.md)を参照してください。
+標準値は省略できます。外部フォルダと承認は`.enderpin/<名前>/permissions.toml`に保持します。ゲームに認証トークンや秘密鍵を渡さない既存の境界を維持します。[サンドボックスと権限](sandbox.md)を参照してください。

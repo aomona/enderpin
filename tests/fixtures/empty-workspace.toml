@@ -1,8 +1,10 @@
-format = 3
+format = 4
 minecraft = "1.21.1"
 
-[client]
+[targets.client]
+type = "client"
 loader = "fabric"
 
-[server]
+[targets.server]
+type = "server"
 loader = "fabric"

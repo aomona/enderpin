@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::{
-    model::{Dependency, Kind, LockedPackage, Manifest, Package, Side, TargetLock, filename},
+    model::{
+        Dependency, Kind, LockedPackage, Manifest, Package, ResolvedTarget, Side, TargetLock,
+        filename,
+    },
     registry::{ApiDependency, Modrinth, Version},
     storage::Cache,
 };
@@ -12,16 +15,17 @@ const MAX_PACKAGES: usize = 512;
 
 pub fn resolve(
     manifest: &Manifest,
-    side: Side,
+    name: &str,
     old: Option<&TargetLock>,
     update: bool,
     registry: &mut Modrinth,
     cache: &Cache,
 ) -> Result<TargetLock> {
-    manifest.validate()?;
-    let old = old.filter(|old| {
-        old.minecraft == manifest.minecraft && old.loader == manifest.target(side).loader
-    });
+    let config = manifest.target(name)?;
+    let manifest = &config;
+    let side = manifest.side();
+    let old =
+        old.filter(|old| old.minecraft == manifest.minecraft && old.loader == manifest.loader);
     let mut resolver = Resolver {
         manifest,
         side,
@@ -31,14 +35,14 @@ pub fn resolve(
         nodes: BTreeMap::new(),
         visiting: BTreeSet::new(),
     };
-    let requests = manifest.requests(side);
+    let requests = manifest.requests.clone();
     for (alias, package) in &requests {
-        let explicitly_enabled = manifest.target(side).packages.contains_key(alias)
-            || manifest.target(side).enabled.contains(alias);
+        let explicitly_enabled =
+            manifest.packages.contains_key(alias) || manifest.enabled.contains(alias);
         if resolver.disabled(&[alias]) {
             continue;
         }
-        let loader = &manifest.target(side).loader;
+        let loader = &manifest.loader;
         let plugins = matches!(loader.as_str(), "paper" | "velocity");
         let wrong_runtime = (package.kind == Kind::Mod && plugins)
             || (package.kind == Kind::Plugin && !plugins)
@@ -64,11 +68,7 @@ pub fn resolve(
                 continue;
             }
             if explicitly_enabled
-                || manifest
-                    .target(side)
-                    .enabled
-                    .iter()
-                    .any(|id| previous.matches(id))
+                || manifest.enabled.iter().any(|id| previous.matches(id))
                 || previous.default_sides.contains(&side)
             {
                 resolver.reuse(&previous.key)?;
@@ -158,9 +158,9 @@ pub fn resolve(
         }
     }
     let lock = TargetLock {
-        fingerprint: manifest.fingerprint(side)?,
+        fingerprint: manifest.fingerprint()?,
         minecraft: manifest.minecraft.clone(),
-        loader: manifest.target(side).loader.clone(),
+        loader: manifest.loader.clone(),
         requests,
         packages: resolver.nodes.into_values().collect(),
     };
@@ -169,7 +169,7 @@ pub fn resolve(
 }
 
 struct Resolver<'a> {
-    manifest: &'a Manifest,
+    manifest: &'a ResolvedTarget,
     side: Side,
     old: Option<&'a TargetLock>,
     update: bool,
@@ -181,7 +181,6 @@ struct Resolver<'a> {
 impl Resolver<'_> {
     fn disabled(&self, names: &[&str]) -> bool {
         self.manifest
-            .target(self.side)
             .disabled
             .iter()
             .any(|d| names.contains(&d.as_str()))
@@ -227,7 +226,7 @@ impl Resolver<'_> {
             "required dependency {} is disabled",
             package.name
         );
-        let requests = self.manifest.requests(self.side);
+        let requests = self.manifest.requests.clone();
         package.required.retain(|key| {
             let dep = self
                 .old
@@ -279,7 +278,6 @@ impl Resolver<'_> {
         let force = force
             || self
                 .manifest
-                .target(self.side)
                 .enabled
                 .iter()
                 .any(|id| id == &project.id || id == &project.slug);
@@ -328,7 +326,7 @@ impl Resolver<'_> {
             project.project_type,
             spec.kind.api_type()
         );
-        let target = self.manifest.target(self.side);
+        let target = self.manifest;
         let preserved = self
             .old
             .and_then(|old| {
@@ -499,6 +497,17 @@ impl Resolver<'_> {
 }
 
 #[cfg(test)]
+fn test_manifest(version: String) -> anyhow::Result<crate::Manifest> {
+    let mut m = crate::Manifest::new(version)?;
+    m.groups.insert("common".into(), Default::default());
+    for entry in m.targets.values_mut() {
+        entry.groups = Some(vec!["common".into()]);
+        entry.file_groups = Some(vec!["common".into()]);
+    }
+    Ok(m)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -574,28 +583,34 @@ mod tests {
                     version.loaders = vec![loader.into()];
                 }
             }
-            let mut manifest = Manifest::new("1.21.1".into())?;
-            manifest.server.loader = loader.into();
+            let mut manifest = test_manifest("1.21.1".into())?;
+            manifest.target_mut("server")?.loader = loader.into();
+            if loader == "velocity" {
+                manifest.target_mut("server")?.kind = Some(crate::model::TargetType::Proxy);
+            }
             manifest
-                .server
+                .target_mut("server")?
                 .packages
                 .insert("plugin".into(), Package::modrinth("plugin", Kind::Plugin));
             // Common client mods must not be copied to a proxy or plugin server.
             manifest
-                .common
+                .groups
+                .get_mut("common")
+                .expect("fixture group")
+                .packages
                 .insert("client-mod".into(), Package::modrinth("missing", Kind::Mod));
-            let lock = resolve(&manifest, Side::Server, None, false, &mut registry, &cache)?;
+            let lock = resolve(&manifest, "server", None, false, &mut registry, &cache)?;
             assert_eq!(lock.packages.len(), 2);
             assert!(
                 lock.packages
                     .iter()
                     .all(|package| package.kind == Kind::Plugin)
             );
-            manifest.server.packages.insert(
+            manifest.target_mut("server")?.packages.insert(
                 "explicit-mod".into(),
                 Package::modrinth("missing", Kind::Mod),
             );
-            assert!(resolve(&manifest, Side::Server, None, false, &mut registry, &cache).is_err());
+            assert!(resolve(&manifest, "server", None, false, &mut registry, &cache).is_err());
         }
         Ok(())
     }
@@ -612,41 +627,43 @@ mod tests {
             vec![dep("base", "required"), dep("extra", "optional")],
             "client_only",
         );
-        let mut m = Manifest::new("1.21.1".into())?;
-        m.common
+        let mut m = test_manifest("1.21.1".into())?;
+        m.groups
+            .get_mut("common")
+            .expect("fixture group")
+            .packages
             .insert("app".into(), Package::modrinth("app", Kind::Mod));
-        let client = resolve(&m, Side::Client, None, false, &mut registry, &cache)?;
+        let client = resolve(&m, "client", None, false, &mut registry, &cache)?;
         assert_eq!(client.packages.len(), 2);
         assert!(client.effective(&["base".into()]).is_err());
         assert!(client.effective(&["app".into()])?.is_empty());
         assert!(
-            resolve(&m, Side::Server, None, false, &mut registry, &cache)?
+            resolve(&m, "server", None, false, &mut registry, &cache)?
                 .packages
                 .is_empty()
         );
-        m.server.enabled.push("app".into());
+        m.target_mut("server")?
+            .enabled
+            .get_or_insert_with(Vec::new)
+            .push("app".into());
         assert_eq!(
-            resolve(&m, Side::Server, None, false, &mut registry, &cache)?
+            resolve(&m, "server", None, false, &mut registry, &cache)?
                 .packages
                 .len(),
             2
         );
-        m.common
+        m.groups
+            .get_mut("common")
+            .expect("fixture group")
+            .packages
             .get_mut("app")
             .context("app missing")?
             .optional
             .push("extra".into());
         assert_eq!(
-            resolve(
-                &m,
-                Side::Client,
-                Some(&client),
-                false,
-                &mut registry,
-                &cache
-            )?
-            .packages
-            .len(),
+            resolve(&m, "client", Some(&client), false, &mut registry, &cache)?
+                .packages
+                .len(),
             3
         );
         fixture(
@@ -655,7 +672,7 @@ mod tests {
             vec![dep("app", "required")],
             "client_and_server",
         );
-        assert!(resolve(&m, Side::Client, None, false, &mut registry, &cache).is_err());
+        assert!(resolve(&m, "client", None, false, &mut registry, &cache).is_err());
         Ok(())
     }
     #[test]
@@ -670,21 +687,21 @@ mod tests {
             "client_and_server",
         );
         fixture(&mut registry, "b", vec![], "client_and_server");
-        let mut m = Manifest::new("1.21.1".into())?;
-        m.client
+        let mut m = test_manifest("1.21.1".into())?;
+        m.target_mut("client")?
             .packages
             .insert("a".into(), Package::modrinth("a", Kind::Mod));
-        m.client
+        m.target_mut("client")?
             .packages
             .insert("b".into(), Package::modrinth("b", Kind::Mod));
-        assert!(resolve(&m, Side::Client, None, false, &mut registry, &cache).is_err());
-        m.client.packages.remove("a");
-        let lock = resolve(&m, Side::Client, None, false, &mut registry, &cache)?;
+        assert!(resolve(&m, "client", None, false, &mut registry, &cache).is_err());
+        m.target_mut("client")?.packages.remove("a");
+        let lock = resolve(&m, "client", None, false, &mut registry, &cache)?;
         // A normal sync can preserve this exact graph without contacting the API.
         assert_eq!(
             resolve(
                 &m,
-                Side::Client,
+                "client",
                 Some(&lock),
                 false,
                 &mut Modrinth::default(),
@@ -715,19 +732,19 @@ mod tests {
             "client_and_server",
         );
         fixture(&mut registry, "c", vec![], "client_and_server");
-        let mut m = Manifest::new("1.21.1".into())?;
-        m.client
+        let mut m = test_manifest("1.21.1".into())?;
+        m.target_mut("client")?
             .packages
             .insert("a".into(), Package::modrinth("a", Kind::Mod));
         let mut b = Package::modrinth("b", Kind::Mod);
         b.optional.push("c".into());
-        m.client.packages.insert("b".into(), b);
-        let old = resolve(&m, Side::Client, None, false, &mut registry, &cache)?;
+        m.target_mut("client")?.packages.insert("b".into(), b);
+        let old = resolve(&m, "client", None, false, &mut registry, &cache)?;
         assert_eq!(old.packages.len(), 3);
-        m.client.packages.remove("b");
+        m.target_mut("client")?.packages.remove("b");
         let next = resolve(
             &m,
-            Side::Client,
+            "client",
             Some(&old),
             false,
             &mut Modrinth::default(),

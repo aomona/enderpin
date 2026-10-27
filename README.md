@@ -4,7 +4,22 @@ Minecraftのクライアントとサーバーを準備・共有するCLI。Minec
 
 [ドキュメント](https://enderpin-docs.aomona.workers.dev/) · [対応環境](https://enderpin-docs.aomona.workers.dev/platforms)
 
-## はじめる
+## ソース版の名前付きターゲット
+
+一つの`enderpin.toml`と`enderpin.lock`でクライアント・複数サーバー・プロキシを管理できます。構成形式は4です。設定ファイルは`survival/files/`、実行環境・ワールドは`survival/run/`のように対象ごとにまとめます。
+
+```sh
+cargo install --path . --locked
+# enderpin.tomlを記述してから、全ターゲットと標準設定を準備
+enderpin init --target all
+enderpin run --target survival
+```
+
+[設定と継承ルール](docs/configuration.md) · [初期設定の生成](docs/setup.md) · [配置と同期の仕組み](docs/workspace.md) · [旧形式からの移行](docs/migration.md)
+
+**公開済みv0.1.8はformat 3です。format 4にはソース版が必要で、既存ワールドは自動移動しません。**
+
+## 公開版ではじめる
 
 Node.js 18以上とnpm、またはBunを使います。
 

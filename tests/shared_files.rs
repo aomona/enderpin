@@ -1,5 +1,5 @@
 use anyhow::Result;
-use enderpin::{Side, Workspace, sandbox::permissions, workspace::SyncOptions};
+use enderpin::{Workspace, sandbox::permissions, workspace::SyncOptions};
 use std::{fs, path::Path};
 
 fn write(root: &Path, path: &str, text: &str) -> Result<()> {
@@ -9,7 +9,7 @@ fn write(root: &Path, path: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn sync(ws: &mut Workspace, sides: &[Side], restore: bool) -> Result<()> {
+fn sync(ws: &mut Workspace, sides: &[&str], restore: bool) -> Result<()> {
     ws.sync(
         ws.manifest.clone(),
         sides,
@@ -29,30 +29,30 @@ fn overlays_reproduce_from_git_inputs_and_do_not_touch_personal_data() -> Result
     let root = tempfile::tempdir()?;
     let clone = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
+    init_fixture(root.path(), "26.2".into())?;
     let ignore = fs::read_to_string(root.path().join(".gitignore"))?;
-    assert!(ignore.lines().any(|line| line == "/run/"));
-    assert!(root.path().join("files/common").is_dir());
+    assert!(ignore.lines().any(|line| line == "/*/run/"));
+    assert!(root.path().join("shared/common/files").is_dir());
     let sources = [
-        ("files/common/config/nested/settings.json", "common"),
-        ("files/client/config/nested/settings.json", "client"),
-        ("files/server/server.properties", "server-port=25566"),
+        ("shared/common/files/config/nested/settings.json", "common"),
+        ("client/files/config/nested/settings.json", "client"),
+        ("server/files/server.properties", "server-port=25566"),
     ];
     for (path, content) in sources {
         write(root.path(), path, content)?;
     }
-    write(root.path(), "run/client/saves/keep/level.dat", "world")?;
-    write(root.path(), "run/server/world/level.dat", "server world")?;
+    write(root.path(), "client/run/saves/keep/level.dat", "world")?;
+    write(root.path(), "server/run/world/level.dat", "server world")?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
-    sync(&mut ws, &[Side::Client], false)?;
-    assert!(!root.path().join("run/server/config").exists());
-    sync(&mut ws, &[Side::Server], false)?;
+    sync(&mut ws, &["client"], false)?;
+    assert!(!root.path().join("server/run/config").exists());
+    sync(&mut ws, &["server"], false)?;
     assert_eq!(
-        fs::read_to_string(root.path().join("run/client/config/nested/settings.json"))?,
+        fs::read_to_string(root.path().join("client/run/config/nested/settings.json"))?,
         "client"
     );
     assert_eq!(
-        fs::read_to_string(root.path().join("run/server/config/nested/settings.json"))?,
+        fs::read_to_string(root.path().join("server/run/config/nested/settings.json"))?,
         "common"
     );
     for name in ["enderpin.toml", "enderpin.lock"] {
@@ -62,43 +62,46 @@ fn overlays_reproduce_from_git_inputs_and_do_not_touch_personal_data() -> Result
         write(clone.path(), path, content)?;
     }
     let mut cloned = Workspace::open(clone.path(), cache.path())?;
-    sync(&mut cloned, &Side::ALL, false)?;
+    sync(&mut cloned, &["client", "server"], false)?;
     for path in [
-        "run/client/config/nested/settings.json",
-        "run/server/config/nested/settings.json",
-        "run/server/server.properties",
+        "client/run/config/nested/settings.json",
+        "server/run/config/nested/settings.json",
+        "server/run/server.properties",
     ] {
         assert_eq!(
             fs::read(root.path().join(path))?,
             fs::read(clone.path().join(path))?
         );
     }
-    fs::remove_file(root.path().join("files/client/config/nested/settings.json"))?;
-    sync(&mut ws, &[Side::Client], false)?;
+    fs::remove_file(root.path().join("client/files/config/nested/settings.json"))?;
+    sync(&mut ws, &["client"], false)?;
     assert_eq!(
-        fs::read_to_string(root.path().join("run/client/config/nested/settings.json"))?,
+        fs::read_to_string(root.path().join("client/run/config/nested/settings.json"))?,
         "common"
     );
-    fs::remove_file(root.path().join("files/common/config/nested/settings.json"))?;
-    sync(&mut ws, &Side::ALL, false)?;
+    fs::remove_file(
+        root.path()
+            .join("shared/common/files/config/nested/settings.json"),
+    )?;
+    sync(&mut ws, &["client", "server"], false)?;
     assert!(
         !root
             .path()
-            .join("run/client/config/nested/settings.json")
+            .join("client/run/config/nested/settings.json")
             .exists()
     );
     assert!(
         !root
             .path()
-            .join("run/server/config/nested/settings.json")
+            .join("server/run/config/nested/settings.json")
             .exists()
     );
     assert_eq!(
-        fs::read_to_string(root.path().join("run/client/saves/keep/level.dat"))?,
+        fs::read_to_string(root.path().join("client/run/saves/keep/level.dat"))?,
         "world"
     );
     assert_eq!(
-        fs::read_to_string(root.path().join("run/server/world/level.dat"))?,
+        fs::read_to_string(root.path().join("server/run/world/level.dat"))?,
         "server world"
     );
     Ok(())
@@ -108,20 +111,20 @@ fn overlays_reproduce_from_git_inputs_and_do_not_touch_personal_data() -> Result
 fn three_way_sync_preserves_local_edits_and_conflicts_atomically() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
-    let source = "files/common/config/example.json";
-    let client = "run/client/config/example.json";
-    let server = "run/server/config/example.json";
+    init_fixture(root.path(), "26.2".into())?;
+    let source = "shared/common/files/config/example.json";
+    let client = "client/run/config/example.json";
+    let server = "server/run/config/example.json";
     write(root.path(), source, "initial")?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
-    sync(&mut ws, &Side::ALL, false)?;
+    sync(&mut ws, &["client", "server"], false)?;
     write(root.path(), server, "local")?;
-    sync(&mut ws, &Side::ALL, false)?;
+    sync(&mut ws, &["client", "server"], false)?;
     assert_eq!(fs::read_to_string(root.path().join(server))?, "local");
     write(root.path(), source, "upstream")?;
     let state = fs::read(root.path().join(".enderpin/client/state.toml"))?;
     assert!(
-        sync(&mut ws, &Side::ALL, false)
+        sync(&mut ws, &["client", "server"], false)
             .expect_err("unsafe sync must fail")
             .to_string()
             .contains("shared file conflict")
@@ -133,11 +136,11 @@ fn three_way_sync_preserves_local_edits_and_conflicts_atomically() -> Result<()>
     );
     // Copying a local edit back to the source resolves the conflict.
     write(root.path(), source, "local")?;
-    sync(&mut ws, &Side::ALL, false)?;
+    sync(&mut ws, &["client", "server"], false)?;
     write(root.path(), server, "another local edit")?;
     fs::remove_file(root.path().join(source))?;
-    assert!(sync(&mut ws, &Side::ALL, false).is_err());
-    sync(&mut ws, &Side::ALL, true)?;
+    assert!(sync(&mut ws, &["client", "server"], false).is_err());
+    sync(&mut ws, &["client", "server"], true)?;
     assert!(!root.path().join(server).exists());
     assert!(!root.path().join(client).exists());
     Ok(())
@@ -147,19 +150,19 @@ fn three_way_sync_preserves_local_edits_and_conflicts_atomically() -> Result<()>
 fn unmanaged_files_are_never_adopted_or_overwritten_even_with_restore() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
-    write(root.path(), "files/client/options.txt", "shared")?;
-    write(root.path(), "run/client/options.txt", "personal")?;
+    init_fixture(root.path(), "26.2".into())?;
+    write(root.path(), "client/files/options.txt", "shared")?;
+    write(root.path(), "client/run/options.txt", "personal")?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
     for restore in [false, true] {
         assert!(
-            sync(&mut ws, &[Side::Client], restore)
+            sync(&mut ws, &["client"], restore)
                 .expect_err("unsafe sync must fail")
                 .to_string()
                 .contains("unmanaged filename collision")
         );
         assert_eq!(
-            fs::read_to_string(root.path().join("run/client/options.txt"))?,
+            fs::read_to_string(root.path().join("client/run/options.txt"))?,
             "personal"
         );
     }
@@ -170,22 +173,22 @@ fn unmanaged_files_are_never_adopted_or_overwritten_even_with_restore() -> Resul
 fn local_deletion_is_preserved_until_restore_and_shared_hashes_bind_approval() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
-    write(root.path(), "files/client/mods/local.jar", "jar1")?;
+    init_fixture(root.path(), "26.2".into())?;
+    write(root.path(), "client/files/mods/local.jar", "jar1")?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
-    sync(&mut ws, &[Side::Client], false)?;
-    let fingerprint = permissions::plan(&ws, Side::Client)?.fingerprint()?;
-    write(root.path(), "run/client/mods/local.jar", "jar2")?;
+    sync(&mut ws, &["client"], false)?;
+    let fingerprint = permissions::plan(&ws, "client")?.fingerprint()?;
+    write(root.path(), "client/run/mods/local.jar", "jar2")?;
     assert_ne!(
-        permissions::plan(&ws, Side::Client)?.fingerprint()?,
+        permissions::plan(&ws, "client")?.fingerprint()?,
         fingerprint
     );
-    fs::remove_file(root.path().join("run/client/mods/local.jar"))?;
-    sync(&mut ws, &[Side::Client], false)?;
-    assert!(!root.path().join("run/client/mods/local.jar").exists());
-    sync(&mut ws, &[Side::Client], true)?;
+    fs::remove_file(root.path().join("client/run/mods/local.jar"))?;
+    sync(&mut ws, &["client"], false)?;
+    assert!(!root.path().join("client/run/mods/local.jar").exists());
+    sync(&mut ws, &["client"], true)?;
     assert_eq!(
-        permissions::plan(&ws, Side::Client)?.fingerprint()?,
+        permissions::plan(&ws, "client")?.fingerprint()?,
         fingerprint
     );
     Ok(())
@@ -195,31 +198,35 @@ fn local_deletion_is_preserved_until_restore_and_shared_hashes_bind_approval() -
 fn ambiguous_overlay_trees_and_other_target_state_are_rejected() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
-    write(root.path(), "files/common/config", "file")?;
-    write(root.path(), "files/client/config/a.json", "child")?;
+    init_fixture(root.path(), "26.2".into())?;
+    write(root.path(), "shared/common/files/config", "file")?;
+    write(root.path(), "client/files/config/a.json", "child")?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
     assert!(
-        sync(&mut ws, &[Side::Client], false)
+        sync(&mut ws, &["client"], false)
             .expect_err("unsafe sync must fail")
             .to_string()
             .contains("file/directory collision")
     );
-    fs::remove_file(root.path().join("files/common/config"))?;
-    write(root.path(), "files/common/CONFIG/A.JSON", "case alias")?;
+    fs::remove_file(root.path().join("shared/common/files/config"))?;
+    write(
+        root.path(),
+        "shared/common/files/CONFIG/A.JSON",
+        "case alias",
+    )?;
     assert!(
-        sync(&mut ws, &[Side::Client], false)
+        sync(&mut ws, &["client"], false)
             .expect_err("unsafe sync must fail")
             .to_string()
             .contains("differ only by case")
     );
-    fs::remove_dir_all(root.path().join("files/common/CONFIG"))?;
-    sync(&mut ws, &[Side::Client], false)?;
+    fs::remove_dir_all(root.path().join("shared/common/files/CONFIG"))?;
+    sync(&mut ws, &["client"], false)?;
     let state = root.path().join(".enderpin/client/state.toml");
-    let text = fs::read_to_string(&state)?.replace("run/client/", "run/server/");
+    let text = fs::read_to_string(&state)?.replace("client/run/", "server/run/");
     fs::write(state, text)?;
     assert!(
-        sync(&mut ws, &[Side::Client], false)
+        sync(&mut ws, &["client"], false)
             .expect_err("unsafe sync must fail")
             .to_string()
             .contains("different target")
@@ -234,18 +241,22 @@ fn source_and_destination_symlinks_are_rejected() -> Result<()> {
     let root = tempfile::tempdir()?;
     let external = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
+    init_fixture(root.path(), "26.2".into())?;
     write(external.path(), "secret", "untouched")?;
     symlink(
         external.path().join("secret"),
-        root.path().join("files/common/link"),
+        root.path().join("shared/common/files/link"),
     )?;
     let mut ws = Workspace::open(root.path(), cache.path())?;
-    assert!(sync(&mut ws, &Side::ALL, false).is_err());
-    fs::remove_file(root.path().join("files/common/link"))?;
-    write(root.path(), "files/common/config/secret", "replacement")?;
-    symlink(external.path(), root.path().join("run/client/config"))?;
-    assert!(sync(&mut ws, &Side::ALL, true).is_err());
+    assert!(sync(&mut ws, &["client", "server"], false).is_err());
+    fs::remove_file(root.path().join("shared/common/files/link"))?;
+    write(
+        root.path(),
+        "shared/common/files/config/secret",
+        "replacement",
+    )?;
+    symlink(external.path(), root.path().join("client/run/config"))?;
+    assert!(sync(&mut ws, &["client", "server"], true).is_err());
     assert_eq!(
         fs::read_to_string(external.path().join("secret"))?,
         "untouched"
@@ -257,9 +268,9 @@ fn source_and_destination_symlinks_are_rejected() -> Result<()> {
 fn old_format_is_rejected_without_moving_game_data() -> Result<()> {
     let root = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
-    Workspace::init_quick(root.path(), "26.2".into())?;
+    init_fixture(root.path(), "26.2".into())?;
     let manifest = root.path().join("enderpin.toml");
-    let old = fs::read_to_string(&manifest)?.replace("format = 3", "format = 2");
+    let old = fs::read_to_string(&manifest)?.replace("format = 4", "format = 3");
     fs::write(manifest, old)?;
     write(root.path(), "client/saves/keep/level.dat", "world")?;
     assert!(Workspace::open(root.path(), cache.path()).is_err());
@@ -267,5 +278,15 @@ fn old_format_is_rejected_without_moving_game_data() -> Result<()> {
         fs::read_to_string(root.path().join("client/saves/keep/level.dat"))?,
         "world"
     );
+    Ok(())
+}
+
+fn init_fixture(root: &Path, version: String) -> Result<()> {
+    let mut m = Workspace::quick_manifest(version)?;
+    for entry in m.targets.values_mut() {
+        entry.file_groups = Some(vec!["common".into()]);
+    }
+    Workspace::init_manifest(root, m, &["client", "server"])?;
+    fs::create_dir_all(root.join("shared/common/files"))?;
     Ok(())
 }

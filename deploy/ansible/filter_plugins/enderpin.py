@@ -7,30 +7,59 @@ import tomllib
 from ansible.errors import AnsibleFilterError
 
 
-def workspace(source_root, relative):
+def workspace(source_root, relative, target="server"):
     root = Path(source_root).resolve(strict=True)
     path = root / relative
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
         raise AnsibleFilterError("workspace must be relative to the source repository")
-    if not path.is_dir() or path.resolve() == root or not path.resolve().is_relative_to(root):
+    if not path.is_dir() or not path.resolve().is_relative_to(root):
         raise AnsibleFilterError("workspace must be a directory inside the source repository")
     for parent in [path, *path.parents]:
         if parent == root:
             break
         if parent.is_symlink():
             raise AnsibleFilterError("workspace cannot contain symbolic links")
-    for name in ["enderpin.toml", "enderpin.lock", "files"]:
-        item = path / name
-        if item.is_symlink() or (item.is_dir() and any(p.is_symlink() for p in item.rglob("*"))):
+    def safe_name(name):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", name) or name in {"all", "con", "prn", "aux", "nul"} or re.fullmatch(r"(?:com|lpt)[1-9]", name):
+            raise AnsibleFilterError("invalid target or group name")
+    safe_name(target)
+    for name in ["enderpin.toml", "enderpin.lock"]:
+        if (path / name).is_symlink():
             raise AnsibleFilterError("deployment inputs cannot contain symbolic links")
     manifest = tomllib.loads((path / "enderpin.toml").read_text())
     lock = tomllib.loads((path / "enderpin.lock").read_text())
-    runtime = manifest["server"]["loader"]
-    if runtime not in ["paper", "fabric", "velocity"] or "server" not in lock.get("runtimes", {}):
+    if manifest.get("format") != 4 or lock.get("format") != 4:
+        raise AnsibleFilterError("deployment requires format 4; migrate existing worlds explicitly first")
+    entry = manifest.get("targets", {}).get(target)
+    if entry is None:
+        raise AnsibleFilterError("unknown deployment target")
+    profile = manifest.get("profiles", {}).get(entry.get("profile"), {})
+    if "profile" in entry and entry["profile"] not in manifest.get("profiles", {}):
+        raise AnsibleFilterError("unknown target profile")
+    config = {**profile, **entry}
+    packages = {}
+    for group in config.get("groups", []):
+        if group not in manifest.get("groups", {}):
+            raise AnsibleFilterError("unknown package group")
+        for alias, package in manifest["groups"][group].get("packages", {}).items():
+            if alias in packages and packages[alias] != package:
+                raise AnsibleFilterError("conflicting package groups")
+            packages[alias] = package
+    packages.update(profile.get("packages", {}))
+    packages.update(entry.get("packages", {}))
+    runtime = config["loader"]
+    if runtime not in ["paper", "fabric", "velocity"] or target not in lock.get("runtimes", {}) or config.get("type") not in ["server", "proxy"]:
         raise AnsibleFilterError("deployment requires a prepared Paper, Fabric or Velocity server lock")
+    inputs = [f"{target}/files"]
+    for group in config.get("file_groups", []):
+        safe_name(group)
+        inputs.append(f"shared/{group}/files")
+    for relative_input in inputs:
+        item = path / relative_input
+        if any(parent.is_symlink() for parent in [item, *item.parents] if parent != root) or (item.is_dir() and any(p.is_symlink() for p in item.rglob("*"))):
+            raise AnsibleFilterError("deployment inputs cannot contain symbolic links")
     if runtime == "fabric":
-        packages = manifest["server"].get("packages", {})
-        disabled = manifest["server"].get("disabled", [])
+        disabled = config.get("disabled", [])
         aliases = [name for name, package in packages.items()
                    if package.get("modrinth") == "fabricproxy-lite" and package.get("kind", "mod") == "mod"
                    and name not in disabled and "fabricproxy-lite" not in disabled]
@@ -38,18 +67,18 @@ def workspace(source_root, relative):
             raise AnsibleFilterError("Fabric backends require an enabled direct fabricproxy-lite Modrinth package")
         if not any(set(p.get("roots", [])) & set(aliases) and p.get("kind") == "mod"
                    and p.get("name") not in disabled and p.get("project") not in disabled
-                   for p in lock.get("targets", {}).get("server", {}).get("packages", [])):
+                   for p in lock.get("targets", {}).get(target, {}).get("packages", [])):
             raise AnsibleFilterError("FabricProxy-Lite must be present and enabled in the server package lock")
     if runtime == "paper":
         # shortcut: the managed forwarding template uses the Paper 1.19+ configuration layout.
-        version = manifest["minecraft"].split(".")
+        version = config.get("minecraft", manifest["minecraft"]).split(".")
         if len(version) < 2 or not version[0].isdigit() or not version[1].isdigit() or (int(version[0]), int(version[1])) < (1, 19):
             raise AnsibleFilterError("the Paper deployment template requires Minecraft 1.19 or newer")
     managed = ["server.properties", "velocity.toml", "forwarding.secret", "config/FabricProxy-Lite.toml", "config/paper-global.yml", "spigot.yml"]
-    for scope in ["common", "server"]:
-        if any((path / "files" / scope / name).exists() for name in managed):
+    for scope in inputs:
+        if any((path / scope / name).exists() for name in managed):
             raise AnsibleFilterError("Ansible owns server.properties and forwarding configs; remove duplicate files inputs")
-    return {"path": str(path), "runtime": runtime, "files": (path / "files").is_dir()}
+    return {"path": str(path), "runtime": runtime, "target": target, "inputs": [item for item in inputs if (path / item).is_dir()]}
 
 
 def instances(items):

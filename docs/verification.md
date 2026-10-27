@@ -210,3 +210,13 @@ Linux・Windowsの検証結果は、この変更のCI実行結果を参照。
 - 200%ズーム、スクリーンリーダー、OSのハイコントラスト設定を使った実機確認は未実施です。
 
 今回はREADMEとサイトの変更です。ゲーム起動・各OSのサンドボックス動作を新たに検証したものではありません。
+
+## 名前付きターゲットと標準設定の初期化（format 4）
+
+macOS上で一つのmanifestにsurvival・creative（Fabric 0.19.5）とproxy（Velocity 4.2.0+30）、Minecraft 26.3を宣言して検証しました。共通Lithiumの固定版はFabricの二対象だけに配置され、単一lockのtargets/runtimesに三つの名前が保存されました。
+
+- `init --target all`で各対象のfilesにserver.properties / velocity.tomlを生成。実ゲームセッション・ワールド・EULA同意・ゲーム権限承認は作成していません。
+- 同じinitの再実行で設定ファイルのSHA-256が不変。各対象の`sync --locked --offline`と`permissions show --json`も成功しました。
+- 通常のRustテスト、clippy、macOS上のJava 25を使うnative sandbox / broker / target-lockテスト、権限編集TUI、Ansibleテンプレート・VPN証明書のテスト、ドキュメントbuild/link検証を実施しました。
+
+初期化の実配布物検証は上記版に限ります。Linux/Windows上の初期設定生成、実クライアント接続、本番ホスト配布、旧ワールドの運用移行はこの変更のローカル検証には含みません。Paper固有YAMLや各MODの設定生成も対象外です。

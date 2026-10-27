@@ -1,10 +1,18 @@
 - name: Read and validate the source workspace
   ansible.builtin.set_fact:
-    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace) }}"
+    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target | default('server')) }}"
     instance_root: "{{ enderpin_root }}/{{ instance.name }}"
     instance_user: "ep_{{ instance.name }}"
     cutover: false
     staged: {}
+- name: Check for an unmigrated legacy game directory
+  ansible.builtin.stat:
+    path: "{{ instance_root }}/workspace/run/server"
+  register: legacy_game
+- name: Require explicit world migration before format 4 deployment
+  ansible.builtin.assert:
+    that: not legacy_game.stat.exists
+    fail_msg: "Back up and migrate workspace/run/server to workspace/{{ source.target }}/run before deploying format 4."
 - name: Validate authentication, bind address, and property lines
   ansible.builtin.assert:
     that:
@@ -50,17 +58,25 @@
         group: "{{ instance_user }}"
         mode: '0600'
       loop: [enderpin.toml, enderpin.lock]
-    - name: Copy shared inputs
+    - name: Create selected input directories
+      ansible.builtin.file:
+        path: "{{ staged.path }}/{{ item }}"
+        state: directory
+        owner: "{{ instance_user }}"
+        group: "{{ instance_user }}"
+        mode: '0700'
+      loop: "{{ source.inputs + ['shared'] }}"
+    - name: Copy selected target and shared file groups
       ansible.builtin.copy:
-        src: "{{ source.path }}/files/"
-        dest: "{{ staged.path }}/files/"
+        src: "{{ source.path }}/{{ item }}/"
+        dest: "{{ staged.path }}/{{ item }}/"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: preserve
-      when: source.files
+      loop: "{{ source.inputs }}"
     - name: Create directories for generated shared inputs
       ansible.builtin.file:
-        path: "{{ staged.path }}/files/server/config"
+        path: "{{ staged.path }}/{{ source.target }}/files/config"
         state: directory
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
@@ -68,7 +84,7 @@
     - name: Render proxy configuration
       ansible.builtin.template:
         src: templates/velocity.toml.j2
-        dest: "{{ staged.path }}/files/server/velocity.toml"
+        dest: "{{ staged.path }}/{{ source.target }}/files/velocity.toml"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: '0600'
@@ -76,7 +92,7 @@
     - name: Stage persistent forwarding secret for Velocity
       ansible.builtin.copy:
         content: "{{ enderpin_forwarding_secret }}"
-        dest: "{{ staged.path }}/files/server/forwarding.secret"
+        dest: "{{ staged.path }}/{{ source.target }}/files/forwarding.secret"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: '0600'
@@ -85,7 +101,7 @@
     - name: Render backend properties
       ansible.builtin.template:
         src: templates/server.properties.j2
-        dest: "{{ staged.path }}/files/server/server.properties"
+        dest: "{{ staged.path }}/{{ source.target }}/files/server.properties"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: '0600'
@@ -93,7 +109,7 @@
     - name: Render forwarding configuration
       ansible.builtin.template:
         src: "templates/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}.j2"
-        dest: "{{ staged.path }}/files/server/config/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}"
+        dest: "{{ staged.path }}/{{ source.target }}/files/config/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: '0600'
@@ -102,7 +118,7 @@
     - name: Disable legacy BungeeCord forwarding
       ansible.builtin.copy:
         content: "settings:\n  bungeecord: false\n"
-        dest: "{{ staged.path }}/files/server/spigot.yml"
+        dest: "{{ staged.path }}/{{ source.target }}/files/spigot.yml"
         owner: "{{ instance_user }}"
         group: "{{ instance_user }}"
         mode: '0600'
@@ -117,7 +133,7 @@
     - name: Verify and cache all locked downloads before stopping the live server
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ staged.path }}/enderpin", -C, "{{ staged.path }}", --cache-dir, "{{ instance_root }}/cache", sync, --target, server, --locked]
+        argv: ["{{ staged.path }}/enderpin", -C, "{{ staged.path }}", --cache-dir, "{{ instance_root }}/cache", sync, --target, "{{ source.target }}", --locked]
       changed_when: false
     - name: Install instance service
       ansible.builtin.template:
@@ -140,7 +156,7 @@
       ansible.builtin.file:
         path: "{{ instance_root }}/workspace/{{ item }}"
         state: absent
-      loop: [files, .enderpinignore]
+      loop: ["{{ source.target }}/files", shared, .enderpinignore]
     - name: Install inputs and binary
       ansible.builtin.copy:
         src: "{{ staged.path }}/{{ item.src }}"
@@ -152,23 +168,24 @@
       loop:
         - {src: enderpin.toml, dest: workspace/enderpin.toml}
         - {src: enderpin.lock, dest: workspace/enderpin.lock}
-        - {src: 'files/', dest: 'workspace/files/'}
+        - {src: '{{ source.target }}/files/', dest: 'workspace/{{ source.target }}/files/'}
+        - {src: 'shared/', dest: 'workspace/shared/'}
         - {src: enderpin, dest: bin/enderpin}
       no_log: true
     - name: Restore managed files from the fixed lock after backup
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", restore, --target, server, --offline, --no-ignore]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", restore, --target, "{{ source.target }}", --offline, --no-ignore]
       changed_when: true
     - name: Verify the installed runtime offline
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", sync, --target, server, --locked, --offline]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", sync, --target, "{{ source.target }}", --locked, --offline]
       changed_when: false
     - name: Inspect the exact installed permission plan
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, show, --target, server, --json]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, show, --target, "{{ source.target }}", --json]
       register: installed_plan
       changed_when: false
       no_log: true
@@ -179,7 +196,7 @@
     - name: Apply permissions authorized by the deployed commit
       become_user: "{{ instance_user }}"
       ansible.builtin.command:
-        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, --target, server, --no-interactive, approve, "{{ (installed_plan.stdout | from_json).fingerprint }}"]
+        argv: ["{{ instance_root }}/bin/enderpin", -C, "{{ instance_root }}/workspace", --cache-dir, "{{ instance_root }}/cache", permissions, --target, "{{ source.target }}", --no-interactive, approve, "{{ (installed_plan.stdout | from_json).fingerprint }}"]
       changed_when: true
       no_log: true
     - name: Launch with approval verification and sandbox enforcement

@@ -134,9 +134,10 @@ pub fn operation_lock(root: &Path) -> Result<File> {
 }
 
 /// Kept by the launcher while a target runs; independent targets can run together.
-pub fn target_lock(root: &Path, side: crate::Side) -> Result<File> {
-    directory(root, &format!(".enderpin/{}", side.name()))?;
-    let path = safe_path(root, &format!(".enderpin/{}/run.lock", side.name()))?;
+pub fn target_lock(root: &Path, side: &str) -> Result<File> {
+    crate::model::target_name(side)?;
+    directory(root, &format!(".enderpin/{}", side))?;
+    let path = safe_path(root, &format!(".enderpin/{}/run.lock", side))?;
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -144,7 +145,7 @@ pub fn target_lock(root: &Path, side: crate::Side) -> Result<File> {
         .truncate(false)
         .open(path)?;
     file.try_lock()
-        .map_err(|_| anyhow::anyhow!("{} is running or being synchronized", side.name()))?;
+        .map_err(|_| anyhow::anyhow!("{} is running or being synchronized", side))?;
     Ok(file)
 }
 
@@ -255,18 +256,25 @@ pub(crate) fn valid_destination(relative: &str) -> Result<()> {
         "enderpinw.ps1",
         "enderpin-wrapper.properties",
         ".gitignore",
-        ".enderpin/client/state.toml",
-        ".enderpin/server/state.toml",
     ]
     .contains(&relative)
     {
         return Ok(());
     }
     let components: Vec<_> = relative.split('/').collect();
+    if components.len() == 3 && components[0] == ".enderpin" && components[2] == "state.toml" {
+        return crate::model::target_name(components[1]);
+    }
     ensure!(
-        components.len() >= 3
-            && components[0] == "run"
-            && ["client", "server"].contains(&components[1]),
+        components.len() >= 3,
+        "invalid transaction destination: {relative}"
+    );
+    crate::model::target_name(components[0])?;
+    ensure!(
+        components[1] == "run"
+            || (components.len() == 3
+                && components[1] == "files"
+                && ["server.properties", "velocity.toml"].contains(&components[2])),
         "invalid transaction destination: {relative}"
     );
     for component in &components[2..] {
@@ -472,11 +480,11 @@ mod tests {
     #[test]
     fn transactions_only_write_managed_game_paths() -> Result<()> {
         for path in [
-            "run/client/mods/example.jar",
-            "run/server/plugins/example.jar",
-            "run/client/resourcepacks/example.zip",
-            "run/client/config/example/settings.json",
-            "run/server/server.properties",
+            "client/run/mods/example.jar",
+            "server/run/plugins/example.jar",
+            "client/run/resourcepacks/example.zip",
+            "client/run/config/example/settings.json",
+            "server/run/server.properties",
         ] {
             valid_destination(path)?;
         }
@@ -484,9 +492,9 @@ mod tests {
             ".enderpin/client/game/mods/example.jar",
             "client/world/level.dat",
             "server/enderpin.toml",
-            "run/client/mods/../world/level.dat",
-            "run/client/config/",
-            "run/client",
+            "client/run/mods/../world/level.dat",
+            "client/run/config/",
+            "client/run",
             "run/other/config/a.json",
             "other/mods/example.jar",
         ] {

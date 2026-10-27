@@ -31,35 +31,68 @@ class DeploymentTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / "servers/backend"
         self.source.mkdir(parents=True)
-        self.manifest = 'format=3\nminecraft="1.21.1"\n[server]\nloader="paper"\n'
+        self.manifest = 'format=4\nminecraft="1.21.1"\n[targets.server]\ntype="server"\nloader="paper"\n'
         (self.source / "enderpin.toml").write_text(self.manifest)
-        (self.source / "enderpin.lock").write_text('[runtimes.server]\nloader="paper"\n')
+        (self.source / "enderpin.lock").write_text('format=4\n[runtimes.server]\nloader="paper"\n')
         self.instance = dict(name="backend", workspace="servers/backend", address="10.77.0.2", port=25566, memory_mib=1024)
         self.inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]["vars"]
 
     def test_workspace_boundaries_and_required_fabric_proxy(self):
         self.assertEqual(filters.workspace(self.root, "servers/backend")["runtime"], "paper")
-        for path in ["..", str(self.source), "."]:
+        for path in ["..", str(self.source)]:
             with self.assertRaises(AnsibleFilterError):
                 filters.workspace(self.root, path)
         (self.root / "shortcut").symlink_to(self.source)
         with self.assertRaises(AnsibleFilterError):
             filters.workspace(self.root, "shortcut")
-        inputs = self.source / "files/server"
+        inputs = self.source / "server/files"
         inputs.mkdir(parents=True)
         (inputs / "server.properties").write_text("online-mode=false")
         with self.assertRaises(AnsibleFilterError):
             filters.workspace(self.root, "servers/backend")
         (inputs / "server.properties").unlink()
-        manifest = self.manifest.replace('loader="paper"', 'loader="fabric"') + '[server.packages.proxy]\nmodrinth="fabricproxy-lite"\n'
+        manifest = self.manifest.replace('loader="paper"', 'loader="fabric"') + '[targets.server.packages.proxy]\nmodrinth="fabricproxy-lite"\n'
         (self.source / "enderpin.toml").write_text(manifest)
         with self.assertRaises(AnsibleFilterError):
             filters.workspace(self.root, "servers/backend")
-        (self.source / "enderpin.lock").write_text('[runtimes.server]\nloader="fabric"\n[[targets.server.packages]]\nname="fabricproxy-lite"\nkind="mod"\nroots=["proxy"]\n')
+        (self.source / "enderpin.lock").write_text('format=4\n[runtimes.server]\nloader="fabric"\n[[targets.server.packages]]\nname="fabricproxy-lite"\nkind="mod"\nroots=["proxy"]\n')
         self.assertEqual(filters.workspace(self.root, "servers/backend")["runtime"], "fabric")
-        (self.source / "enderpin.toml").write_text(manifest.replace('[server]\n', '[server]\ndisabled=["proxy"]\n'))
+        (self.source / "enderpin.toml").write_text(manifest.replace('[targets.server]\n', '[targets.server]\ndisabled=["proxy"]\n'))
         with self.assertRaises(AnsibleFilterError):
             filters.workspace(self.root, "servers/backend")
+
+    def test_root_manifest_named_target_profiles_and_groups(self):
+        manifest = '''format=4
+minecraft="26.3"
+[groups.backend.packages.proxy]
+modrinth="fabricproxy-lite"
+[profiles.backend]
+type="server"
+loader="fabric"
+groups=["backend"]
+file_groups=["backend"]
+[targets.survival]
+profile="backend"
+'''
+        (self.source / "enderpin.toml").write_text(manifest)
+        (self.source / "enderpin.lock").write_text('''format=4
+[runtimes.survival]
+loader="fabric"
+[[targets.survival.packages]]
+name="fabricproxy-lite"
+kind="mod"
+roots=["proxy"]
+''')
+        shared = self.source / "shared/backend/files"
+        shared.mkdir(parents=True)
+        result = filters.workspace(self.source, ".", "survival")
+        self.assertEqual(result["target"], "survival")
+        self.assertEqual(result["inputs"], ["shared/backend/files"])
+        with self.assertRaises(AnsibleFilterError):
+            filters.workspace(self.source, ".", "../survival")
+        (shared / "server.properties").write_text("server-port=25565")
+        with self.assertRaises(AnsibleFilterError):
+            filters.workspace(self.source, ".", "survival")
 
     def test_instance_and_vpn_validation(self):
         filters.instances([self.instance])

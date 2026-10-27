@@ -1,6 +1,6 @@
 # インストール
 
-GitHub Releaseの配布パッケージとソース版から選べます。v0.1.8には、このサイトの新CLIと `files/`・`run/` 構成が含まれます。旧版からの更新前に[移行手順](migration.md)を確認してください。ワールドの自動移動や旧コマンドとの互換対応は行いません。
+GitHub Releaseの配布パッケージとソース版から選べます。公開版v0.1.8はformat 3です。このサイトで説明する名前付きターゲットとformat 4にはソース版が必要です。旧版からの更新前に[移行手順](migration.md)を確認してください。ワールドの自動移動や旧コマンドとの互換対応は行いません。
 
 全5環境のバイナリを同梱したパッケージを、次のURLからインストールします。
 
@@ -89,3 +89,7 @@ git clone https://github.com/aomona/enderpin.git
 cd enderpin
 cargo install --path . --locked
 ```
+
+## format 4のソース版
+
+名前付きターゲットを使う場合はソース版をビルドしてください。v0.1.8以前のWrapperは対応しません。format 4の`init`ではWrapperを自動生成せず、対応する公開版が出てから`wrapper --version`で明示的に固定します。

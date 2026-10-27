@@ -1,6 +1,7 @@
 //! Reproducible Minecraft packages, runtimes and sandboxed launch, independent of a GUI.
 pub mod auth;
 mod bridges;
+pub mod initialize;
 pub mod launch;
 pub mod model;
 pub mod narrator;

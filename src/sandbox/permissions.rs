@@ -121,6 +121,7 @@ pub struct FolderGrant {
 pub struct Plan {
     pub workspace: PathBuf,
     pub side: Side,
+    pub target: String,
     pub platform: String,
     pub minecraft: String,
     pub loader: String,
@@ -150,18 +151,18 @@ pub struct Local {
     pub approved: Option<String>,
 }
 impl Local {
-    fn relative(side: Side) -> String {
-        format!(".enderpin/{}/permissions.toml", side.name())
+    fn relative(side: &str) -> String {
+        format!(".enderpin/{}/permissions.toml", side)
     }
-    pub fn load(ws: &Workspace, side: Side) -> Result<Self> {
+    pub fn load(ws: &Workspace, side: &str) -> Result<Self> {
         storage::read_optional(&ws.root, &Self::relative(side))?
             .map(|text| toml::from_str(&text).context("invalid local permissions"))
             .transpose()
             .map(Option::unwrap_or_default)
     }
-    pub fn save(&self, ws: &Workspace, side: Side) -> Result<()> {
+    pub fn save(&self, ws: &Workspace, side: &str) -> Result<()> {
         let _target = storage::target_lock(&ws.root, side)?;
-        let dir = storage::directory(&ws.root, &format!(".enderpin/{}", side.name()))?;
+        let dir = storage::directory(&ws.root, &format!(".enderpin/{}", side))?;
         let path = storage::safe_path(&ws.root, &Self::relative(side))?;
         let mut file = tempfile::NamedTempFile::new_in(dir)?;
         use std::io::Write;
@@ -172,16 +173,16 @@ impl Local {
     }
 }
 
-pub fn plan(ws: &Workspace, side: Side) -> Result<Plan> {
+pub fn plan(ws: &Workspace, side: &str) -> Result<Plan> {
     let _target = storage::target_lock(&ws.root, side)?;
     plan_locked(ws, side)
 }
 
-pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
+pub(crate) fn plan_locked(ws: &Workspace, side: &str) -> Result<Plan> {
     let target = ws
         .lockfile
         .targets
-        .get(&side)
+        .get(side)
         .context("target is not locked; run sync first")?;
     ensure!(
         target.fingerprint == ws.manifest.fingerprint(side)?,
@@ -189,18 +190,19 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
     );
     let ignores = storage::read_optional(&ws.root, ".enderpinignore")?.unwrap_or_default();
     let packages = target.effective(&crate::model::parse_ignores(&ignores, side)?)?;
-    let config = ws.manifest.target(side);
+    let config = ws.manifest.target(side)?;
     let mut plan = Plan {
         workspace: ws.root.clone(),
-        side,
+        side: config.side(),
+        target: side.into(),
         platform: std::env::consts::OS.into(),
-        minecraft: ws.manifest.minecraft.clone(),
+        minecraft: config.minecraft.clone(),
         loader: config.loader.clone(),
         loader_version: config.loader_version.clone(),
         runtime_sha512: ws
             .lockfile
             .runtimes
-            .get(&side)
+            .get(side)
             .map(|runtime| serde_json::to_vec(runtime).map(|bytes| hash_bytes(&bytes)))
             .transpose()?,
         effective: config.permissions.clone(),
@@ -239,7 +241,7 @@ pub(crate) fn plan_locked(ws: &Workspace, side: Side) -> Result<Plan> {
     }
     plan.limitations.extend(
         plan.effective
-            .validate_for(std::env::consts::OS, side == Side::Client)?,
+            .validate_for(std::env::consts::OS, config.side() == Side::Client)?,
     );
     Ok(plan)
 }

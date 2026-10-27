@@ -108,14 +108,14 @@ def main():
         manifest = tomllib.loads((root / 'enderpin.toml').read_text())
         lock = tomllib.loads((root / 'enderpin.lock').read_text())
         assert manifest['minecraft'] == '1.21.1', manifest['minecraft']
-        assert manifest['client']['loader'] == 'fabric'
-        assert 'lithium' in manifest['client']['packages']
+        assert manifest['targets']['client']['loader'] == 'fabric'
+        assert 'lithium' in manifest['targets']['client']['packages']
         assert set(lock['runtimes']) == {'client'}
         assert any(package['name'] == 'lithium' for package in lock['targets']['client']['packages'])
-        assert list((root / 'run/client/mods').glob('*.jar'))
-        assert not (root / 'run/client/logs/latest.log').exists(), 'setup launched Minecraft'
+        assert list((root / 'client/run/mods').glob('*.jar'))
+        assert not (root / 'client/run/logs/latest.log').exists(), 'setup launched Minecraft'
         assert not (root / '.enderpin/client/permissions.toml').exists(), 'setup auto-approved permissions'
-        assert not (root / 'run/server/eula.txt').exists()
+        assert not (root / 'server/run/eula.txt').exists()
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-both-') as directory:
         root = Path(directory)
         result = subprocess.run([str(binary), 'init', '--target', 'all', '--no-interactive',
@@ -131,8 +131,8 @@ def main():
         server_mods = {p['name'] for p in lock['targets']['server']['packages']}
         assert {'lithium', 'sodium'} <= client_mods
         assert 'lithium' in server_mods and 'sodium' not in server_mods
-        assert not (root / 'run/client/logs/latest.log').exists()
-        assert not (root / 'run/server/eula.txt').exists()
+        assert not (root / 'client/run/logs/latest.log').exists()
+        assert not (root / 'server/run/eula.txt').exists()
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-server-') as directory:
         root = Path(directory) / 'server with spaces'
         result = subprocess.run([str(binary), 'init', str(root), '--target', 'server',
@@ -141,8 +141,8 @@ def main():
         assert result.returncode == 0, result.stderr
         lock = tomllib.loads((root / 'enderpin.lock').read_text())
         assert set(lock['runtimes']) == {'server'}
-        assert not (root / 'run/client').exists(), 'server setup prepared a client'
-        assert not (root / 'run/server/eula.txt').exists(), 'setup accepted EULA'
+        assert not (root / 'client/run').exists(), 'server setup prepared a client'
+        assert not (root / 'server/run/eula.txt').exists(), 'setup accepted EULA'
         assert not (root / '.enderpin/server/permissions.toml').exists(), 'setup auto-approved permissions'
         snapshot = (root / 'enderpin.lock').read_bytes()
         for flags in [[], ['--locked', '--offline']]:
@@ -153,7 +153,7 @@ def main():
         result = subprocess.run([str(binary), '-C', str(root), 'run', '--target', 'server',
             '--no-interactive', '--offline', '--accept-eula'], capture_output=True, text=True, timeout=30)
         assert result.returncode != 0 and 'approval' in result.stderr.lower(), result.stderr
-        assert not (root / 'run/server/eula.txt').exists(), 'unapproved run started Minecraft'
+        assert not (root / 'server/run/eula.txt').exists(), 'unapproved run started Minecraft'
         assert not (root / '.enderpin/server/permissions.toml').exists(), 'run auto-approved permissions'
     with tempfile.TemporaryDirectory(prefix='enderpin-setup-velocity-cancel-') as directory:
         root = Path(directory)

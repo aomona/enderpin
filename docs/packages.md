@@ -10,7 +10,7 @@ enderpin list --target all
 enderpin sync --target all
 ```
 
-`--target client` が標準です。`--target server` はサーバーだけ、`--target all` の追加は共通指定を編集して両側を同期します。検索は1つの対象を指定します。
+`--target client`が標準です。任意のターゲット名を指定でき、`--target all`は宣言された全対象へ直接追加します。共有宣言はmanifestの`groups.<名前>.packages`で編集してください。検索は一つの対象を指定します。
 
 別のPCではGitから構成・ロックを取得し、必要な対象だけを同期します。
 
