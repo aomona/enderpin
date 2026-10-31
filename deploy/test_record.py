@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import yaml
+from ansible.parsing.vault import VaultLib, VaultSecret
 
 import cd
 import record
@@ -125,6 +126,27 @@ class RecordTests(unittest.TestCase):
         self.assertIn("revision-2", diff)
         self.assertNotIn(self.secret, diff)
         self.assertNotIn(record.digest(self.secret.encode()), diff)
+
+    def test_real_vault_and_failing_ansible_cannot_publish_secret_output(self):
+        playbooks = self.root / "deploy/ansible"
+        playbooks.mkdir(parents=True)
+        (playbooks / "deploy.yml").write_text(yaml.safe_dump([{
+            "hosts": "localhost", "gather_facts": False, "tasks": [
+                {"ansible.builtin.debug": {"var": "enderpin_forwarding_secret"}},
+                {"ansible.builtin.fail": {"msg": "{{ enderpin_forwarding_secret }}"}},
+            ]}]))
+        password = "vault-password-do-not-publish"
+        vault = VaultLib([("default", VaultSecret(password.encode()))])
+        encrypted = vault.encrypt(yaml.safe_dump({"enderpin_forwarding_secret": self.secret}).encode()).decode()
+        inventory = {"_meta": {"hostvars": {"localhost": {"ansible_connection": "local"}}}}
+        output = io.StringIO()
+        with patch.dict(os.environ, ENDERPIN_VAULT=encrypted, ENDERPIN_VAULT_PASSWORD=password), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), patch.object(record, "digest") as digest:
+            with self.assertRaises(ValueError) as error:
+                cd.apply(self.root, inventory, "a" * 40, False)
+            digest.assert_not_called()
+        for secret in [password, self.secret, record.digest(self.secret.encode())]:
+            self.assertNotIn(secret, output.getvalue() + str(error.exception))
 
     def test_ignored_native_files_are_not_silently_deployed(self):
         source = self.root / "workspace"
