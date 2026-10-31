@@ -1,4 +1,6 @@
 # Copy to .github/workflows/deploy.yml in the server configuration repository.
+# Configure required reviewers on the minecraft-production environment.
+# Both jobs need the same trusted controller storage for binaries and last.json.
 name: Deploy Minecraft network
 on:
   push:
@@ -8,10 +10,15 @@ permissions:
 concurrency:
   group: minecraft-production
   cancel-in-progress: false
+env:
+  ENDERPIN_SECRET_REFERENCE: github:ENDERPIN_VAULT
+  ENDERPIN_SECRET_REVISION: ${{ vars.ENDERPIN_SECRET_REVISION }}
+  ENDERPIN_MANAGE_VPN: ${{ vars.ENDERPIN_MANAGE_VPN }}
+  ENDERPIN_STATE: /var/lib/enderpin-cd
 jobs:
-  deploy:
+  plan:
     runs-on: [self-hosted, linux, enderpin-cd]
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -21,10 +28,48 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/enderpin-ansible"
           "$RUNNER_TEMP/enderpin-ansible/bin/pip" install -r deploy/ansible/requirements.txt
-      - name: Apply the pushed commit
+      - name: Prepare the non-secret manifest and effective diff
+        run: |
+          mkdir -p "$RUNNER_TEMP/enderpin-review"
+          "$RUNNER_TEMP/enderpin-ansible/bin/python" -B deploy/cd.py plan \
+            --manifest "$RUNNER_TEMP/enderpin-review/manifest.json" \
+            --previous "$ENDERPIN_STATE/last.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-review
+          path: ${{ runner.temp }}/enderpin-review/
+          if-no-files-found: error
+          retention-days: 30
+  deploy:
+    needs: plan
+    environment: minecraft-production
+    runs-on: [self-hosted, linux, enderpin-cd]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: deployment-review
+          path: ${{ runner.temp }}/enderpin-review/
+      - name: Install deployment tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/enderpin-ansible"
+          "$RUNNER_TEMP/enderpin-ansible/bin/pip" install -r deploy/ansible/requirements.txt
+      - name: Apply exactly the reviewed inputs
         env:
-          ENDERPIN_INVENTORY: ${{ secrets.ENDERPIN_INVENTORY }}
           ENDERPIN_VAULT: ${{ secrets.ENDERPIN_VAULT }}
           ENDERPIN_VAULT_PASSWORD: ${{ secrets.ENDERPIN_VAULT_PASSWORD }}
-          ENDERPIN_MANAGE_VPN: ${{ vars.ENDERPIN_MANAGE_VPN }}
-        run: '"$RUNNER_TEMP/enderpin-ansible/bin/python" deploy/cd.py'
+        run: |
+          "$RUNNER_TEMP/enderpin-ansible/bin/python" -B deploy/cd.py apply \
+            --manifest "$RUNNER_TEMP/enderpin-review/manifest.json" \
+            --previous "$ENDERPIN_STATE/last.json" --record "$ENDERPIN_STATE/last.json"
+          cp "$ENDERPIN_STATE/last.json" "$RUNNER_TEMP/enderpin-review/applied.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-applied
+          path: ${{ runner.temp }}/enderpin-review/applied.json
+          if-no-files-found: error
+          retention-days: 90

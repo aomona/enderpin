@@ -151,6 +151,17 @@
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0700'
+- name: Check staged binary content before executing it
+  ansible.builtin.stat:
+    path: "{{ staged.path }}/enderpin"
+    checksum_algorithm: sha256
+  register: staged_binary
+- name: Require the pinned binary digest
+  ansible.builtin.assert:
+    that:
+      - enderpin_binary_version | length > 0
+      - enderpin_binary_sha256 is match('^[0-9a-f]{64}$')
+      - staged_binary.stat.checksum == enderpin_binary_sha256
 - name: Verify and cache all locked downloads before stopping the live server
   become_user: "{{ instance_user }}"
   ansible.builtin.command:

@@ -1,5 +1,7 @@
 # ワークスペースとVelocity統合のデプロイ
 
+非秘密inventoryの版管理、固定バイナリ、適用前のmanifest/diffレビューは[デプロイ入力のレビューと記録](deployment-review.md)を参照してください。
+
 一つのmanifestに名前付きターゲットを宣言し、Ansible inventoryのworkspaceとtargetで配布対象・配置先を指定します。VelocityとPaper/Fabricを同じホストにも別ホストにも配置できます。OSはDebian 12以降またはUbuntu 24.04以降のsystemd環境を対象としたテンプレートです。ハードウェアやクラウド事業者は固定しません。
 
 ## リポジトリとバージョン

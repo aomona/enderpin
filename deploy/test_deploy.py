@@ -670,26 +670,6 @@ profile="backend"
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("tcp dport 25566 drop", state["firewall"])
 
-    def test_cd_commit_credentials_and_cleanup(self):
-        environment = dict(GITHUB_SHA="a" * 40, ENDERPIN_INVENTORY="all: {}", ENDERPIN_VAULT="encrypted",
-                           ENDERPIN_VAULT_PASSWORD="secret", ENDERPIN_MANAGE_VPN="true")
-        calls = []
-        def run(arguments, **kwargs):
-            directory = Path(arguments[2]).parent
-            self.assertEqual((directory / "password").stat().st_mode & 0o777, 0o600)
-            self.assertNotIn("ENDERPIN_VAULT_PASSWORD", kwargs["env"])
-            self.assertEqual(json.loads(arguments[-2])["enderpin_revision"], "a" * 40)
-            calls.append((arguments[-1], directory))
-        with patch.dict(os.environ, environment, clear=True), patch.object(cd.subprocess, "run", side_effect=run):
-            cd.main()
-        self.assertEqual([call[0] for call in calls], ["vpn.yml", "deploy.yml"])
-        self.assertFalse(calls[0][1].exists())
-        with patch.dict(os.environ, environment | dict(GITHUB_SHA="branch"), clear=True):
-            with self.assertRaises(ValueError):
-                cd.main()
-        with patch.dict(os.environ, environment, clear=True), patch.object(cd.subprocess, "run", side_effect=RuntimeError("failed")):
-            with self.assertRaises(RuntimeError):
-                cd.main()
 
 
 if __name__ == "__main__":

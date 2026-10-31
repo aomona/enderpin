@@ -10,6 +10,9 @@ all:
     # Native binary for read-only config inspection on the controller (schema v1).
     enderpin_inspector: /opt/enderpin/bin/enderpin
     enderpin_binary: /opt/enderpin/bin/linux-x86_64/enderpin
+    enderpin_binary_version: v0.2.0
+    # Replace with the reviewed executable's SHA-256 (not the archive digest).
+    enderpin_binary_sha256: REPLACE_WITH_REVIEWED_BINARY_SHA256
     enderpin_accept_eula: false # Set true only after reviewing the Minecraft EULA.
     enderpin_proxy_address: 10.77.0.1
     enderpin_backend_interface: epvpn
