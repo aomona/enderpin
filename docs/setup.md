@@ -10,7 +10,7 @@ enderpin init my-network --target survival --type server \
 
 省略した版やローダーは端末で選べます。`--mods lithium`はFabric用です。`--yes`は選択を省略する指定で、実行権限の承認には使いません。`--type proxy --loader velocity`には`--loader-version`が必要です。
 
-認証を有効にしたクライアントでは、`init`・`sync`・`update` が起動時と共通の対応表を使い、ランタイムやパッケージの重いダウンロード前にMinecraft・Fabric・Javaの対応を検査します。Fabricの版を省略した場合はupstreamのstableを選びますが、認証アダプター未対応なら停止して明示的な固定を案内します。自動で古い版へ切り替えたり、認証を無効化したりはしません。現在の対応は [認証とナレーター](sandbox.md#認証とナレーター) を参照してください。サーバーのみの準備にはこのクライアント認証の制限を適用しません。公式authlibのハッシュ検査は認証付き起動時にも行います。
+認証を有効にしたクライアントでは、`init`・`sync`・`update` が起動時と共通の対応表を使い、ランタイムやパッケージの重いダウンロード前にMinecraft・Fabric・Javaの対応を検査します。Fabricの版を省略した場合はupstreamのstableを選びますが、認証アダプター未対応なら停止して明示的な固定を案内します。自動で古い版へ切り替えたり、認証を無効化したりはしません。現在の対応と実証範囲は [認証対応表](auth-compatibility.md) を参照してください。サーバーのみの準備にはこのクライアント認証の制限を適用しません。公式authlibのハッシュ検査は認証付き起動時にも行います。
 
 ## 一つのmanifestから複数環境を用意する
 

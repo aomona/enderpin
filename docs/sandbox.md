@@ -174,8 +174,8 @@ Realms・通報・フレンド・プレゼンスの仲介には、アカウン�
 宛先は公式Realms API、およびMinecraft Servicesの必要なパスに固定し、ゲーム指定の資格情報やリダイレクトは使いません。
 `logout` やアカウント変更で仲介を失効させます。既に確立したサーバー接続を切断する操作ではありません。
 
-アダプターはMinecraft 1.21.1 / 1.21.8（Java 21）、26.2 / 26.3（Java 25）、VanillaまたはFabric 0.19.5に限定し、
-公式authlibのハッシュを検査します。未対応版やブリッジ失敗では起動を停止し、生トークンへ戻しません。
+アダプターは[認証対応表](auth-compatibility.md)に記載したMinecraftとJava、VanillaまたはFabric 0.19.5 / 0.20.1に限定し、
+公式authlibとFabric Loaderのハッシュを検査します。未対応版やブリッジ失敗では起動を停止し、生トークンへ戻しません。
 バージョン別・OS別の実測範囲は [検証記録](verification.md) を参照してください。
 旧方式の `profilekeys` キャッシュは仲介へ切り替える起動で削除し、バックアップしません。
 `account_authentication = false` はアカウントを使わない起動で、認証必須サーバーへの自動参加はできません。

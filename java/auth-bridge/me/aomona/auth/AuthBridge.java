@@ -64,6 +64,18 @@ public final class AuthBridge {
         return mapper.getClass().getMethod("readValue", String.class, Class.class).invoke(mapper, json, responseType);
     }
 
+    // Authlib 4 joins through YggdrasilAuthenticationService, bypassing MinecraftClient.
+    public static void joinLegacy(Object service, String hash) throws Throwable {
+        try {
+            if (hash == null || !hash.matches("-?[a-fA-F0-9]{1,40}")) throw new IOException("Invalid server hash");
+            rpc(null, mapper(service.getClass()), "{\"type\":\"join\",\"server_hash\":\"" + hash + "\"}");
+        } catch (Throwable error) {
+            throw (Throwable) service.getClass().getClassLoader()
+                .loadClass("com.mojang.authlib.exceptions.AuthenticationUnavailableException")
+                .getConstructor(String.class).newInstance("Host authentication broker refused server join");
+        }
+    }
+
     public static java.net.HttpURLConnection serviceConnection(Object client, URL url) throws Throwable {
         Field token = client.getClass().getDeclaredField("accessToken"); token.setAccessible(true);
         if (token.get(client) == null) {

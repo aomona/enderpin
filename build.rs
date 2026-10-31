@@ -76,6 +76,11 @@ fn main() {
         &["me/aomona/sandbox/NativePaths.class"],
         None,
     );
+    fs::copy(
+        "java/auth-bridge/auth-adapters.properties",
+        classes.join("auth-adapters.properties"),
+    )
+    .expect("copy verified authentication mappings");
     let manifest = output.join("auth-manifest.mf");
     fs::write(
         &manifest,
@@ -87,6 +92,7 @@ fn main() {
         &classes,
         "auth-bridge.jar",
         &[
+            "auth-adapters.properties",
             "me/aomona/auth/AuthAgent.class",
             "me/aomona/auth/AuthAgent$1.class",
             "me/aomona/auth/MethodAdapter.class",

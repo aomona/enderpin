@@ -31,6 +31,7 @@ export default defineConfig({
         { text: 'enderpin.toml の設定', link: '/configuration' },
         { text: '困ったときは', link: '/troubleshooting' },
         { text: '対応環境と制限', link: '/platforms' },
+        { text: '認証アダプターの対応', link: '/auth-compatibility' },
       ] },
       { text: '開発する', items: [
         { text: '開発と検証', link: '/contributing' },

@@ -19,6 +19,7 @@ final class MethodAdapter {
 
     static byte[] transformFileDialog(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 4); }
     static byte[] transformDrop(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 5); }
+    static byte[] transformLegacySession(byte[] source) throws IOException { return new MethodAdapter().adapt(source, 6); }
 
     private byte[] adapt(byte[] source, int mode) throws IOException {
         boolean crypt = mode == 1;
@@ -55,6 +56,7 @@ final class MethodAdapter {
         int choose = methodRef("me/aomona/auth/AuthBridge", "chooseFiles", "(Ljava/lang/Class;Z)Ljava/lang/String;");
         int drop = methodRef("me/aomona/auth/AuthBridge", "filesDrop", "(Ljava/lang/Object;Ljava/util/List;)V");
         int service = methodRef("me/aomona/auth/AuthBridge", "serviceConnection", "(Ljava/lang/Object;Ljava/net/URL;)Ljava/net/HttpURLConnection;");
+        int legacyJoin = methodRef("me/aomona/auth/AuthBridge", "joinLegacy", "(Ljava/lang/Object;Ljava/lang/String;)V");
         int codeName = text("Code");
         for (int i = 0; i < methods; i++) {
             int flags = in.readUnsignedShort(), name = in.readUnsignedShort(), desc = in.readUnsignedShort();
@@ -76,6 +78,8 @@ final class MethodAdapter {
                 && "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Lorg/lwjgl/PointerBuffer;Ljava/lang/CharSequence;Z)Ljava/lang/String;".equals(descriptor) ? 7 : -1;
             if (mode == 5) kind = (flags & 0x0008) == 0 && "(Ljava/util/List;)V".equals(descriptor)
                 && Set.of("onFilesDrop", "a", "method_29638").contains(method) ? 8 : -1;
+            if (mode == 6) kind = (flags & 0x0008) == 0 && "joinServer".equals(method)
+                && "(Lcom/mojang/authlib/GameProfile;Ljava/lang/String;Ljava/lang/String;)V".equals(descriptor) ? 10 : -1;
             String original = kind == 8 ? "onFilesDrop" : kind == 6 ? "connect" : kind == 3 ? "readPrivateKey" : kind == 4 ? "writePrivateKey" : method;
             ByteArrayOutputStream saved = new ByteArrayOutputStream(); DataOutputStream member = new DataOutputStream(saved);
             member.writeShort(flags); member.writeShort(kind < 0 ? name : text("mona$original$" + original)); member.writeShort(desc);
@@ -99,8 +103,9 @@ final class MethodAdapter {
                 if (kind == 7) code = new byte[] { 0x13, (byte)(thisClass >>> 8), (byte)thisClass, 0x15, 0x04,
                     (byte)0xb8, (byte)(choose >>> 8), (byte)choose, (byte)0xb0 };
                 if (kind == 8) code = new byte[] { 0x2a, 0x2b, (byte)0xb8, (byte)(drop >>> 8), (byte)drop, (byte)0xb1 };
+                if (kind == 10) code = new byte[] { 0x2a, 0x2d, (byte)0xb8, (byte)(legacyJoin >>> 8), (byte)legacyJoin, (byte)0xb1 };
                 wrapper.writeShort(codeName); wrapper.writeInt(12 + code.length);
-                wrapper.writeShort(mode >= 1 ? 2 : 5); wrapper.writeShort(kind == 7 ? 5 : kind == 8 || kind == 5 ? 2 : kind == 6 || crypt ? 1 : kind == 2 ? 4 : 3);
+                wrapper.writeShort(mode >= 1 ? 2 : 5); wrapper.writeShort(kind == 10 ? 4 : kind == 7 ? 5 : kind == 8 || kind == 5 ? 2 : kind == 6 || crypt ? 1 : kind == 2 ? 4 : 3);
                 wrapper.writeInt(code.length); wrapper.write(code); wrapper.writeShort(0); wrapper.writeShort(0);
                 wrappers.add(bytes.toByteArray());
             }

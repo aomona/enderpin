@@ -9,6 +9,7 @@ public class AdapterSmoke {
             try (ZipFile zip = new ZipFile(jar)) {
                 byte[] source = zip.getInputStream(zip.getEntry(name + ".class")).readAllBytes();
                 byte[] output = switch (mode) {
+                    case "legacy-session" -> MethodAdapter.transformLegacySession(source);
                     case "auth" -> MethodAdapter.transform(source);
                     case "crypt" -> MethodAdapter.transformPrivateKeys(source);
                     case "desktop" -> MethodAdapter.transformDesktop(source);
