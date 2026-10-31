@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from ansible.errors import AnsibleFilterError
 from jinja2 import Environment, StrictUndefined
+from ansible.plugins.filter.core import FilterModule as CoreFilters
 import yaml
 
 BASE = Path(__file__).resolve().parent
@@ -22,6 +23,9 @@ BINARY = BASE.parent / "target/debug/enderpin"
 spec = importlib.util.spec_from_file_location("enderpin_filters", BASE / "ansible/filter_plugins/enderpin.py")
 filters = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(filters)
+spec = importlib.util.spec_from_file_location("native_settings", BASE / "ansible/filter_plugins/native_settings.py")
+native = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native)
 spec = importlib.util.spec_from_file_location("enderpin_cd", BASE / "cd.py")
 cd = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cd)
@@ -39,7 +43,7 @@ class DeploymentTests(unittest.TestCase):
         self.workspace = partial(filters.workspace, inspector=str(BINARY))
         self.deployment = partial(filters.deployment, inspector=str(BINARY))
         self.prepare_lock()
-        self.instance = dict(name="backend", workspace="servers/backend", target="server", address="10.77.0.2", port=25566, memory_mib=1024)
+        self.instance = dict(name="backend", workspace="servers/backend", target="server", address="10.77.0.2", port=25566, integration="velocity")
         self.inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]["vars"]
         self.inventory["enderpin_inspector"] = str(BINARY)
 
@@ -98,7 +102,7 @@ class DeploymentTests(unittest.TestCase):
             self.workspace(self.root, "servers/backend", "server")
 
     def test_workspace_boundaries_and_required_fabric_proxy(self):
-        self.assertEqual(self.workspace(self.root, "servers/backend", "server")["runtime"], "paper")
+        self.assertEqual(self.workspace(self.root, "servers/backend", "server", integration="velocity")["runtime"], "paper")
         for path in ["..", str(self.source)]:
             with self.assertRaises(AnsibleFilterError):
                 self.workspace(self.root, path, "server")
@@ -108,22 +112,23 @@ class DeploymentTests(unittest.TestCase):
         inputs = self.source / "server/files"
         inputs.mkdir(parents=True)
         (inputs / "server.properties").write_text("online-mode=false")
+        source = self.workspace(self.root, "servers/backend", "server", integration="velocity")
         with self.assertRaises(AnsibleFilterError):
-            self.workspace(self.root, "servers/backend", "server")
+            native.native_settings(source, self.instance)
         (inputs / "server.properties").unlink()
         manifest = self.manifest.replace('loader="paper"', 'loader="fabric"') + '[targets.server.packages.proxy]\nmodrinth="fabricproxy-lite"\n'
         (self.source / "enderpin.toml").write_text(manifest)
         with self.assertRaises(AnsibleFilterError):
-            self.workspace(self.root, "servers/backend", "server")
+            self.workspace(self.root, "servers/backend", "server", integration="velocity")
         self.prepare_lock()
         with self.assertRaisesRegex(AnsibleFilterError, "FabricProxy-Lite must be present"):
-            self.workspace(self.root, "servers/backend", "server")
+            self.workspace(self.root, "servers/backend", "server", integration="velocity")
         self.prepare_lock(packages=["proxy"])
-        self.assertEqual(self.workspace(self.root, "servers/backend", "server")["runtime"], "fabric")
+        self.assertEqual(self.workspace(self.root, "servers/backend", "server", integration="velocity")["runtime"], "fabric")
         (self.source / "enderpin.toml").write_text(manifest.replace('[targets.server]\n', '[targets.server]\ndisabled=["proxy"]\n'))
         self.prepare_lock()
         with self.assertRaises(AnsibleFilterError):
-            self.workspace(self.root, "servers/backend", "server")
+            self.workspace(self.root, "servers/backend", "server", integration="velocity")
 
     def test_root_manifest_named_target_profiles_and_groups(self):
         manifest = '''format=4
@@ -149,7 +154,7 @@ profile="backend"
             self.workspace(self.source, ".", "../survival")
         (shared / "server.properties").write_text("server-port=25565")
         with self.assertRaises(AnsibleFilterError):
-            self.workspace(self.source, ".", "survival")
+            native.native_settings(self.workspace(self.source, ".", "survival"), self.instance)
 
     def test_inventory_requires_explicit_target(self):
         missing = {key: value for key, value in self.instance.items() if key != "target"}
@@ -165,6 +170,7 @@ profile="backend"
         instances = [instance for host in hosts.values() for instance in host["enderpin_instances"]]
         filters.instances(instances)
         environment = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+        environment.filters.update({key: CoreFilters().filters()[key] for key in ["combine", "to_nice_yaml"]})
         environment.filters.update(filters.FilterModule().filters())
         environment.filters["to_json"] = json.dumps
         templates = {name: environment.from_string((BASE / "ansible/templates" / name).read_text())
@@ -223,6 +229,7 @@ profile="backend"
 
     def test_rendered_configuration_and_secret_consistency(self):
         environment = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+        environment.filters.update({key: CoreFilters().filters()[key] for key in ["combine", "to_nice_yaml"]})
         environment.filters.update(filters.FilterModule().filters())
         environment.filters["to_json"] = json.dumps
         variables = self.inventory | dict(instance=self.instance | dict(motd="サーバー 🐈"),
@@ -235,6 +242,8 @@ profile="backend"
             self.inventory["enderpin_proxy_address"])
         def render(name):
             return environment.from_string((BASE / "ansible/templates" / name).read_text()).render(**variables)
+        variables["source"]["native"]["velocity"] = 'motd = "サーバー 🐈"\n'
+        variables["source"]["native"]["velocity_keys"] = ["motd"]
         proxy = tomllib.loads(render("velocity.toml.j2"))
         self.assertEqual(proxy["player-info-forwarding-mode"], "modern")
         self.assertEqual(proxy["forced-hosts"], {})
@@ -254,6 +263,7 @@ profile="backend"
         self.assertNotIn('flush ruleset', firewall)
         service = render("enderpin.service.j2")
         self.assertIn("--service --offline", service)
+        self.assertNotIn("--memory", service)
         self.assertIn("KillMode=mixed", service)
         self.assertIn("Requires=openvpn-client@enderpin.service", service)
         self.assertIn("route-nopull", render("openvpn-client.conf.j2"))
@@ -285,6 +295,148 @@ profile="backend"
         for invalid in [{}, [{}], [old[0] | dict(interface='bad"')]]:
             with self.assertRaises(AnsibleFilterError):
                 filters.transition(old, invalid, [], {})
+
+    def test_native_ownership_and_reserved_keys(self):
+        inputs = self.source / "server/files"
+        (inputs / "config").mkdir(parents=True)
+        source = self.workspace(self.root, "servers/backend", "server")
+        fixtures = {
+            "server.properties": "motd=Hello\nview-distance=6\n",
+            "velocity.toml": 'motd="Hello"\n[advanced]\ncompression-threshold=128\n',
+            "config/FabricProxy-Lite.toml": "custom=true\n",
+            "config/paper-global.yml": "chunks:\n  auto-save-interval: 100\n",
+            "spigot.yml": "settings:\n  sample-count: 8\n",
+        }
+        for name, content in fixtures.items():
+            (inputs / name).write_text(content)
+        source = self.workspace(self.root, "servers/backend", "server")
+        self.assertEqual(native.native_settings(source, {}), {})
+        result = native.native_settings(source, self.instance)
+        self.assertEqual(result["properties"], fixtures["server.properties"])
+        self.assertEqual(result["velocity"], fixtures["velocity.toml"])
+        self.assertEqual(result["spigot"]["settings"]["sample-count"], 8)
+        conflicts = {
+            "server.properties": ["online-mode=true", "server-port: 25565", "server-ip 127.0.0.1", r"online\u002dmode=false", r"online\-mode=false", "# comment\\\nonline-mode=true"],
+            "velocity.toml": ['bind="0.0.0.0:25565"', '[servers]\nlobby="x"', '"online-mode"=true'],
+            "config/FabricProxy-Lite.toml": ['secret="DO_NOT_LOG_THIS"', "hackOnlineMode=false"],
+            "config/paper-global.yml": ['proxies:\n  velocity:\n    secret: DO_NOT_LOG_THIS', "proxies: {}\nproxies: {}"],
+            "spigot.yml": ["settings: {bungeecord: false}"],
+            "forwarding.secret": ["DO_NOT_LOG_THIS"],
+        }
+        for name, values in conflicts.items():
+            for content in values:
+                with self.subTest(name=name, content=content):
+                    (inputs / name).write_text(content)
+                    before = {p: p.read_bytes() for p in inputs.rglob("*") if p.is_file()}
+                    with self.assertRaises(AnsibleFilterError) as error:
+                        native.native_settings(source, self.instance)
+                    self.assertNotIn("DO_NOT_LOG_THIS", str(error.exception))
+                    self.assertEqual(before, {p: p.read_bytes() for p in before})
+            if name in fixtures:
+                (inputs / name).write_text(fixtures[name])
+            else:
+                (inputs / name).unlink()
+        shared = self.source / "shared/common/files"
+        shared.mkdir(parents=True)
+        (shared / "server.properties").write_text("online-mode=false")
+        with self.assertRaises(AnsibleFilterError):
+            native.native_settings(source | dict(inputs=["server/files", "shared/common/files"]), self.instance)
+
+    def test_normal_mode_preserves_native_files_and_has_no_proxy_requirement(self):
+        inputs = self.source / "server/files"
+        inputs.mkdir(parents=True)
+        properties = inputs / "server.properties"
+        properties.write_bytes(b"# initialized\nonline-mode=true\nserver-port=25565\n")
+        before = properties.read_bytes()
+        (self.source / "enderpin.toml").write_text(self.manifest.replace('loader="paper"', 'loader="fabric"'))
+        self.prepare_lock()
+        source = self.workspace(self.root, "servers/backend", "server")
+        self.assertEqual(native.native_settings(source, {}), {})
+        self.assertEqual(properties.read_bytes(), before)
+        filters.instances([self.instance | dict(integration="none")])
+        for key in ["memory_mib", "properties", "motd", "show_max_players"]:
+            with self.assertRaises(AnsibleFilterError):
+                filters.instances([self.instance | {key: 1024}])
+        environment = Environment(undefined=StrictUndefined)
+        environment.filters.update(filters.FilterModule().filters())
+        environment.filters["to_json"] = json.dumps
+        firewall = environment.from_string((BASE / "ansible/templates/firewall.nft.j2").read_text()).render(
+            enderpin_protected=self.deployment([self.instance | dict(integration="none")], self.root, "lo", "127.0.0.1"))
+        self.assertNotIn("tcp dport", firewall)
+
+    def test_native_validation_precedes_host_mutation_and_generation_is_explicit(self):
+        play = yaml.safe_load((BASE / "ansible/deploy.yml").read_text())[0]
+        host_block = next(task["block"] for task in play["tasks"] if "block" in task)
+        names = [task["name"] for task in host_block]
+        self.assertLess(names.index("Validate and stage every instance"), names.index("Protect both old and candidate backend ports"))
+        block = yaml.safe_load((BASE / "ansible/stage.yml").read_text())
+        names = [task["name"] for task in block]
+        self.assertLess(names.index("Validate reserved native keys before staging"), names.index("Create isolated instance account"))
+        for task in block:
+            module = task.get("ansible.builtin.template", task.get("ansible.builtin.copy", {}))
+            if "/files/" in module.get("dest", ""):
+                self.assertIn("instance.integration", task["when"])
+                self.assertIn("staged.path", module["dest"])
+
+    def test_ansible_stages_native_settings_without_editing_checkout(self):
+        inputs = self.source / "server/files"
+        (inputs / "config").mkdir(parents=True)
+        (inputs / "server.properties").write_text("motd=Keep me\nview-distance=7\n")
+        (inputs / "velocity.toml").write_text('motd="Keep me"\n[advanced]\ncompression-threshold=128\n')
+        (inputs / "config/paper-global.yml").write_text("chunks: {auto-save-interval: 100}\n")
+        (inputs / "spigot.yml").write_text("settings: {sample-count: 8}\n")
+        before = {p: p.read_bytes() for p in self.source.rglob("*") if p.is_file()}
+        block = yaml.safe_load((BASE / "ansible/stage.yml").read_text())
+        start = next(i for i, task in enumerate(block) if task["name"] == "Copy manifest and lock without worlds or credentials")
+        end = next(i for i, task in enumerate(block) if task["name"] == "Stage the reviewed Enderpin binary")
+        stage_tasks = block[start:end]
+        for task in stage_tasks:
+            for module, arguments in task.items():
+                if module.startswith("ansible.builtin.") and isinstance(arguments, dict) and "group" in arguments:
+                    arguments["group"] = str(os.getgid())
+            if "ansible.builtin.template" in task:
+                task["ansible.builtin.template"]["src"] = str(BASE / "ansible" / task["ansible.builtin.template"]["src"])
+        for mode, runtime in [("none", "fabric"), ("velocity", "paper"), ("velocity", "fabric"), ("velocity", "velocity")]:
+            with self.subTest(mode=mode, runtime=runtime):
+                stage = self.root / (mode + "-" + runtime)
+                stage.mkdir()
+                instance = self.instance | dict(integration=mode)
+                source = dict(path=str(self.source), inputs=["server/files"], target="server", runtime=runtime)
+                source["files"] = {f"server/run/{p.relative_to(inputs)}": f"server/files/{p.relative_to(inputs)}" for p in inputs.rglob("*") if p.is_file()}
+                source["native"] = native.native_settings(source, instance)
+                variables = self.inventory | dict(instance=instance, source=source, staged=dict(path=str(stage)),
+                    instance_user=str(os.getuid()), enderpin_forwarding_secret="a" * 64,
+                    ansible_python_interpreter=sys.executable)
+                playbook = self.root / "stage.yml"
+                playbook.write_text(yaml.safe_dump([dict(hosts="localhost", gather_facts=False, vars=variables, tasks=stage_tasks)]))
+                result = subprocess.run([str(Path(sys.executable).with_name("ansible-playbook")), "-i", "localhost,", "-c", "local", str(playbook)],
+                                        cwd=BASE / "ansible", capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("a" * 64, result.stdout + result.stderr)
+                self.assertEqual(before, {p: p.read_bytes() for p in before})
+                if mode == "none":
+                    self.assertEqual((stage / "server/files/server.properties").read_bytes(), before[inputs / "server.properties"])
+                    self.assertEqual((stage / "server/files/velocity.toml").read_bytes(), before[inputs / "velocity.toml"])
+                    self.assertFalse((stage / "server/files/forwarding.secret").exists())
+                elif runtime == "velocity":
+                    proxy = tomllib.loads((stage / "server/files/velocity.toml").read_text())
+                    self.assertEqual(proxy["motd"], "Keep me")
+                    self.assertEqual(proxy["advanced"]["compression-threshold"], 128)
+                    self.assertEqual(proxy["player-info-forwarding-mode"], "modern")
+                    self.assertEqual((stage / "server/files/forwarding.secret").read_text(), "a" * 64)
+                else:
+                    properties = (stage / "server/files/server.properties").read_text()
+                    self.assertIn("view-distance=7", properties)
+                    self.assertIn("server-port=25566", properties)
+                    if runtime == "paper":
+                        paper = yaml.safe_load((stage / "server/files/config/paper-global.yml").read_text())
+                        spigot = yaml.safe_load((stage / "server/files/spigot.yml").read_text())
+                        self.assertEqual(paper["chunks"]["auto-save-interval"], 100)
+                        self.assertEqual(paper["proxies"]["velocity"]["secret"], "a" * 64)
+                        self.assertEqual(spigot["settings"], {"sample-count": 8, "bungeecord": False})
+                    else:
+                        fabric = tomllib.loads((stage / "server/files/config/FabricProxy-Lite.toml").read_text())
+                        self.assertTrue(fabric["hackOnlineMode"])
 
     def test_vpn_pki_is_persistent(self):
         inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())

@@ -2,11 +2,13 @@ format = 4
 minecraft = "1.21.1"
 
 [targets.lobby]
+memory_mib = 1024
 type = "server"
 loader = "paper"
 loader_version = "133"
 
 [targets.survival]
+memory_mib = 1536
 type = "server"
 loader = "fabric"
 loader_version = "0.16.10"
@@ -16,6 +18,7 @@ modrinth = "fabricproxy-lite"
 kind = "mod"
 
 [targets.proxy]
+memory_mib = 512
 type = "proxy"
 loader = "velocity"
 loader_version = "3.4.0-SNAPSHOT+563"

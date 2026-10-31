@@ -1,8 +1,26 @@
 - name: Read and validate the source workspace
   ansible.builtin.set_fact:
-    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target, enderpin_inspector) }}"
+    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target, enderpin_inspector, instance.integration | default('none')) }}"
     instance_root: "{{ enderpin_root }}/{{ instance.name }}"
     instance_user: "ep_{{ instance.name }}"
+- name: Validate reserved native keys before staging
+  ansible.builtin.assert:
+    that: source | enderpin_native(instance) is mapping
+- name: Read private native inputs for staging
+  ansible.builtin.set_fact:
+    source: "{{ source | combine({'native': source | enderpin_native(instance)}) }}"
+  no_log: true
+- name: Show configuration ownership without native values or secrets
+  ansible.builtin.debug:
+    msg:
+      target: "{{ source.target }}"
+      launch: "{{ source.launch }}"
+      launch_sources: "{{ source.sources }}"
+      native_files: "{{ source.files }}"
+      native_settings_source: "{{ source.inputs }}"
+      integration: "{{ instance.integration | default('none') }}"
+      connection_settings: "{{ dict(address=instance.address, port=instance.port, authentication='Velocity modern forwarding', secret='[REDACTED]') if instance.integration | default('none') == 'velocity' else dict(source='files/') }}"
+      connection_settings_source: "{{ 'inventory and vault (secret redacted)' if instance.integration | default('none') == 'velocity' else 'files/' }}"
 - name: Check for an unmigrated legacy game directory
   ansible.builtin.stat:
     path: "{{ instance_root }}/workspace/run/server"
@@ -15,10 +33,10 @@
   ansible.builtin.assert:
     that:
       - source.runtime == 'velocity' or enderpin_accept_eula | bool
-      - source.runtime == 'velocity' or instance.address not in ['0.0.0.0', '255.255.255.255']
-      - source.runtime != 'velocity' or enderpin_backends | length > 0
-      - source.runtime != 'velocity' or enderpin_try | length > 0
-      - source.runtime != 'velocity' or enderpin_try | difference(enderpin_backends.keys() | list) | length == 0
+      - instance.integration | default('none') != 'velocity' or source.runtime == 'velocity' or instance.address not in ['0.0.0.0', '255.255.255.255']
+      - instance.integration | default('none') != 'velocity' or source.runtime != 'velocity' or enderpin_backends | length > 0
+      - instance.integration | default('none') != 'velocity' or source.runtime != 'velocity' or enderpin_try | length > 0
+      - instance.integration | default('none') != 'velocity' or source.runtime != 'velocity' or enderpin_try | difference(enderpin_backends.keys() | list) | length == 0
 - name: Create isolated instance account
   ansible.builtin.user:
     name: "{{ instance_user }}"
@@ -42,7 +60,7 @@
   register: staged
 - name: Track staging files for cleanup even when validation fails
   ansible.builtin.set_fact:
-    enderpin_staged: "{{ enderpin_staged + [dict(instance=instance, source=source, staged=staged)] }}"
+    enderpin_staged: "{{ enderpin_staged + [dict(instance=instance, source=source | combine({'native': {}}), staged=staged)] }}"
 - name: Make staging workspace accessible to its account
   ansible.builtin.file:
     path: "{{ staged.path }}"
@@ -73,6 +91,7 @@
     group: "{{ instance_user }}"
     mode: preserve
   loop: "{{ source.inputs }}"
+  no_log: true
 - name: Create directories for generated shared inputs
   ansible.builtin.file:
     path: "{{ staged.path }}/{{ source.target }}/files/config"
@@ -87,7 +106,8 @@
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0600'
-  when: source.runtime == 'velocity'
+  when: instance.integration | default('none') == 'velocity' and source.runtime == 'velocity'
+  no_log: true
 - name: Stage persistent forwarding secret for Velocity
   ansible.builtin.copy:
     content: "{{ enderpin_forwarding_secret }}"
@@ -95,7 +115,7 @@
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0600'
-  when: source.runtime == 'velocity'
+  when: instance.integration | default('none') == 'velocity' and source.runtime == 'velocity'
   no_log: true
 - name: Render backend properties
   ansible.builtin.template:
@@ -104,7 +124,8 @@
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0600'
-  when: source.runtime != 'velocity'
+  when: instance.integration | default('none') == 'velocity' and source.runtime != 'velocity'
+  no_log: true
 - name: Render forwarding configuration
   ansible.builtin.template:
     src: "templates/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}.j2"
@@ -112,16 +133,17 @@
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0600'
-  when: source.runtime != 'velocity'
+  when: instance.integration | default('none') == 'velocity' and source.runtime != 'velocity'
   no_log: true
 - name: Disable legacy BungeeCord forwarding
   ansible.builtin.copy:
-    content: "settings:\n  bungeecord: false\n"
+    content: "{{ source.native.spigot | combine({'settings': {'bungeecord': false}}, recursive=true) | to_nice_yaml }}"
     dest: "{{ staged.path }}/{{ source.target }}/files/spigot.yml"
     owner: "{{ instance_user }}"
     group: "{{ instance_user }}"
     mode: '0600'
-  when: source.runtime == 'paper'
+  when: instance.integration | default('none') == 'velocity' and source.runtime == 'paper'
+  no_log: true
 - name: Stage the reviewed Enderpin binary
   ansible.builtin.copy:
     src: "{{ enderpin_binary }}"

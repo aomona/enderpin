@@ -38,14 +38,13 @@ all:
               target: lobby
               address: 10.77.0.2
               port: 25566
-              memory_mib: 1024
-              properties: {view-distance: 6, simulation-distance: 4}
+              integration: velocity
             - name: survival
               workspace: .
               target: survival
               address: 10.77.0.2
               port: 25567
-              memory_mib: 1536
+              integration: velocity
         edge:
           ansible_host: vpn.example.com
           enderpin_instances:
@@ -54,7 +53,7 @@ all:
               target: proxy
               address: 0.0.0.0
               port: 25565
-              memory_mib: 512
+              integration: velocity
     vpn_gateway:
       hosts:
         edge: {}

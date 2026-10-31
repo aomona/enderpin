@@ -14,12 +14,17 @@
           - enderpin_root not in ['/', '/srv', '/var', '/home', '/usr', '/etc']
           - enderpin_revision is match('^[0-9a-f]{40}$')
           - enderpin_instances | enderpin_instances == enderpin_instances
+    - name: Validate explicit Velocity topology
+      ansible.builtin.assert:
+        that:
           - enderpin_backend_interface is match('^[a-zA-Z0-9_-]{1,15}$')
           - enderpin_proxy_address | enderpin_ipv4 == enderpin_proxy_address
-          - enderpin_backends | enderpin_backends == enderpin_backends
-    - name: Require one persistent forwarding secret
+          - enderpin_backends | enderpin_backends | length > 0
+      when: enderpin_instances | selectattr('integration', 'defined') | selectattr('integration', 'equalto', 'velocity') | list | length > 0
+    - name: Require one persistent forwarding secret for explicit integration
       ansible.builtin.assert:
         that: enderpin_forwarding_secret is match('^[0-9a-f]{64}$')
+      when: enderpin_instances | selectattr('integration', 'defined') | selectattr('integration', 'equalto', 'velocity') | list | length > 0
       no_log: true
     - name: Install host tools
       ansible.builtin.apt:
@@ -46,7 +51,7 @@
   tasks:
     - name: Resolve every selected workspace before staging
       ansible.builtin.set_fact:
-        enderpin_desired: "{{ enderpin_instances | enderpin_deployment(enderpin_source_root, enderpin_backend_interface, enderpin_proxy_address, enderpin_inspector) }}"
+        enderpin_desired: "{{ enderpin_instances | enderpin_deployment(enderpin_source_root, enderpin_backend_interface | default('lo'), enderpin_proxy_address | default('127.0.0.1'), enderpin_inspector) }}"
         enderpin_staged: []
     - name: Read the previous deployment record
       ansible.builtin.stat:

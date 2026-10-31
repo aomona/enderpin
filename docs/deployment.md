@@ -1,4 +1,4 @@
-# Velocity・複数サーバーのデプロイ
+# ワークスペースとVelocity統合のデプロイ
 
 一つのmanifestに名前付きターゲットを宣言し、Ansible inventoryのworkspaceとtargetで配布対象・配置先を指定します。VelocityとPaper/Fabricを同じホストにも別ホストにも配置できます。OSはDebian 12以降またはUbuntu 24.04以降のsystemd環境を対象としたテンプレートです。ハードウェアやクラウド事業者は固定しません。
 
@@ -48,16 +48,51 @@ openssl rand -hex 32
 
 `inventory.yml`で次を設定します。
 
-- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。`target`は必須で、manifestに存在するターゲット名を明示します（`server`への自動補完はありません）。同じホストのポートと名前は重複できません。
+- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port。`target`は必須で、manifestに存在する名前を明示します（`server`への自動補完はありません）。同じホストのポートと名前は重複できません。
 - `enderpin_inspector`: コントローラーのOS/CPUで実行できる検証済みEnderpinの絶対パス。`config show --resolved --json` の schema v1 対応版を事前配置します。Ansible はこの[読み取り専用 API](resolved-config.md)で継承・グループ・ロックを検査します。リポジトリ内の Wrapper や Manifest のコマンドは実行しません。配布先のLinuxバイナリとは別に設定できます。
 - `enderpin_binary`: コントローラー上の検証済みLinuxバイナリ。配布先のCPUアーキテクチャに合わせてホストごとに変更できます。ホスト上ではビルドしません。
 - `enderpin_backends`と`enderpin_try`: Velocityから到達できるIPv4:portと接続順序。
 - `enderpin_proxy_address`と`enderpin_backend_interface`: バックエンドへの接続を許可するプロキシの送信元と受信インターフェース。
 - `enderpin_accept_eula`: Minecraft EULAに同意した場合だけ`true`にします。Velocityだけのホストでは不要です。
 
-この任意のAnsibleテンプレートでは、ネイティブ設定の生成元をAnsibleに統一します。`init`による初期設定生成は併用せず、`sync`で準備してください。Ansibleが`server.properties`、`velocity.toml`、`forwarding.secret`、`config/FabricProxy-Lite.toml`、`config/paper-global.yml`、`spigot.yml`を生成します。これらを`shared/<グループ>/files/`や`<名前>/files/`に重ねて置くと配布を拒否します。バックエンドの追加プロパティはinstanceの`properties`辞書で指定します。接続・認証・RCON設定は配布側が最後に固定します。
+## 設定の所有者と通常モード
 
-Fabricワークスペースには有効な直接依存として`modrinth = "fabricproxy-lite"`を指定し、lockに含めてください。Ansibleは`hackOnlineMode = true`と共有secretを設定します。必要な構成ではinstanceに`fabric_proxy_hack_early_send` / `fabric_proxy_hack_message_chain`のbooleanを指定できます。Paperは1.19以降の設定形式を対象とし、modern forwardingを有効、legacy BungeeCordを無効にします。
+runtime版、パッケージ、`memory_mib`、`jvm_args`、ゲーム権限の正本は`enderpin.toml`です。systemdもCLIと同じ解決済みターゲットを使い、`--memory`を追加しません。旧inventoryの`memory_mib`は黙って無視せずエラーにするため、targetまたはprofileへ移してください。
+
+既定の`integration: none`では`init`が作った`<target>/files/`と選択された`shared/<group>/files/`をそのままステージ・配布します。`server.properties`、`velocity.toml`、MOD設定はユーザーが管理し、Ansibleは書き換えません。standalone FabricにはVelocity、FabricProxy-Lite、forwarding secret、proxy用inventory変数は不要です。通常モードのゲームポートには、このテンプレートのバックエンド限定ファイアウォール規則を追加しません。公開範囲はホストのファイアウォールで管理してください。
+
+```yaml
+enderpin_instances:
+  - name: survival
+    workspace: .
+    target: survival
+    address: 127.0.0.1
+    port: 25565
+    # integration: none が既定
+```
+
+通常モードの`address`と`port`は起動後の接続確認先です。`files/server.properties`の`server-ip`・`server-port`（Velocityなら`bind`）と一致させてください。inventoryからネイティブ設定を上書きする指定ではありません。
+
+## 明示的なVelocity統合
+
+サンプルinventoryは全instanceで`integration: velocity`を明示しています。このモードだけが接続・認証設定、バックエンド保護規則、vaultの共有secretを生成します。設定は使い捨てstaging内で生成し、source checkoutを変更しません。その他のネイティブ設定は`files/`に残します。旧inventoryの`properties`、`motd`、`show_max_players`は対応するネイティブファイルへ移してください。
+
+以下は統合モードの予約キーです。target・共有グループのどちらにあっても、同じ値を含め重複指定を切替前に拒否します。値を上書きする順序で衝突を解決しません。
+
+| ファイル | 配布側が所有するキー |
+| --- | --- |
+| `server.properties` | `server-ip`, `server-port`, `online-mode`, `enable-rcon`, `enable-query` |
+| `velocity.toml` | `bind`, `online-mode`, `player-info-forwarding-mode`, `forwarding-secret-file`, `servers`表全体, `forced-hosts`表全体 |
+| `config/FabricProxy-Lite.toml` | `secret`, `hackOnlineMode`, `hackEarlySend`, `hackMessageChain` |
+| `config/paper-global.yml` | `proxies.velocity`全体 |
+| `spigot.yml` | `settings.bungeecord` |
+| `forwarding.secret` | ファイル全体（vaultから供給） |
+
+曖昧な解釈を避けるため、統合対象のpropertiesではエスケープされたキーや未完の継続行、YAMLでは重複キーを拒否します。propertiesの値・コメント、TOMLの予約外設定は保持し、Paper/SpigotのYAMLは予約外設定を保持して再出力します。
+
+Fabricバックエンドは有効な直接依存`modrinth = "fabricproxy-lite"`と、そのlockが必要です。統合時は`online-mode=true`、`hackOnlineMode=true`と共有secretを設定します。instanceの`fabric_proxy_hack_early_send` / `fabric_proxy_hack_message_chain`はbooleanで指定できます。Paperは1.19以降の設定形式を対象とし、バックエンドの`online-mode=false`とmodern forwarding認証を組み合わせ、legacy BungeeCordを無効にします。Velocity自体は`online-mode=true`です。Paperバックエンドを直接公開しないでください。
+
+有効なruntime設定と由来は`enderpin config show --resolved --target survival --json`で確認できます。これはダウンロード・ゲーム起動・workspace変更を行わず、秘密値を出力しません。playbookは解決済みlaunch設定と由来、target、選択ファイル、統合モード、接続設定とその所有者を表示し、nativeファイルの内容やsecretはログに出しません。
 
 同一ホストでは、バックエンドを`127.0.0.1`、プロキシの接続先も`127.0.0.1:port`にし、VPNグループを削除して`vpn.yml`を省略できます。複数ホストの場合はVPN内アドレスなどを指定します。
 
@@ -114,7 +149,7 @@ GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`
 
 ### instanceの廃止・rename・ポート変更
 
-前回のinstance名、target、workspace、runtime、bind address、port、プロキシ許可元を`/etc/enderpin/instances.json`に記録します。削除・rename・これらの値の変更には、旧instance名を`enderpin_decommission`に明示する必要があります。指定なしでは、既存サービスとfirewallを変更する前に拒否します。ポート変更時も同じinstance名を指定します。
+前回のinstance名、target、workspace、runtime、integration、bind address、port、プロキシ許可元を`/etc/enderpin/instances.json`に記録します。削除・rename・これらの値の変更には、旧instance名を`enderpin_decommission`に明示する必要があります。指定なしでは、既存サービスとfirewallを変更する前に拒否します。ポート変更時も同じinstance名を指定します。
 
 ```sh
 # inventoryからold_backendを除く（renameなら新しい名前を追加する）
@@ -140,3 +175,11 @@ Enderpinの`--offline`はEnderpinの固定済み入力の準備に適用しま�
 ## 旧配置の移行
 
 旧workspace/run/serverが残るホストへの配布は切り替え前に停止します。停止・バックアップした上で[format 4への移行](migration.md)を行ってください。配布処理はワールドを自動移動しません。ターゲットのファイル入力と選択された共有グループだけをステージし、共通manifest/lockは同じ内容を使用します。
+
+### 旧Ansibleテンプレートからの移行
+
+1. 現在のworkspace・world・vaultをバックアップします。`<target>/run/`やワールドは削除しません。
+2. inventoryの`memory_mib`を同じ値でmanifestのtarget/profileへ移し、旧inventoryキーを削除します。`properties`は`files/server.properties`、proxyの`motd`・`show_max_players`は`files/velocity.toml`へ移します。
+3. 配備記録がない既存ホストでは、上記の`enderpin_decommission`による初回移行も行います。統合モードの変更も旧サービスの明示停止が必要です。既存Velocity構成を維持する場合はproxy・全バックエンドに`integration: velocity`を設定し、既存のvault secret、接続先、ファイアウォール条件を維持します。ユーザー側のファイルから上表の予約キーだけを取り除き、その他の設定は残します。新規`init`のデフォルトにも予約キーがあるため、統合へ切り替える場合は同じレビューが必要です。
+4. 通常モードへ移す場合は、稼働中に生成済みの設定をレビューして`files/`へ取り込み、認証・接続設定と秘密の配送方法を先に整えます。`integration`だけを外すと認証設定の生成とバックエンド保護規則がなくなります。特にoffline-modeのPaperを公開する変更は行わず、独立運用へ変えるなら`online-mode=true`と公開範囲を確認します。secretをGitへ追加しないでください。
+5. `config show`と通常のlocked検証後に配布します。衝突時はサービス切替前に停止し、成功時もworldディレクトリを置換しません。

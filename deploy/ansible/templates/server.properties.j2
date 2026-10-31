@@ -1,6 +1,4 @@
-{% for key, value in instance.get('properties', {}).items() | sort %}
-{{ key }}={{ value | string | lower if value is boolean else value }}
-{% endfor %}
+{{ source.native.properties }}
 # Connection and authentication settings are controlled by the deployment.
 server-ip={{ instance.address }}
 server-port={{ instance.port }}

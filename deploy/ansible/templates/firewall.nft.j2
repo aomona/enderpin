@@ -5,7 +5,7 @@ table inet enderpin {
     chain input {
         type filter hook input priority -10; policy accept;
 {% for instance in enderpin_protected %}
-{% if instance.runtime != 'velocity' %}
+{% if instance.integration | default('velocity') == 'velocity' and instance.runtime != 'velocity' %}
         iifname "lo" tcp dport {{ instance.port }} accept
         iifname {{ instance.interface | to_json }} ip saddr {{ instance.proxy_address }} tcp dport {{ instance.port }} accept
         tcp dport {{ instance.port }} drop

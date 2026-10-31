@@ -16,7 +16,7 @@ Type=simple
 User=ep_{{ instance.name }}
 Group=ep_{{ instance.name }}
 WorkingDirectory={{ enderpin_root }}/{{ instance.name }}/workspace
-ExecStart={{ enderpin_root }}/{{ instance.name }}/bin/enderpin -C {{ enderpin_root }}/{{ instance.name }}/workspace --cache-dir {{ enderpin_root }}/{{ instance.name }}/cache run --target {{ source.target }} --no-interactive --service --offline --memory {{ instance.memory_mib }}{% if source.runtime != 'velocity' %} --accept-eula{% endif %}
+ExecStart={{ enderpin_root }}/{{ instance.name }}/bin/enderpin -C {{ enderpin_root }}/{{ instance.name }}/workspace --cache-dir {{ enderpin_root }}/{{ instance.name }}/cache run --target {{ source.target }} --no-interactive --service --offline{% if source.runtime != 'velocity' %} --accept-eula{% endif %}
 
 StandardInput=null
 KillMode=mixed
