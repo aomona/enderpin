@@ -124,16 +124,11 @@ VPNはTUN/UDPで、LAN全体の経路やデフォルトルートを変更しま�
 
 ## 手動配布とpushによるCD
 
-```sh
-# 設定リポジトリのコミット済みの内容から実行
-cd deploy/ansible
-../../.venv/bin/ansible-playbook -i inventory.yml deploy.yml \
-  --ask-vault-pass -e @vault.yml -e "enderpin_revision=$(git rev-parse HEAD)"
-```
+[デプロイ入力のレビューと記録](deployment-review.md)に従って、コミット済みinventoryから `deploy/cd.py plan` でmanifest/diffを作り、レビュー後に `deploy/cd.py apply` で適用します。バイナリとcontroller用inspectorはrelease/build識別子と実行ファイルのSHA-256で固定してください。
 
-`deploy/github-actions.yml`を設定リポジトリの`.github/workflows/deploy.yml`にコピーします。既定の配布ブランチは`deploy`です。専用self-hosted runnerには`enderpin-cd`ラベル、SSHの認証・known_hosts、永続PKIディレクトリ、配布用バイナリを用意します。
+`deploy/github-actions.yml`を設定リポジトリの`.github/workflows/deploy.yml`にコピーします。既定の配布ブランチは`deploy`です。専用self-hosted runnerには`enderpin-cd`ラベル、SSHの認証・known_hosts、永続PKIと配布記録ディレクトリ、固定したバイナリを用意します。
 
-GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`（暗号化したvault全文）、`ENDERPIN_VAULT_PASSWORD`を設定します。VPNもCD対象にする場合はRepository variable `ENDERPIN_MANAGE_VPN=true`を設定します。不要なら省略してください。
+inventory全文をGitHub Secretsに保存する旧 `ENDERPIN_INVENTORY` は使いません。非秘密inventoryをGitで版管理し、Secretsには `ENDERPIN_VAULT` と `ENDERPIN_VAULT_PASSWORD` だけを設定します。Repository variable `ENDERPIN_SECRET_REVISION` は秘密のローテーションごとに更新します。VPNも対象にする場合は `ENDERPIN_MANAGE_VPN=true` を設定します。`minecraft-production` Environmentにrequired reviewersを設定し、plan artifactを確認してからapplyを承認します。
 
 このブランチへのpushはMOD・プラグイン・管理設定・定義されたプロセス権限の承認として扱います。workflow、playbook、inventoryもホスト管理権限を持つため、ブランチの書き込み権限と保護ルールを管理してください。別のworkflowから同じ環境への同時配布は避けます。
 

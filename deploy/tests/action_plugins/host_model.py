@@ -1,5 +1,6 @@
 """In-memory host operations for the real Ansible deployment control-flow tests."""
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,6 +25,10 @@ class ActionModule(ActionBase):
             result["ansible_facts"] = dict(os_family="Debian", distribution="Debian")
         elif module == "stat":
             result["stat"] = dict(exists=args["path"] in state["files"])
+            if args.get("checksum_algorithm") == "sha256":
+                content = (Path(args["path"]).read_bytes() if args["path"] == task_vars["enderpin_inspector"]
+                           else state["files"][args["path"]].encode())
+                result["stat"].update(exists=True, checksum=hashlib.sha256(content).hexdigest())
         elif module == "slurp":
             result["content"] = base64.b64encode(state["files"][args["src"]].encode()).decode()
         elif module == "service_facts":

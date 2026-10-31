@@ -6,6 +6,22 @@
   vars:
     enderpin_source_root: "{{ playbook_dir }}/../.."
   pre_tasks:
+    - name: Inspect the pinned controller binary before configuration inspection
+      ansible.builtin.stat:
+        path: "{{ enderpin_inspector }}"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: controller_inspector
+      when: enderpin_instances | length > 0
+    - name: Require the pinned controller inspector digest
+      ansible.builtin.assert:
+        that:
+          - enderpin_inspector is match('^/')
+          - enderpin_inspector_version | length > 0
+          - enderpin_inspector_sha256 is match('^[0-9a-f]{64}$')
+          - controller_inspector.stat.checksum == enderpin_inspector_sha256
+      when: enderpin_instances | length > 0
     - name: Validate deployment identity and platform
       ansible.builtin.assert:
         that:

@@ -203,6 +203,9 @@ class RecordTests(unittest.TestCase):
                 cd.main(["apply", *args, "--record", str(previous)])
             apply.assert_not_called()
             proposed["hosts"]["memory_mib"] = 1024
+            with self.assertRaises(OSError):
+                cd.main(["apply", *args, "--record", str(self.root / "missing/last.json")])
+            apply.assert_not_called()
             cd.main(["apply", *args, "--record", str(previous)])
             apply.assert_called_once()
             self.assertEqual(json.loads(previous.read_bytes()), json.loads(reviewed.read_bytes()))

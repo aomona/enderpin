@@ -1,5 +1,6 @@
 """Validate deployment inputs before touching hosts or rendering secrets."""
 import ipaddress
+import os
 from pathlib import Path
 import re
 import json
@@ -31,7 +32,9 @@ def workspace(source_root, relative, target, inspector, integration="none"):
         raise AnsibleFilterError("enderpin_inspector must be an absolute path to a reviewed controller binary")
     try:
         result = subprocess.run([str(inspector), "-C", str(path), "config", "show", "--resolved",
-                                 "--target", target, "--json"], capture_output=True, text=True, timeout=60)
+                                 "--target", target, "--json"], capture_output=True, text=True, timeout=60,
+                                env={key: value for key, value in os.environ.items()
+                                     if key not in {"ENDERPIN_INVENTORY", "ENDERPIN_VAULT", "ENDERPIN_VAULT_PASSWORD"}})
         if result.returncode:
             failure = json.loads(result.stderr)
             if failure.get("schema_version") == 1 and failure.get("error", {}).get("code") == "unknown_target":

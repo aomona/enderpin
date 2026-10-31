@@ -33,20 +33,34 @@ def manifest(root, inventory_path, revision, config_revision=None, config_sha256
     spec = importlib.util.spec_from_file_location("enderpin_filters", root / "deploy/ansible/filter_plugins/enderpin.py")
     filters = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(filters)
+    spec = importlib.util.spec_from_file_location("native_settings", root / "deploy/ansible/filter_plugins/native_settings.py")
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
     hosts = {}
     for host in record.members(inventory, "minecraft"):
         variables = inventory["_meta"]["hostvars"][host]
-        identity = record.binary(variables["enderpin_binary"], variables["enderpin_binary_version"],
-                                 variables["enderpin_binary_sha256"])
+        instances = filters.instances(variables["enderpin_instances"])
+        identity = inspector = None
+        if instances:
+            identity = record.binary(variables["enderpin_binary"], variables["enderpin_binary_version"],
+                                     variables["enderpin_binary_sha256"])
+            inspector = record.binary(variables["enderpin_inspector"], variables["enderpin_inspector_version"],
+                                      variables["enderpin_inspector_sha256"])
         targets = []
-        for instance in filters.instances(variables["enderpin_instances"]):
+        for instance in instances:
             # The shared filter consumes the canonical Rust configuration interface.
-            source = filters.workspace(root, instance["workspace"], instance.get("target", "server"))
+            integration = instance.get("integration", "none")
+            source = filters.workspace(root, instance["workspace"], instance["target"],
+                                       variables["enderpin_inspector"], integration)
+            native.native_settings(source, instance)
             record.tracked_inputs(root, source)
+            overrides = {key: instance[key] for key in ["address", "port", "fabric_proxy_hack_early_send",
+                         "fabric_proxy_hack_message_chain"] if key in instance} if integration == "velocity" else {}
             targets.append({"instance": instance["name"], "workspace": instance["workspace"],
                             "target": source["target"], "runtime": source["runtime"],
-                            "file_inputs": source["inputs"]})
-        hosts[host] = {"binary": identity, "targets": targets}
+                            "launch": source["launch"], "sources": source["sources"], "files": source["files"],
+                            "integration": integration, "inventory_overrides": overrides})
+        hosts[host] = {"binary": identity, "inspector": inspector, "targets": targets}
     templates = {str(path.relative_to(root)): record.digest(path.read_bytes())
                  for path in sorted((root / "deploy/ansible/templates").glob("*.j2"))}
     return {"schema_version": 1, "source_commit": revision, "configuration": config,
@@ -110,8 +124,12 @@ def main(argv=None):
         reviewed = json.loads(args.manifest.read_bytes())
         if reviewed != proposed:
             raise ValueError("deployment inputs changed after review; generate and review a new plan")
-        apply(ROOT, proposed["inventory"], revision, proposed["manage_vpn"])
-        record.write(args.record, record.encoded(proposed))
+        # Reserve and flush the record before touching hosts; publish only after success.
+        with tempfile.TemporaryDirectory(dir=args.record.parent, prefix=".enderpin-applied-") as directory:
+            pending = Path(directory) / "manifest.json"
+            record.write(pending, record.encoded(proposed))
+            apply(ROOT, proposed["inventory"], revision, proposed["manage_vpn"])
+            pending.replace(args.record)
         print("Deployment applied; input revisions recorded.")
 
 

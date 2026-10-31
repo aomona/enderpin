@@ -1,5 +1,8 @@
 """Run with the Python environment from deploy/ansible/requirements.txt."""
+import contextlib
+import io
 import importlib.util
+import hashlib
 from functools import partial
 import json
 import os
@@ -46,6 +49,10 @@ class DeploymentTests(unittest.TestCase):
         self.instance = dict(name="backend", workspace="servers/backend", target="server", address="10.77.0.2", port=25566, integration="velocity")
         self.inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]["vars"]
         self.inventory["enderpin_inspector"] = str(BINARY)
+        self.inventory["enderpin_inspector_version"] = "test-build"
+        self.inventory["enderpin_inspector_sha256"] = hashlib.sha256(BINARY.read_bytes()).hexdigest()
+        self.inventory["enderpin_binary_version"] = "test-build"
+        self.inventory["enderpin_binary_sha256"] = hashlib.sha256(b"copied fixture").hexdigest()
         self.inventory["enderpin_forwarding_secret"] = "a" * 64
 
     def prepare_lock(self, target="server", packages=(), append=False):
@@ -539,6 +546,75 @@ profile="backend"
         key = (self.root / "pki/tls-crypt.key").read_text().splitlines()
         self.assertEqual(len(key), 18)
         self.assertTrue(all(re.fullmatch(r"[a-f0-9]{32}", line) for line in key[1:-1]))
+
+    def test_review_manifest_uses_real_canonical_settings_without_secret_values_or_hashes(self):
+        root = self.root.resolve()
+        inputs = self.source / "server/files"
+        inputs.mkdir(parents=True)
+        secret = "DO_NOT_PUBLISH_NATIVE_OR_VAULT_123456"
+        content = f"password={secret}\n"
+        (inputs / "private.properties").write_text(content)
+        (self.source / "enderpin.toml").write_text(self.manifest + 'memory_mib=3072\njvm_args=["-Dcredential=' + secret + '"]\n')
+        self.prepare_lock()
+        shutil.copytree(BASE, root / "deploy", ignore=shutil.ignore_patterns("__pycache__"))
+        variables = {key: value for key, value in self.inventory.items() if key != "enderpin_forwarding_secret"}
+        variables.update(enderpin_binary=str(BINARY), enderpin_binary_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest())
+        config = {"all": {"vars": variables, "children": {"minecraft": {"hosts": {
+            "home": {"enderpin_instances": [self.instance | dict(integration="none")]}}}}}}
+        inventory = root / "deploy/ansible/inventory.yml"
+        inventory.write_text(yaml.safe_dump(config))
+        record = cd.record
+        record.run(["git", "init", "-q", str(root)])
+        record.run(["git", "add", "."], cwd=root)
+        record.run(["git", "-c", "user.name=Deployment Test", "-c", "user.email=test@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"], cwd=root)
+        revision = record.run(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        with tempfile.TemporaryDirectory() as output_directory:
+            output = Path(output_directory) / "manifest.json"
+            environment = dict(GITHUB_SHA=revision, ENDERPIN_SECRET_REFERENCE="vault:production",
+                               ENDERPIN_SECRET_REVISION="revision-1", ENDERPIN_VAULT=secret,
+                               ENDERPIN_VAULT_PASSWORD=secret)
+            captured = io.StringIO()
+            with patch.dict(os.environ, environment), patch.object(cd, "ROOT", root), contextlib.redirect_stdout(captured):
+                cd.main(["plan", "--inventory", str(inventory), "--manifest", str(output)])
+            manifest = json.loads(output.read_bytes())
+            target = manifest["hosts"]["home"]["targets"][0]
+            self.assertEqual(target["launch"]["memory_mib"], 3072)
+            self.assertEqual(target["sources"]["memory_mib"], "targets.server")
+            self.assertEqual(target["inventory_overrides"], {})
+            self.assertIn("server/files/private.properties", target["files"].values())
+            self.assertEqual(manifest["source_commit"], revision)
+            self.assertEqual(manifest["secrets"]["revision"], "revision-1")
+            artifacts = output.read_text() + output.with_suffix(".diff").read_text() + captured.getvalue()
+            for value in [secret, hashlib.sha256(secret.encode()).hexdigest(), hashlib.sha256(content.encode()).hexdigest()]:
+                self.assertNotIn(value, artifacts)
+            self.assertNotIn("fingerprint", artifacts)
+            self.assertEqual(record.run(["git", "status", "--porcelain"], cwd=root), b"")
+    def test_real_staged_binary_digest_is_checked_before_execution(self):
+        marker = self.root / "executed"
+        binary = self.root / "binary"
+        binary.write_text("#!/bin/sh\ntouch '" + str(marker) + "'\n")
+        stage = self.root / "stage"
+        stage.mkdir()
+        tasks = yaml.safe_load((BASE / "ansible/stage.yml").read_text())
+        start = next(i for i, task in enumerate(tasks) if task["name"] == "Stage the reviewed Enderpin binary")
+        selected = tasks[start:]
+        for task in selected:
+            task.pop("become_user", None)
+            if "ansible.builtin.copy" in task:
+                task["ansible.builtin.copy"]["group"] = str(os.getgid())
+        variables = dict(enderpin_binary=str(binary), enderpin_binary_version="test-build",
+                         staged=dict(path=str(stage)), instance_user=str(os.getuid()),
+                         instance_root=str(self.root), source=dict(target="server"),
+                         ansible_python_interpreter=sys.executable)
+        for expected, success in [("0" * 64, False), (hashlib.sha256(binary.read_bytes()).hexdigest(), True)]:
+            variables["enderpin_binary_sha256"] = expected
+            playbook = self.root / "binary-check.yml"
+            playbook.write_text(yaml.safe_dump([dict(hosts="localhost", gather_facts=False, vars=variables, tasks=selected)]))
+            result = subprocess.run([str(Path(sys.executable).with_name("ansible-playbook")), "-i", "localhost,",
+                                     "-c", "local", str(playbook)], capture_output=True, text=True)
+            self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+            self.assertEqual(marker.exists(), success)
 
     def run_deployment_model(self, desired, previous, retired=(), failure=None, refuse_stop=None, missing_units=()):
         """Execute real includes/loops/asserts/rescue with isolated host-operation doubles."""
