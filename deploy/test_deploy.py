@@ -438,6 +438,24 @@ profile="backend"
                         fabric = tomllib.loads((stage / "server/files/config/FabricProxy-Lite.toml").read_text())
                         self.assertTrue(fabric["hackOnlineMode"])
 
+    def test_native_preflight_failure_is_actionable_and_redacted(self):
+        inputs = self.source / "server/files/config"
+        inputs.mkdir(parents=True)
+        (inputs / "FabricProxy-Lite.toml").write_text('secret="DO_NOT_LOG_THIS"\n')
+        marker = self.root / "cutover"
+        playbook = self.root / "preflight.yml"
+        playbook.write_text(yaml.safe_dump([dict(hosts="localhost", gather_facts=False,
+            vars=dict(source=dict(path=str(self.source), inputs=["server/files"]), instance=self.instance),
+            tasks=[{"ansible.builtin.set_fact": {"validated_native": "{{ source | enderpin_native(instance) is mapping }}"}},
+                   {"ansible.builtin.copy": {"content": "cutover", "dest": str(marker)}}])]))
+        result = subprocess.run([str(Path(sys.executable).with_name("ansible-playbook")), "-i", "localhost,", "-c", "local", str(playbook)],
+            cwd=BASE / "ansible", capture_output=True, text=True,
+            env=os.environ | {"ANSIBLE_FILTER_PLUGINS": str(BASE / "ansible/filter_plugins")})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Velocity integration conflicts", result.stdout + result.stderr)
+        self.assertNotIn("DO_NOT_LOG_THIS", result.stdout + result.stderr)
+        self.assertFalse(marker.exists())
+
     def test_vpn_pki_is_persistent(self):
         inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())
         inventory["all"]["vars"]["enderpin_pki_directory"] = str(self.root / "pki")
