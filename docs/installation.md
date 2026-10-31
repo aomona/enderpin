@@ -5,23 +5,23 @@ GitHub Releaseの配布パッケージとソース版から選べます。v0.2.0
 全5環境のバイナリを同梱したパッケージを、次のURLからインストールします。
 
 ```sh
-bun install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
+bun install -g https://github.com/aomona/enderpin/releases/download/v0.2.1/enderpin-0.2.1.tgz
 # または
-npm install -g https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz
+npm install -g https://github.com/aomona/enderpin/releases/download/v0.2.1/enderpin-0.2.1.tgz
 enderpin --version
 ```
 
 v0.1.3からは全5環境のネイティブバイナリをnpmパッケージに同梱し、OS・CPUに合うものを起動します。外部URLへの依存やインストール用スクリプト、`bun pm trust` は不要です。pnpmの `blockExoticSubdeps` を有効にしたまま使えます。
 
 ```sh
-pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --help
+pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.1/enderpin-0.2.1.tgz --help
 # 版の確認
-pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --version
+pnpm dlx https://github.com/aomona/enderpin/releases/download/v0.2.1/enderpin-0.2.1.tgz --version
 ```
 
 引数なしではCLIの使い方を表示します。初期セットアップは `init` です。コマンドはその版の `--help` を参照してください。
 
-入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun https://github.com/aomona/enderpin/releases/download/v0.2.0/enderpin-0.2.0.tgz --help` のように起動できます。更新時も希望する版のURLを指定してください。npmレジストリの公開版はv0.1.3のため、`enderpin@latest` ではv0.2.0を取得できません。
+入口の実行にはNode.js 18以上を使います。Node.jsを入れていないBun環境では `bunx --bun https://github.com/aomona/enderpin/releases/download/v0.2.1/enderpin-0.2.1.tgz --help` のように起動できます。更新時も希望する版のURLを指定してください。npmレジストリの公開版はv0.1.3のため、`enderpin@latest` ではv0.2.1を取得できません。
 
 ネイティブ実行ファイルを直接使う場合は、OS・CPUに合った `.tgz` のURLをBunに指定します。
 
@@ -50,7 +50,7 @@ v0.1.5以降には `wrapper` コマンドが含まれます。v0.1.4にはこの
 構成を配る側で、一度だけ生成します。format 4ではv0.2.0以降を指定してください。`init`では自動生成しません。
 
 ```sh
-enderpin wrapper --version 0.2.0
+enderpin wrapper --version 0.2.1
 git add enderpinw enderpinw.ps1 enderpin-wrapper.properties
 git commit -m "Add pinned Enderpin wrapper"
 ```
@@ -92,4 +92,4 @@ cargo install --path . --locked
 
 ## format 4とWrapper
 
-v0.2.0以降を使用してください。v0.1.8以前を固定したWrapperはformat 4に対応しません。既存のWrapperは`enderpin wrapper --version 0.2.0 --force`で更新し、差分を確認してコミットします。
+v0.2.0以降を使用してください。v0.1.8以前を固定したWrapperはformat 4に対応しません。既存のWrapperは`enderpin wrapper --version 0.2.1 --force`で更新し、差分を確認してコミットします。
