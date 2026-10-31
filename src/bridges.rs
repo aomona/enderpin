@@ -62,69 +62,112 @@ pub(crate) fn prepare(root: &Path, target: &str) -> Result<PathBuf> {
     Ok(directory)
 }
 
+pub(crate) struct AuthAdapter {
+    java: u32,
+    filename: &'static str,
+    hash: &'static str,
+    schema: UserAttributesSchema,
+}
+
+impl AuthAdapter {
+    pub(crate) fn for_game(minecraft: &str) -> Result<Self> {
+        let (java, filename, hash, schema) = match minecraft {
+            "1.21.1" => (
+                21,
+                "authlib-6.0.54.jar",
+                "319ea7b53b5e52f62ad3e2b81e9db7f0751240edac548bd74f5f19e35dc21a3b",
+                UserAttributesSchema::Authlib6,
+            ),
+            "1.21.8" => (
+                21,
+                "authlib-6.0.58.jar",
+                "7bea5444e83c8d343e11fb9e45939721f0db4321c5056ac846072e4a0bbe1321",
+                UserAttributesSchema::Authlib6,
+            ),
+            "26.3" => (
+                25,
+                "authlib-10.0.77.jar",
+                "521672866582633a412c82171d3cfa416ecaccdf05a43baf809c16f9aec07068",
+                UserAttributesSchema::Authlib9,
+            ),
+            "26.2" => (
+                25,
+                "authlib-9.0.75.jar",
+                "1f77e70240548b9cd233da0e12938bbbe5597ac9e94f6c6b07577faf1461a951",
+                UserAttributesSchema::Authlib9,
+            ),
+            _ => anyhow::bail!(
+                "authentication broker supports Minecraft 1.21.1, 1.21.8, 26.2 and 26.3; refusing a raw-token fallback"
+            ),
+        };
+        Ok(Self {
+            java,
+            filename,
+            hash,
+            schema,
+        })
+    }
+
+    pub(crate) fn validate_loader(&self, loader: &str, version: Option<&str>) -> Result<()> {
+        ensure!(
+            loader == "vanilla" || (loader == "fabric" && version.is_none_or(|v| v == "0.19.5")),
+            "authentication adapter does not support {loader} {}; authenticated clients require Vanilla or Fabric 0.19.5; pin loader_version = \"0.19.5\" for Fabric; refusing a raw-token fallback",
+            version.unwrap_or("(unspecified)")
+        );
+        Ok(())
+    }
+
+    pub(crate) fn validate_java(&self, major: u32) -> Result<()> {
+        ensure!(
+            major == self.java,
+            "authentication adapter requires Java {}, got {major}; refusing a raw-token fallback",
+            self.java
+        );
+        Ok(())
+    }
+
+    fn validate_authlib(&self, classpath: &[PathBuf]) -> Result<()> {
+        let authlibs: Vec<_> = classpath
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("authlib-"))
+            })
+            .collect();
+        ensure!(
+            authlibs.len() == 1
+                && authlibs[0]
+                    .file_name()
+                    .is_some_and(|name| name == self.filename),
+            "authentication bridge requires the pinned official authlib"
+        );
+        let file = fs::File::open(authlibs[0])?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(1_048_577).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() <= 1_048_576 && format!("{:x}", Sha256::digest(&bytes)) == self.hash,
+            "authlib does not match the verified bridge adapter"
+        );
+        Ok(())
+    }
+}
+
 pub(crate) fn broker(
     runtime: &PreparedRuntime,
     lock: &RuntimeLock,
     session: &crate::auth::Session,
 ) -> Result<OfficialOperations> {
-    let (java, filename, hash, schema) = match lock.minecraft.as_str() {
-        "1.21.1" => (
-            21,
-            "authlib-6.0.54.jar",
-            "319ea7b53b5e52f62ad3e2b81e9db7f0751240edac548bd74f5f19e35dc21a3b",
-            UserAttributesSchema::Authlib6,
-        ),
-        "1.21.8" => (
-            21,
-            "authlib-6.0.58.jar",
-            "7bea5444e83c8d343e11fb9e45939721f0db4321c5056ac846072e4a0bbe1321",
-            UserAttributesSchema::Authlib6,
-        ),
-        "26.3" => (
-            25,
-            "authlib-10.0.77.jar",
-            "521672866582633a412c82171d3cfa416ecaccdf05a43baf809c16f9aec07068",
-            UserAttributesSchema::Authlib9,
-        ),
-        "26.2" => (
-            25,
-            "authlib-9.0.75.jar",
-            "1f77e70240548b9cd233da0e12938bbbe5597ac9e94f6c6b07577faf1461a951",
-            UserAttributesSchema::Authlib9,
-        ),
-        _ => anyhow::bail!(
-            "authentication broker supports Minecraft 1.21.1, 1.21.8, 26.2 and 26.3; refusing a raw-token fallback"
-        ),
-    };
-    ensure!(
-        lock.java.major == java
-            && (lock.loader == "vanilla"
-                || (lock.loader == "fabric" && lock.loader_version == "0.19.5")),
-        "authentication bridge requires the supported Java version and Vanilla or Fabric 0.19.5"
-    );
-    let authlibs: Vec<_> = runtime
-        .classpath
-        .iter()
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("authlib-"))
-        })
-        .collect();
-    ensure!(
-        authlibs.len() == 1 && authlibs[0].file_name().is_some_and(|name| name == filename),
-        "authentication bridge requires the pinned official authlib"
-    );
-    let file = fs::File::open(authlibs[0])?;
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    file.take(1_048_577).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= 1_048_576 && format!("{:x}", Sha256::digest(&bytes)) == hash,
-        "authlib does not match the verified bridge adapter"
-    );
+    let adapter = AuthAdapter::for_game(&lock.minecraft)?;
+    adapter.validate_loader(&lock.loader, Some(&lock.loader_version))?;
+    adapter.validate_java(lock.java.major)?;
+    adapter.validate_authlib(&runtime.classpath)?;
     // Old game-visible private-key caches must not survive switching to host signing.
-    let mut operations =
-        OfficialOperations::new(Arc::new(session.clone()), session.uuid.clone(), schema)?;
+    let mut operations = OfficialOperations::new(
+        Arc::new(session.clone()),
+        session.uuid.clone(),
+        adapter.schema,
+    )?;
     operations.minecraft_version = lock.minecraft.clone();
     // Account authentication is a separate approved capability from the game's IP network.
     Ok(operations)
@@ -147,6 +190,39 @@ pub(crate) fn native(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authentication_compatibility_and_integrity_fail_closed() -> Result<()> {
+        for (minecraft, java) in [("1.21.1", 21), ("1.21.8", 21), ("26.2", 25), ("26.3", 25)] {
+            let adapter = AuthAdapter::for_game(minecraft)?;
+            adapter.validate_loader("vanilla", Some(minecraft))?;
+            adapter.validate_loader("fabric", Some("0.19.5"))?;
+            adapter.validate_java(java)?;
+            assert!(adapter.validate_loader("fabric", Some("0.20.1")).is_err());
+            assert!(adapter.validate_loader("unknown", None).is_err());
+            assert!(adapter.validate_java(java + 1).is_err());
+            assert!(adapter.validate_authlib(&[]).is_err());
+            let root = tempfile::tempdir()?;
+            let jar = root.path().join(adapter.filename);
+            fs::write(&jar, b"tampered official authlib")?;
+            let error = adapter
+                .validate_authlib(std::slice::from_ref(&jar))
+                .expect_err("tampered authlib");
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not match the verified bridge adapter")
+            );
+            assert!(adapter.validate_authlib(&[jar.clone(), jar]).is_err());
+            assert!(
+                adapter
+                    .validate_authlib(&[root.path().join("authlib-wrong.jar")])
+                    .is_err()
+            );
+        }
+        assert!(AuthAdapter::for_game("unsupported").is_err());
+        Ok(())
+    }
 
     #[test]
     fn writer_uses_public_auth_assets_and_keeps_narrator() -> Result<()> {

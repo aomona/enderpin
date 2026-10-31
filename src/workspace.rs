@@ -106,7 +106,16 @@ impl Workspace {
         mut progress: impl FnMut(&str, &str),
     ) -> Result<BTreeMap<String, crate::runtime::PreparedRuntime>> {
         let manifest = self.manifest.clone();
-        let mut lock = self.plan(&manifest, sides, options)?;
+        manifest.validate()?;
+        ensure!(!sides.is_empty(), "select at least one target");
+        ensure!(
+            !(options.locked && options.update),
+            "locked and update cannot be combined"
+        );
+        for &side in sides {
+            crate::runtime::preflight(&manifest.target(side)?, None)?;
+        }
+        let mut lock = self.lockfile.clone();
         let mut prepared = BTreeMap::new();
         for &side in sides {
             manifest.target(side)?;
@@ -124,14 +133,18 @@ impl Workspace {
                 );
             }
             let runtime = crate::runtime::resolve(&manifest, side, previous, update, &self.cache)?;
+            lock.runtimes.insert(side.into(), runtime);
+        }
+        let packages = self.plan(&manifest, sides, options)?;
+        lock.targets = packages.targets;
+        for &side in sides {
             let ready = crate::runtime::prepare(
-                &runtime,
+                &lock.runtimes[side],
                 manifest.target(side)?.side(),
                 &self.cache,
                 options.offline,
                 |message| progress(side, message),
             )?;
-            lock.runtimes.insert(side.into(), runtime);
             prepared.insert(side.into(), ready);
         }
         self.apply(manifest, lock, sides, options, |event| {
