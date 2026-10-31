@@ -1,4 +1,6 @@
-# Velocity・複数サーバーのデプロイ
+# ワークスペースとVelocity統合のデプロイ
+
+非秘密inventoryの版管理、固定バイナリ、適用前のmanifest/diffレビューは[デプロイ入力のレビューと記録](deployment-review.md)を参照してください。
 
 一つのmanifestに名前付きターゲットを宣言し、Ansible inventoryのworkspaceとtargetで配布対象・配置先を指定します。VelocityとPaper/Fabricを同じホストにも別ホストにも配置できます。OSはDebian 12以降またはUbuntu 24.04以降のsystemd環境を対象としたテンプレートです。ハードウェアやクラウド事業者は固定しません。
 
@@ -48,15 +50,51 @@ openssl rand -hex 32
 
 `inventory.yml`で次を設定します。
 
-- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。同じホストのポートと名前は重複できません。
+- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port。`target`は必須で、manifestに存在する名前を明示します（`server`への自動補完はありません）。同じホストのポートと名前は重複できません。
+- `enderpin_inspector`: コントローラーのOS/CPUで実行できる検証済みEnderpinの絶対パス。`config show --resolved --json` の schema v1 対応版を事前配置します。Ansible はこの[読み取り専用 API](resolved-config.md)で継承・グループ・ロックを検査します。リポジトリ内の Wrapper や Manifest のコマンドは実行しません。配布先のLinuxバイナリとは別に設定できます。
 - `enderpin_binary`: コントローラー上の検証済みLinuxバイナリ。配布先のCPUアーキテクチャに合わせてホストごとに変更できます。ホスト上ではビルドしません。
 - `enderpin_backends`と`enderpin_try`: Velocityから到達できるIPv4:portと接続順序。
 - `enderpin_proxy_address`と`enderpin_backend_interface`: バックエンドへの接続を許可するプロキシの送信元と受信インターフェース。
 - `enderpin_accept_eula`: Minecraft EULAに同意した場合だけ`true`にします。Velocityだけのホストでは不要です。
 
-この任意のAnsibleテンプレートでは、ネイティブ設定の生成元をAnsibleに統一します。`init`による初期設定生成は併用せず、`sync`で準備してください。Ansibleが`server.properties`、`velocity.toml`、`forwarding.secret`、`config/FabricProxy-Lite.toml`、`config/paper-global.yml`、`spigot.yml`を生成します。これらを`shared/<グループ>/files/`や`<名前>/files/`に重ねて置くと配布を拒否します。バックエンドの追加プロパティはinstanceの`properties`辞書で指定します。接続・認証・RCON設定は配布側が最後に固定します。
+## 設定の所有者と通常モード
 
-Fabricワークスペースには有効な直接依存として`modrinth = "fabricproxy-lite"`を指定し、lockに含めてください。Ansibleは`hackOnlineMode = true`と共有secretを設定します。必要な構成ではinstanceに`fabric_proxy_hack_early_send` / `fabric_proxy_hack_message_chain`のbooleanを指定できます。Paperは1.19以降の設定形式を対象とし、modern forwardingを有効、legacy BungeeCordを無効にします。
+runtime版、パッケージ、`memory_mib`、`jvm_args`、ゲーム権限の正本は`enderpin.toml`です。systemdもCLIと同じ解決済みターゲットを使い、`--memory`を追加しません。旧inventoryの`memory_mib`は黙って無視せずエラーにするため、targetまたはprofileへ移してください。
+
+既定の`integration: none`では`init`が作った`<target>/files/`と選択された`shared/<group>/files/`をそのままステージ・配布します。`server.properties`、`velocity.toml`、MOD設定はユーザーが管理し、Ansibleは書き換えません。standalone FabricにはVelocity、FabricProxy-Lite、forwarding secret、proxy用inventory変数は不要です。通常モードのゲームポートには、このテンプレートのバックエンド限定ファイアウォール規則を追加しません。公開範囲はホストのファイアウォールで管理してください。
+
+```yaml
+enderpin_instances:
+  - name: survival
+    workspace: .
+    target: survival
+    address: 127.0.0.1
+    port: 25565
+    # integration: none が既定
+```
+
+通常モードの`address`と`port`は起動後の接続確認先です。`files/server.properties`の`server-ip`・`server-port`（Velocityなら`bind`）と一致させてください。inventoryからネイティブ設定を上書きする指定ではありません。
+
+## 明示的なVelocity統合
+
+サンプルinventoryは全instanceで`integration: velocity`を明示しています。このモードだけが接続・認証設定、バックエンド保護規則、vaultの共有secretを生成します。設定は使い捨てstaging内で生成し、source checkoutを変更しません。その他のネイティブ設定は`files/`に残します。旧inventoryの`properties`、`motd`、`show_max_players`は対応するネイティブファイルへ移してください。
+
+以下は統合モードの予約キーです。target・共有グループのどちらにあっても、同じ値を含め重複指定を切替前に拒否します。値を上書きする順序で衝突を解決しません。
+
+| ファイル | 配布側が所有するキー |
+| --- | --- |
+| `server.properties` | `server-ip`, `server-port`, `online-mode`, `enable-rcon`, `enable-query` |
+| `velocity.toml` | `bind`, `online-mode`, `player-info-forwarding-mode`, `forwarding-secret-file`, `servers`表全体, `forced-hosts`表全体 |
+| `config/FabricProxy-Lite.toml` | `secret`, `hackOnlineMode`, `hackEarlySend`, `hackMessageChain` |
+| `config/paper-global.yml` | `proxies.velocity`全体 |
+| `spigot.yml` | `settings.bungeecord` |
+| `forwarding.secret` | ファイル全体（vaultから供給） |
+
+曖昧な解釈を避けるため、統合対象のpropertiesではエスケープされたキーや未完の継続行、YAMLでは重複キーを拒否します。propertiesの値・コメント、TOMLの予約外設定は保持し、Paper/SpigotのYAMLは予約外設定を保持して再出力します。
+
+Fabricバックエンドは有効な直接依存`modrinth = "fabricproxy-lite"`と、そのlockが必要です。統合時は`online-mode=true`、`hackOnlineMode=true`と共有secretを設定します。instanceの`fabric_proxy_hack_early_send` / `fabric_proxy_hack_message_chain`はbooleanで指定できます。Paperは1.19以降の設定形式を対象とし、バックエンドの`online-mode=false`とmodern forwarding認証を組み合わせ、legacy BungeeCordを無効にします。Velocity自体は`online-mode=true`です。Paperバックエンドを直接公開しないでください。
+
+有効なruntime設定と由来は`enderpin config show --resolved --target survival --json`で確認できます。これはダウンロード・ゲーム起動・workspace変更を行わず、秘密値を出力しません。playbookは解決済みlaunch設定と由来、target、選択ファイル、統合モード、接続設定とその所有者を表示し、nativeファイルの内容やsecretはログに出しません。
 
 同一ホストでは、バックエンドを`127.0.0.1`、プロキシの接続先も`127.0.0.1:port`にし、VPNグループを削除して`vpn.yml`を省略できます。複数ホストの場合はVPN内アドレスなどを指定します。
 
@@ -86,30 +124,42 @@ VPNはTUN/UDPで、LAN全体の経路やデフォルトルートを変更しま�
 
 ## 手動配布とpushによるCD
 
-```sh
-# 設定リポジトリのコミット済みの内容から実行
-cd deploy/ansible
-../../.venv/bin/ansible-playbook -i inventory.yml deploy.yml \
-  --ask-vault-pass -e @vault.yml -e "enderpin_revision=$(git rev-parse HEAD)"
-```
+[デプロイ入力のレビューと記録](deployment-review.md)に従って、コミット済みinventoryから `deploy/cd.py plan` でmanifest/diffを作り、レビュー後に `deploy/cd.py apply` で適用します。バイナリとcontroller用inspectorはrelease/build識別子と実行ファイルのSHA-256で固定してください。
 
-`deploy/github-actions.yml`を設定リポジトリの`.github/workflows/deploy.yml`にコピーします。既定の配布ブランチは`deploy`です。専用self-hosted runnerには`enderpin-cd`ラベル、SSHの認証・known_hosts、永続PKIディレクトリ、配布用バイナリを用意します。
+`deploy/github-actions.yml`を設定リポジトリの`.github/workflows/deploy.yml`にコピーします。既定の配布ブランチは`deploy`です。専用self-hosted runnerには`enderpin-cd`ラベル、SSHの認証・known_hosts、永続PKIと配布記録ディレクトリ、固定したバイナリを用意します。
 
-GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`（暗号化したvault全文）、`ENDERPIN_VAULT_PASSWORD`を設定します。VPNもCD対象にする場合はRepository variable `ENDERPIN_MANAGE_VPN=true`を設定します。不要なら省略してください。
+inventory全文をGitHub Secretsに保存する旧 `ENDERPIN_INVENTORY` は使いません。非秘密inventoryをGitで版管理し、Secretsには `ENDERPIN_VAULT` と `ENDERPIN_VAULT_PASSWORD` だけを設定します。Repository variable `ENDERPIN_SECRET_REVISION` は秘密のローテーションごとに更新します。VPNも対象にする場合は `ENDERPIN_MANAGE_VPN=true` を設定します。`minecraft-production` Environmentにrequired reviewersを設定し、plan artifactを確認してからapplyを承認します。
 
 このブランチへのpushはMOD・プラグイン・管理設定・定義されたプロセス権限の承認として扱います。workflow、playbook、inventoryもホスト管理権限を持つため、ブランチの書き込み権限と保護ルールを管理してください。別のworkflowから同じ環境への同時配布は避けます。
 
-ホストとinstanceをinventory順に1つずつ配布します。バックエンドをプロキシより先に並べてください。各instanceで以下を実行します。
+ホストをinventory順に1つずつ配布します。各ホストでは、全instanceのworkspace・targetを検証し、全instanceのlockedダウンロードと設定のステージングを完了してから、サービスとfirewallを変更します。バックエンドをプロキシより先に並べてください。ステージング後、次の順序で配布します。2〜5はinstanceごとに実行します。
 
-1. 使い捨てディレクトリへmanifest・lock・設定を置き、lockedダウンロードを検証します。
+1. 前回の配備記録と今回の設定を照合し、旧・新のバックエンドポートを保護します。
 2. 稼働中サービスを停止し、ワールドとローカル状態をprivateな`backups/`へ保存します。
 3. 共有入力を交換し、既存のローカルignoreを除き、lockと共有設定から管理対象ファイルを復元します。
 4. 反映済みの権限planを取得し、そのfingerprintを承認します。ホストに残る外部フォルダ許可は自動承認しません。
 5. sandbox付きsystemdサービスを起動し、TCP待ち受けとサービスの稼働を確認します。
 
-承認後の変更は起動時に再検証します。配布前のダウンロード失敗では現在のサービスを停止しません。切り替え後に失敗した場合は停止してバックアップを残し、後続の配布も中断します。自動で古いワールドへ戻すことはありません。配布にはサービスの停止時間が発生し、複数ホスト全体の原子的な切り替えは保証しません。
+承認後の変更は起動時に再検証します。同じホストのどのinstanceでも、事前検証・ダウンロードに失敗した場合は現在のサービスとfirewallを変更しません。切り替え後に失敗した場合は停止してバックアップを残し、後続の配布も中断します。自動で古いワールドへ戻すことはありません。配布にはサービスの停止時間が発生し、複数ホスト全体の原子的な切り替えは保証しません。
 
-`run --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス・アカウント・ワールドを自動削除する処理はありません。廃止するサービスは明示的に停止・無効化してください。
+`run --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス定義・アカウント・ワールドを自動削除する処理はありません。
+
+### instanceの廃止・rename・ポート変更
+
+前回のinstance名、target、workspace、runtime、integration、bind address、port、プロキシ許可元を`/etc/enderpin/instances.json`に記録します。削除・rename・これらの値の変更には、旧instance名を`enderpin_decommission`に明示する必要があります。指定なしでは、既存サービスとfirewallを変更する前に拒否します。ポート変更時も同じinstance名を指定します。
+
+```sh
+# inventoryからold_backendを除く（renameなら新しい名前を追加する）
+../../.venv/bin/ansible-playbook -i inventory.yml deploy.yml \
+  --ask-vault-pass -e @vault.yml -e "enderpin_revision=$(git rev-parse HEAD)" \
+  -e '{"enderpin_decommission":["old_backend"]}'
+```
+
+全instanceのステージング後、指定した旧サービスを停止・無効化し、systemdのinactive/dead、MainPID=0、disabledと記録済みのTCP待ち受け終了を確認します。確認に失敗すると旧ルールを残して終了します。廃止の結果はサービス名とデータ保存を明示して出力します。ワールド、workspace、バックアップ、専用アカウントは残ります。同じ名前のポート変更では、その後新設定でサービスを再度有効化・起動します。
+
+切り替え中は旧・新のルールと配備記録を併存させ、全instanceの起動確認後に旧ルールを除きます。失敗時には旧ポートの保護も保持し、再実行時にその記録を使います。同じポートの許可元を変更するときは切り替え完了まで旧制限が優先されます。最後のinstanceも廃止する場合は、そのホストをinventoryに残して`enderpin_instances: []`にし、旧instance名をすべて指定します。成功後は一時的な`enderpin_decommission`指定を外してください。廃止したサービスを手動で再有効化する場合は、先にinventoryへ戻して配布し、保護を再構築します。
+
+旧テンプレートから初めて移行するときは配備記録がないため、検出した既存のEnderpin instanceサービスをすべて`enderpin_decommission`に指定して停止・無効化する必要があります。継続利用するinstanceも今回のinventoryに含めると再配備されます。この初回移行では同じホストの旧instanceが同時に停止します。既存のfirewallを残したまま移行し、配備記録を手動削除・編集しないでください。
 
 ## 復旧と検証範囲
 
@@ -122,3 +172,11 @@ Enderpinの`--offline`はEnderpinの固定済み入力の準備に適用しま�
 ## 旧配置の移行
 
 旧workspace/run/serverが残るホストへの配布は切り替え前に停止します。停止・バックアップした上で[format 4への移行](migration.md)を行ってください。配布処理はワールドを自動移動しません。ターゲットのファイル入力と選択された共有グループだけをステージし、共通manifest/lockは同じ内容を使用します。
+
+### 旧Ansibleテンプレートからの移行
+
+1. 現在のworkspace・world・vaultをバックアップします。`<target>/run/`やワールドは削除しません。
+2. inventoryの`memory_mib`を同じ値でmanifestのtarget/profileへ移し、旧inventoryキーを削除します。`properties`は`files/server.properties`、proxyの`motd`・`show_max_players`は`files/velocity.toml`へ移します。
+3. 配備記録がない既存ホストでは、上記の`enderpin_decommission`による初回移行も行います。統合モードの変更も旧サービスの明示停止が必要です。既存Velocity構成を維持する場合はproxy・全バックエンドに`integration: velocity`を設定し、既存のvault secret、接続先、ファイアウォール条件を維持します。ユーザー側のファイルから上表の予約キーだけを取り除き、その他の設定は残します。新規`init`のデフォルトにも予約キーがあるため、統合へ切り替える場合は同じレビューが必要です。
+4. 通常モードへ移す場合は、稼働中に生成済みの設定をレビューして`files/`へ取り込み、認証・接続設定と秘密の配送方法を先に整えます。`integration`だけを外すと認証設定の生成とバックエンド保護規則がなくなります。特にoffline-modeのPaperを公開する変更は行わず、独立運用へ変えるなら`online-mode=true`と公開範囲を確認します。secretをGitへ追加しないでください。
+5. `config show`と通常のlocked検証後に配布します。衝突時はサービス切替前に停止し、成功時もworldディレクトリを置換しません。

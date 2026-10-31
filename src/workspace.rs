@@ -553,6 +553,26 @@ impl Workspace {
     }
 }
 
+/// Inspect the same file selection used by sync without exposing file contents or hashes.
+pub(crate) fn shared_file_inputs(
+    root: &Path,
+    name: &str,
+    groups: &[String],
+) -> Result<BTreeMap<String, String>> {
+    shared_files(root, name, groups)?
+        .into_iter()
+        .map(|(destination, (source, _))| {
+            Ok((
+                destination,
+                source
+                    .strip_prefix(root)?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            ))
+        })
+        .collect()
+}
+
 /// Shared inputs are copied, never linked into the writable game directory.
 fn shared_files(
     root: &Path,

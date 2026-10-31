@@ -24,6 +24,19 @@ python3 tests/live_server.py /path/to/workspace --accept-eula
 
 GitHub ActionsにはWindows・macOS・LinuxのRustチェックと実JVMのサンドボックス検証を定義しています。PRの作成・更新時と`main`へのpush時に実行し、作業ブランチへのpushでは起動しません。`dev`もPRを通して検査します。ワークフロー定義だけでは、各OSで実際に検証に成功したことを意味しません。[検証記録](verification.md) に今回実行した範囲を記載しています。
 
+## デプロイ検査
+
+Ansible テストは実際の `config show` を呼び出します。先にこの checkout のバイナリをビルドしてください。
+
+```sh
+cargo build --locked
+python3 -m venv target/deploy-venv
+target/deploy-venv/bin/pip install -r deploy/ansible/requirements.txt
+target/deploy-venv/bin/python -B deploy/test_deploy.py
+```
+
+固定のロックfixtureとローカルPKIを使い、本番ホストやゲームは起動しません。
+
 ## Windowsのカーソル閉じ込めテスト
 
 対話デスクトップ上のJava 25で次を実行できます。現在のカーソル制限範囲を再設定し、

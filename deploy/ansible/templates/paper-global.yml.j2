@@ -1,5 +1,1 @@
-proxies:
-  velocity:
-    enabled: true
-    online-mode: true
-    secret: {{ enderpin_forwarding_secret | to_json }}
+{{ source.native.paper | combine({'proxies': {'velocity': {'enabled': true, 'online-mode': true, 'secret': enderpin_forwarding_secret}}}, recursive=true) | to_nice_yaml }}

@@ -207,6 +207,9 @@ pub struct Manifest {
 /// Fully resolved, target-local input to the existing dependency/runtime resolvers.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedTarget {
+    pub groups: Vec<String>,
+    pub sources: BTreeMap<String, String>,
+    pub package_sources: BTreeMap<String, Vec<String>>,
     pub kind: TargetType,
     pub minecraft: String,
     pub loader: String,
@@ -221,6 +224,12 @@ pub struct ResolvedTarget {
     pub jvm_args: Vec<String>,
 }
 impl ResolvedTarget {
+    pub(crate) fn supports_package(&self, kind: Kind) -> bool {
+        let plugins = matches!(self.loader.as_str(), "paper" | "velocity");
+        !((kind == Kind::Mod && plugins)
+            || (kind == Kind::Plugin && !plugins)
+            || (self.loader == "velocity" && kind != Kind::Plugin))
+    }
     pub fn side(&self) -> Side {
         self.kind.side()
     }
@@ -318,10 +327,51 @@ impl Manifest {
         } else {
             toml::Value::Table(Default::default())
         };
+        let profile_source = entry
+            .profile
+            .as_ref()
+            .map(|name| format!("profiles.{name}"));
+        let mut sources = BTreeMap::new();
+        for key in [
+            "type",
+            "minecraft",
+            "loader",
+            "loader_version",
+            "memory_mib",
+            "groups",
+            "file_groups",
+            "enabled",
+            "disabled",
+            "permissions",
+            "jvm_args",
+        ] {
+            sources.insert(
+                key.to_owned(),
+                if merged.get(key).is_some() {
+                    profile_source.clone().unwrap_or_default()
+                } else if key == "minecraft" {
+                    "manifest".into()
+                } else {
+                    "default".into()
+                },
+            );
+        }
+        let mut package_sources = BTreeMap::<String, Vec<String>>::new();
+        if let Some(packages) = merged.get("packages").and_then(toml::Value::as_table) {
+            for alias in packages.keys() {
+                package_sources.insert(
+                    alias.clone(),
+                    vec![profile_source.clone().unwrap_or_default()],
+                );
+            }
+        }
         let overrides = toml::Value::try_from(&entry.settings)?;
         let table = merged.as_table_mut().context("invalid profile")?;
         for (key, value) in overrides.as_table().context("invalid target")? {
             if key == "packages" {
+                for alias in entry.packages.keys() {
+                    package_sources.insert(alias.clone(), vec![format!("targets.{name}")]);
+                }
                 let packages = table
                     .entry(key.clone())
                     .or_insert_with(|| toml::Value::Table(Default::default()));
@@ -330,6 +380,7 @@ impl Manifest {
                     .context("invalid packages")?
                     .extend(value.as_table().context("invalid packages")?.clone());
             } else {
+                sources.insert(key.clone(), format!("targets.{name}"));
                 table.insert(key.clone(), value.clone());
             }
         }
@@ -363,12 +414,19 @@ impl Manifest {
             );
         }
         let mut requests = BTreeMap::new();
-        for group in config.groups.unwrap_or_default() {
+        let groups = config.groups.unwrap_or_default();
+        for group_name in &groups {
             let group = self
                 .groups
-                .get(&group)
-                .with_context(|| format!("unknown package group {group:?}"))?;
+                .get(group_name)
+                .with_context(|| format!("unknown package group {group_name:?}"))?;
             for (alias, package) in &group.packages {
+                if !config.packages.contains_key(alias) {
+                    package_sources
+                        .entry(alias.clone())
+                        .or_default()
+                        .push(format!("groups.{group_name}"));
+                }
                 if let Some(previous) = requests.insert(alias.clone(), package.clone()) {
                     ensure!(
                         previous == *package,
@@ -411,6 +469,9 @@ impl Manifest {
         let jvm_args = config.jvm_args.unwrap_or_default();
         jvm_arguments(&jvm_args)?;
         Ok(ResolvedTarget {
+            groups,
+            sources,
+            package_sources,
             kind,
             minecraft,
             loader: config.loader,

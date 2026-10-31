@@ -43,11 +43,7 @@ pub fn resolve(
             continue;
         }
         let loader = &manifest.loader;
-        let plugins = matches!(loader.as_str(), "paper" | "velocity");
-        let wrong_runtime = (package.kind == Kind::Mod && plugins)
-            || (package.kind == Kind::Plugin && !plugins)
-            || (loader == "velocity" && package.kind != Kind::Plugin);
-        if wrong_runtime {
+        if !manifest.supports_package(package.kind) {
             ensure!(
                 !explicitly_enabled,
                 "{} cannot load {:?} package {alias}",
