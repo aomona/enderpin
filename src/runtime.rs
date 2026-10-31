@@ -591,6 +591,59 @@ fn java_lock(major: u32) -> Result<JavaLock> {
     })
 }
 
+/// Check declared client authentication compatibility before resolving or downloading files.
+pub fn preflight(
+    config: &crate::model::ResolvedTarget,
+    locked: Option<&RuntimeLock>,
+) -> Result<()> {
+    if let Some(adapter) = authenticated_adapter(config)?
+        && let Some(locked) = locked
+    {
+        adapter.validate_loader(&locked.loader, Some(&locked.loader_version))?;
+        adapter.validate_java(locked.java.major)?;
+    }
+    Ok(())
+}
+
+fn authenticated_adapter(
+    config: &crate::model::ResolvedTarget,
+) -> Result<Option<crate::bridges::AuthAdapter>> {
+    if config.side() != Side::Client || !config.permissions.account_authentication {
+        return Ok(None);
+    }
+    let adapter = crate::bridges::AuthAdapter::for_game(&config.minecraft)?;
+    adapter.validate_loader(&config.loader, config.loader_version.as_deref())?;
+    Ok(Some(adapter))
+}
+
+fn select_fabric_loader(
+    config: &crate::model::ResolvedTarget,
+    loaders: Vec<LoaderEntry>,
+) -> Result<String> {
+    let loader = loaders
+        .into_iter()
+        .find(|entry| {
+            config
+                .loader_version
+                .as_ref()
+                .map(|v| &entry.loader.version == v)
+                .unwrap_or(entry.loader.stable)
+        })
+        .context("compatible Fabric loader not found")?
+        .loader
+        .version;
+    if let Some(adapter) = authenticated_adapter(config)? {
+        adapter.validate_loader("fabric", Some(&loader)).with_context(|| {
+            if config.loader_version.is_none() {
+                format!("upstream stable Fabric {loader} is Minecraft-compatible but not supported by Enderpin's authentication adapter")
+            } else {
+                format!("selected Fabric {loader} is not supported by Enderpin's authentication adapter")
+            }
+        })?;
+    }
+    Ok(loader)
+}
+
 pub fn resolve(
     manifest: &Manifest,
     name: &str,
@@ -602,8 +655,10 @@ pub fn resolve(
     let config = manifest.target(name)?;
     let manifest = &config;
     let side = manifest.side();
+    let adapter = authenticated_adapter(manifest)?;
     if let Some(previous) = previous.filter(|p| !update && p.fingerprint == fingerprint) {
         previous.validate()?;
+        preflight(manifest, Some(previous))?;
         return Ok(previous.clone());
     }
     ensure!(
@@ -633,6 +688,9 @@ pub fn resolve(
         .as_ref()
         .map(|j| j.major_version)
         .context("Minecraft metadata does not declare its Java version")?;
+    if let Some(adapter) = &adapter {
+        adapter.validate_java(major)?;
+    }
     if matches!(manifest.loader.as_str(), "paper" | "velocity") {
         ensure!(
             side == Side::Server,
@@ -672,18 +730,7 @@ pub fn resolve(
         "https://meta.fabricmc.net/v2/versions/loader/{}",
         manifest.minecraft
     ))?)?;
-    let loader = loaders
-        .into_iter()
-        .find(|entry| {
-            manifest
-                .loader_version
-                .as_ref()
-                .map(|v| &entry.loader.version == v)
-                .unwrap_or(entry.loader.stable)
-        })
-        .context("compatible Fabric loader not found")?
-        .loader
-        .version;
+    let loader = select_fabric_loader(manifest, loaders)?;
     let route = if side == Side::Client {
         "profile"
     } else {
@@ -823,6 +870,25 @@ impl PreparedRuntime {
         }
         Ok(root)
     }
+}
+
+fn prefer_fabric_asm(classpath: &mut Vec<PathBuf>, loader: &str) {
+    if loader != "fabric" {
+        return;
+    }
+    // Fabric's libraries precede Minecraft's; Knot rejects duplicate ASM classes.
+    let mut seen = std::collections::BTreeSet::new();
+    classpath.retain(|path| {
+        let Some((artifact, _)) = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.rsplit_once('-'))
+        else {
+            return true;
+        };
+        !["asm", "asm-analysis", "asm-commons", "asm-tree", "asm-util"].contains(&artifact)
+            || seen.insert(artifact.to_owned())
+    });
 }
 
 pub fn prepare(
@@ -1021,6 +1087,7 @@ pub fn prepare(
             asset_index = Some(index.id.clone());
         }
     }
+    prefer_fabric_asm(&mut classpath, &lock.loader);
     classpath.push(game_jar.clone());
     Ok(PreparedRuntime {
         java,
@@ -1134,6 +1201,109 @@ fn server_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fabric_asm_precedence_preserves_distinct_modules_and_vanilla() {
+        let original: Vec<_> = [
+            "fabric/asm-9.10.1.jar",
+            "fabric/asm-tree-9.10.1.jar",
+            "game/asm-9.6.jar",
+            "game/asm-tree-9.6.jar",
+            "game/authlib-6.0.57.jar",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        let mut classpath = original.clone();
+        prefer_fabric_asm(&mut classpath, "vanilla");
+        assert_eq!(classpath, original);
+        prefer_fabric_asm(&mut classpath, "fabric");
+        assert_eq!(
+            classpath,
+            [
+                original[0].clone(),
+                original[1].clone(),
+                original[4].clone()
+            ]
+        );
+    }
+
+    #[test]
+    fn fabric_selection_checks_authentication_not_just_upstream_stability() -> Result<()> {
+        let loaders = || {
+            serde_json::from_value::<Vec<LoaderEntry>>(serde_json::json!([
+                {"loader": {"version": "0.99.0", "stable": true}},
+                {"loader": {"version": "0.19.5", "stable": true}}
+            ]))
+        };
+        let manifest = crate::Manifest::new("26.3".into())?;
+        let mut client = manifest.target("client")?;
+        let error = select_fabric_loader(&client, loaders()?).expect_err("unsupported stable");
+        let message = format!("{error:#}");
+        assert!(message.contains("upstream stable Fabric 0.99.0"));
+        assert!(message.contains("pin loader_version"));
+        client.loader_version = Some("0.19.5".into());
+        assert_eq!(select_fabric_loader(&client, loaders()?)?, "0.19.5");
+        client.loader_version = Some("0.99.0".into());
+        assert!(preflight(&client, None).is_err());
+        assert!(select_fabric_loader(&client, loaders()?).is_err());
+        client.permissions.account_authentication = false;
+        preflight(&client, None)?;
+        assert_eq!(select_fabric_loader(&client, loaders()?)?, "0.99.0");
+        let mut server = manifest.target("server")?;
+        server.minecraft = "not-in-client-allowlist".into();
+        preflight(&server, None)?;
+        assert_eq!(select_fabric_loader(&server, loaders()?)?, "0.99.0");
+        server.loader_version = Some("0.99.0".into());
+        assert_eq!(select_fabric_loader(&server, loaders()?)?, "0.99.0");
+        Ok(())
+    }
+
+    #[test]
+    fn reused_runtime_checks_authentication_before_any_download() -> Result<()> {
+        let mut manifest = crate::Manifest::new("26.3".into())?;
+        let download = Download {
+            url: "https://example.org/file".into(),
+            filename: "file.jar".into(),
+            algorithm: Algorithm::Sha256,
+            hash: "a".repeat(64),
+            size: Some(42),
+        };
+        let mut lock = RuntimeLock {
+            fingerprint: RuntimeLock::fingerprint(&manifest, "client")?,
+            minecraft: "26.3".into(),
+            loader: "fabric".into(),
+            loader_version: "0.19.5".into(),
+            metadata: download.clone(),
+            java: JavaLock {
+                release: "test".into(),
+                major: 25,
+                platforms: BTreeMap::from([("test".into(), download.clone())]),
+            },
+            fabric_libraries: vec![download],
+            fabric_jvm: vec![],
+            server_jar: None,
+        };
+        let root = tempfile::tempdir()?;
+        let cache = Cache::open(root.path())?;
+        resolve(&manifest, "client", Some(&lock), false, &cache)?;
+        lock.java.major = 21;
+        let error =
+            resolve(&manifest, "client", Some(&lock), false, &cache).expect_err("wrong Java");
+        assert!(error.to_string().contains("requires Java 25"));
+        lock.java.major = 25;
+        lock.loader_version = "0.99.0".into();
+        let error = resolve(&manifest, "client", Some(&lock), false, &cache)
+            .expect_err("unsupported locked loader");
+        assert!(error.to_string().contains("does not support fabric 0.99.0"));
+        lock.fingerprint = RuntimeLock::fingerprint(&manifest, "server")?;
+        resolve(&manifest, "server", Some(&lock), false, &cache)?;
+        manifest.target_mut("client")?.loader_version = Some("0.99.0".into());
+        let error = resolve(&manifest, "client", None, false, &cache)
+            .expect_err("unsupported explicit loader");
+        assert!(error.to_string().contains("does not support fabric 0.99.0"));
+        Ok(())
+    }
+
     #[test]
     fn server_jar_lock_requires_hash_and_rejects_client_use() -> Result<()> {
         let download = Download {

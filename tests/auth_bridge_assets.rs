@@ -73,11 +73,18 @@ fn jars_keep_agent_and_bootstrap_classes_separate() -> Result<()> {
         ),
     ] {
         let files = jar_files(asset)?;
-        let expected: BTreeSet<_> = classes
+        let mut expected: BTreeSet<_> = classes
             .iter()
             .copied()
             .chain(["META-INF/MANIFEST.MF"])
             .collect();
+        if premain {
+            expected.insert("auth-adapters.properties");
+            assert_eq!(
+                files["auth-adapters.properties"],
+                include_bytes!("../java/auth-bridge/auth-adapters.properties")
+            );
+        }
         assert_eq!(
             files.keys().map(String::as_str).collect::<BTreeSet<_>>(),
             expected,

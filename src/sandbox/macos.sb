@@ -3,9 +3,10 @@
 (allow process-exec (subpath (param "JAVA")))
 (allow process-info* signal (target same-sandbox))
 (allow sysctl-read file-read-metadata)
+; Java 17 agent startup reads the system iconv encoding tables.
 (allow file-read* (literal "/") (subpath "/System/Library")
     (subpath "/System/Cryptexes") (subpath "/usr/lib")
-    (subpath "/private/var/db/timezone"))
+    (subpath "/private/var/db/timezone") (subpath "/usr/share/i18n"))
 (allow file-read* file-write* (literal "/dev/null"))
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom"))
 (allow mach-lookup (global-name "com.apple.system.logger") (global-name "com.apple.logd"))

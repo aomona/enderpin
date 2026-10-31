@@ -91,7 +91,7 @@ struct Prompts {
 
 #[derive(Args)]
 #[command(
-    after_help = "Examples:\n  enderpin init my-world\n  enderpin init my-server --target server --minecraft 1.21.1 --loader paper --no-interactive\n  enderpin init --minecraft 1.21.1 --loader fabric --loader-version 0.16.10 --mods sodium --no-interactive"
+    after_help = "Examples:\n  enderpin init my-world\n  enderpin init my-server --target server --minecraft 1.21.1 --loader paper --no-interactive\n  enderpin init --minecraft 1.21.1 --loader fabric --loader-version 0.19.5 --mods sodium --no-interactive"
 )]
 struct Init {
     /// New workspace directory (default: current directory).
@@ -1242,6 +1242,9 @@ fn init(cli: &Cli, args: &Init) -> Result<()> {
         }
     }
     manifest.validate()?;
+    for side in scope.sides() {
+        enderpin::runtime::preflight(&manifest.target(side.name())?, None)?;
+    }
     let mut registry = enderpin::registry::Modrinth::default();
     let mut selected = BTreeMap::new();
     for id in &args.mods {
@@ -1480,6 +1483,9 @@ fn run(cli: &Cli) -> Result<()> {
                 !*accept_eula || kind == Side::Server,
                 "--accept-eula is only for servers"
             );
+            if !*demo {
+                enderpin::runtime::preflight(&config, ws.lockfile.runtimes.get(side))?;
+            }
             ws.sync(
                 ws.manifest.clone(),
                 &[side],
