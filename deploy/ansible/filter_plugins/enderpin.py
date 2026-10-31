@@ -85,7 +85,7 @@ def instances(items):
     names, ports = set(), set()
     for item in items:
         name = item["name"]
-        if not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name) or name in names:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name) or name in names or name == "firewall":
             raise AnsibleFilterError("instance names must be unique lower-case service identifiers")
         if not isinstance(item.get("target"), str) or not item["target"]:
             raise AnsibleFilterError(f"instance {name} requires an explicit non-empty target")
@@ -122,6 +122,47 @@ def backends(items):
     return items
 
 
+def deployment(items, source_root, interface, proxy_address):
+    return [dict(name=item["name"], address=item["address"], port=item["port"],
+                 workspace=item["workspace"], target=source["target"], runtime=source["runtime"],
+                 interface=interface, proxy_address=proxy_address)
+            for item in instances(items)
+            for source in [workspace(source_root, item["workspace"], item["target"])]]
+
+
+def transition(desired, previous, decommission, services):
+    if not isinstance(decommission, list) or any(
+            not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name)
+            or name == "firewall" for name in decommission):
+        raise AnsibleFilterError("enderpin_decommission must list instance names")
+    if previous is None:
+        # Older installations have no trustworthy port history: stop every old unit before adoption.
+        required = {name.removeprefix("enderpin-").removesuffix(".service") for name in services
+                    if name.startswith("enderpin-") and name.endswith(".service")
+                    and name != "enderpin-firewall.service"}
+        previous = []
+    else:
+        if not isinstance(previous, list):
+            raise AnsibleFilterError("invalid deployment record; preserve it and the existing firewall")
+        for entry in previous:
+            if (not isinstance(entry, dict) or set(entry) != {
+                    "name", "address", "port", "workspace", "target", "runtime", "interface", "proxy_address"}
+                    or entry["runtime"] not in ["paper", "fabric", "velocity"]
+                    or not isinstance(entry["interface"], str)
+                    or not re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", entry["interface"])):
+                raise AnsibleFilterError("invalid deployment record; preserve it and the existing firewall")
+            instances([entry | {"memory_mib": 256}])
+            ipaddress.IPv4Address(entry["proxy_address"])
+        required = {entry["name"] for entry in previous if entry not in desired}
+    if required - set(decommission):
+        raise AnsibleFilterError("explicit enderpin_decommission required for removed/changed or legacy instances: "
+                                 + ", ".join(sorted(required - set(decommission))))
+    if set(decommission) - required:
+        raise AnsibleFilterError("decommission requests must name removed/changed or legacy instances")
+    return {"decommission": sorted(required), "previous": previous,
+            "protected": previous + [entry for entry in desired if entry not in previous]}
+
+
 def vpn(config, clients):
     network = ipaddress.ip_network(config["network"])
     server = ipaddress.ip_address(config["server_address"])
@@ -144,4 +185,5 @@ def vpn(config, clients):
 class FilterModule:
     def filters(self):
         return {"enderpin_workspace": workspace, "enderpin_instances": instances, "enderpin_vpn": vpn,
+                "enderpin_deployment": deployment, "enderpin_transition": transition,
                 "enderpin_backends": backends, "enderpin_ipv4": lambda value: str(ipaddress.IPv4Address(value))}

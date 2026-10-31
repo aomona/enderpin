@@ -1,0 +1,27 @@
+- name: Render rules protecting backend ports over IPv4 and IPv6
+  ansible.builtin.template:
+    src: templates/firewall.nft.j2
+    dest: /etc/enderpin/firewall.nft
+    mode: '0644'
+    validate: /usr/sbin/nft -c -f %s
+- name: Install firewall service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/enderpin-firewall.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Enderpin backend port protection
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/nft -f /etc/enderpin/firewall.nft
+      ExecReload=/usr/sbin/nft -f /etc/enderpin/firewall.nft
+      RemainAfterExit=yes
+      [Install]
+      WantedBy=multi-user.target
+- name: Apply firewall before launching instances
+  ansible.builtin.systemd_service:
+    name: enderpin-firewall
+    enabled: true
+    daemon_reload: true
+    # Reload also retries a previous failed apply without stopping dependent instances.
+    state: reloaded

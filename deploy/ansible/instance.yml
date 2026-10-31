@@ -1,140 +1,13 @@
-- name: Read and validate the source workspace
+- name: Select the validated staging workspace
   ansible.builtin.set_fact:
-    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target) }}"
-    instance_root: "{{ enderpin_root }}/{{ instance.name }}"
-    instance_user: "ep_{{ instance.name }}"
+    instance: "{{ prepared.instance }}"
+    source: "{{ prepared.source }}"
+    staged: "{{ prepared.staged }}"
+    instance_root: "{{ enderpin_root }}/{{ prepared.instance.name }}"
+    instance_user: "ep_{{ prepared.instance.name }}"
     cutover: false
-    staged: {}
-- name: Check for an unmigrated legacy game directory
-  ansible.builtin.stat:
-    path: "{{ instance_root }}/workspace/run/server"
-  register: legacy_game
-- name: Require explicit world migration before format 4 deployment
-  ansible.builtin.assert:
-    that: not legacy_game.stat.exists
-    fail_msg: "Back up and migrate workspace/run/server to workspace/{{ source.target }}/run before deploying format 4."
-- name: Validate authentication, bind address, and property lines
-  ansible.builtin.assert:
-    that:
-      - source.runtime == 'velocity' or enderpin_accept_eula | bool
-      - source.runtime == 'velocity' or instance.address not in ['0.0.0.0', '255.255.255.255']
-      - source.runtime != 'velocity' or enderpin_backends | length > 0
-      - source.runtime != 'velocity' or enderpin_try | length > 0
-      - source.runtime != 'velocity' or enderpin_try | difference(enderpin_backends.keys() | list) | length == 0
-- name: Create isolated instance account
-  ansible.builtin.user:
-    name: "{{ instance_user }}"
-    home: "{{ instance_root }}"
-    create_home: false
-    shell: /usr/sbin/nologin
-    system: true
-- name: Create private instance directories
-  ansible.builtin.file:
-    path: "{{ instance_root }}/{{ item }}"
-    state: directory
-    owner: "{{ instance_user }}"
-    group: "{{ instance_user }}"
-    mode: '0700'
-  loop: ['', bin, cache, workspace, backups]
-- name: Stage and deploy validated inputs
+- name: Deploy staged inputs
   block:
-    - name: Create disposable staging workspace
-      ansible.builtin.tempfile:
-        state: directory
-        path: "{{ instance_root }}"
-        prefix: stage-
-      register: staged
-    - name: Make staging workspace accessible to its account
-      ansible.builtin.file:
-        path: "{{ staged.path }}"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0700'
-    - name: Copy manifest and lock without worlds or credentials
-      ansible.builtin.copy:
-        src: "{{ source.path }}/{{ item }}"
-        dest: "{{ staged.path }}/{{ item }}"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      loop: [enderpin.toml, enderpin.lock]
-    - name: Create selected input directories
-      ansible.builtin.file:
-        path: "{{ staged.path }}/{{ item }}"
-        state: directory
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0700'
-      loop: "{{ source.inputs + ['shared'] }}"
-    - name: Copy selected target and shared file groups
-      ansible.builtin.copy:
-        src: "{{ source.path }}/{{ item }}/"
-        dest: "{{ staged.path }}/{{ item }}/"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: preserve
-      loop: "{{ source.inputs }}"
-    - name: Create directories for generated shared inputs
-      ansible.builtin.file:
-        path: "{{ staged.path }}/{{ source.target }}/files/config"
-        state: directory
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0700'
-    - name: Render proxy configuration
-      ansible.builtin.template:
-        src: templates/velocity.toml.j2
-        dest: "{{ staged.path }}/{{ source.target }}/files/velocity.toml"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      when: source.runtime == 'velocity'
-    - name: Stage persistent forwarding secret for Velocity
-      ansible.builtin.copy:
-        content: "{{ enderpin_forwarding_secret }}"
-        dest: "{{ staged.path }}/{{ source.target }}/files/forwarding.secret"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      when: source.runtime == 'velocity'
-      no_log: true
-    - name: Render backend properties
-      ansible.builtin.template:
-        src: templates/server.properties.j2
-        dest: "{{ staged.path }}/{{ source.target }}/files/server.properties"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      when: source.runtime != 'velocity'
-    - name: Render forwarding configuration
-      ansible.builtin.template:
-        src: "templates/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}.j2"
-        dest: "{{ staged.path }}/{{ source.target }}/files/config/{{ 'FabricProxy-Lite.toml' if source.runtime == 'fabric' else 'paper-global.yml' }}"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      when: source.runtime != 'velocity'
-      no_log: true
-    - name: Disable legacy BungeeCord forwarding
-      ansible.builtin.copy:
-        content: "settings:\n  bungeecord: false\n"
-        dest: "{{ staged.path }}/{{ source.target }}/files/spigot.yml"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0600'
-      when: source.runtime == 'paper'
-    - name: Stage the reviewed Enderpin binary
-      ansible.builtin.copy:
-        src: "{{ enderpin_binary }}"
-        dest: "{{ staged.path }}/enderpin"
-        owner: "{{ instance_user }}"
-        group: "{{ instance_user }}"
-        mode: '0700'
-    - name: Verify and cache all locked downloads before stopping the live server
-      become_user: "{{ instance_user }}"
-      ansible.builtin.command:
-        argv: ["{{ staged.path }}/enderpin", -C, "{{ staged.path }}", --cache-dir, "{{ instance_root }}/cache", sync, --target, "{{ source.target }}", --locked]
-      changed_when: false
     - name: Install instance service
       ansible.builtin.template:
         src: templates/enderpin.service.j2
@@ -222,9 +95,3 @@
     - name: Halt deployment with backup location
       ansible.builtin.fail:
         msg: "Deployment failed. Inspect enderpin-{{ instance.name }} and {{ instance_root }}/backups before restarting or restoring a world."
-  always:
-    - name: Remove disposable staging files and secret copies
-      ansible.builtin.file:
-        path: "{{ staged.path }}"
-        state: absent
-      when: staged is defined and staged.path is defined

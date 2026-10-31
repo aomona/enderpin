@@ -1,0 +1,30 @@
+- name: Stop and disable the old instance without deleting its data
+  ansible.builtin.systemd_service:
+    name: "enderpin-{{ retired }}"
+    state: stopped
+    enabled: false
+  when: "('enderpin-' ~ retired ~ '.service') in ansible_facts.services"
+- name: Inspect the stopped service before retiring any protection
+  ansible.builtin.command:
+    argv: [systemctl, show, "enderpin-{{ retired }}.service", --property=LoadState, --property=ActiveState, --property=SubState, --property=MainPID, --property=UnitFileState]
+  register: retired_state
+  changed_when: false
+  failed_when: retired_state.rc not in [0, 1]
+- name: Require a stopped and disabled old service
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=inactive' in retired_state.stdout_lines"
+      - "'SubState=dead' in retired_state.stdout_lines"
+      - "'MainPID=0' in retired_state.stdout_lines"
+      - "'UnitFileState=disabled' in retired_state.stdout_lines or 'LoadState=not-found' in retired_state.stdout_lines"
+    fail_msg: "Old service is not fully stopped and disabled; retain its firewall protection."
+- name: Verify that recorded old TCP listeners have closed
+  ansible.builtin.wait_for:
+    host: "{{ '127.0.0.1' if item.address == '0.0.0.0' else item.address }}"
+    port: "{{ item.port }}"
+    state: stopped
+    timeout: 30
+  loop: "{{ enderpin_transition.previous | selectattr('name', 'equalto', retired) | list }}"
+- name: Report explicit decommission result
+  ansible.builtin.debug:
+    msg: "Decommissioned enderpin-{{ retired }}: stopped and disabled (or unit absent); workspace, worlds, backups and account preserved. Obsolete rules remain until successful cutover."

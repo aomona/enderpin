@@ -99,17 +99,34 @@ GitHub Secretsには`ENDERPIN_INVENTORY`（inventory全文）、`ENDERPIN_VAULT`
 
 このブランチへのpushはMOD・プラグイン・管理設定・定義されたプロセス権限の承認として扱います。workflow、playbook、inventoryもホスト管理権限を持つため、ブランチの書き込み権限と保護ルールを管理してください。別のworkflowから同じ環境への同時配布は避けます。
 
-ホストとinstanceをinventory順に1つずつ配布します。バックエンドをプロキシより先に並べてください。各instanceで以下を実行します。
+ホストをinventory順に1つずつ配布します。各ホストでは、全instanceのworkspace・targetを検証し、全instanceのlockedダウンロードと設定のステージングを完了してから、サービスとfirewallを変更します。バックエンドをプロキシより先に並べてください。ステージング後、次の順序で配布します。2〜5はinstanceごとに実行します。
 
-1. 使い捨てディレクトリへmanifest・lock・設定を置き、lockedダウンロードを検証します。
+1. 前回の配備記録と今回の設定を照合し、旧・新のバックエンドポートを保護します。
 2. 稼働中サービスを停止し、ワールドとローカル状態をprivateな`backups/`へ保存します。
 3. 共有入力を交換し、既存のローカルignoreを除き、lockと共有設定から管理対象ファイルを復元します。
 4. 反映済みの権限planを取得し、そのfingerprintを承認します。ホストに残る外部フォルダ許可は自動承認しません。
 5. sandbox付きsystemdサービスを起動し、TCP待ち受けとサービスの稼働を確認します。
 
-承認後の変更は起動時に再検証します。配布前のダウンロード失敗では現在のサービスを停止しません。切り替え後に失敗した場合は停止してバックアップを残し、後続の配布も中断します。自動で古いワールドへ戻すことはありません。配布にはサービスの停止時間が発生し、複数ホスト全体の原子的な切り替えは保証しません。
+承認後の変更は起動時に再検証します。同じホストのどのinstanceでも、事前検証・ダウンロードに失敗した場合は現在のサービスとfirewallを変更しません。切り替え後に失敗した場合は停止してバックアップを残し、後続の配布も中断します。自動で古いワールドへ戻すことはありません。配布にはサービスの停止時間が発生し、複数ホスト全体の原子的な切り替えは保証しません。
 
-`run --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス・アカウント・ワールドを自動削除する処理はありません。廃止するサービスは明示的に停止・無効化してください。
+`run --service`は標準入力のEOFで終了せず、SIGTERMでPaper/Fabricへ`stop`、Velocityへ`end`を送ります。終了を待つ間はsystemdがJVMを残し、180秒で強制終了します。ログは`journalctl -u enderpin-<name>`で確認できます。削除したinstanceのサービス定義・アカウント・ワールドを自動削除する処理はありません。
+
+### instanceの廃止・rename・ポート変更
+
+前回のinstance名、target、workspace、runtime、bind address、port、プロキシ許可元を`/etc/enderpin/instances.json`に記録します。削除・rename・これらの値の変更には、旧instance名を`enderpin_decommission`に明示する必要があります。指定なしでは、既存サービスとfirewallを変更する前に拒否します。ポート変更時も同じinstance名を指定します。
+
+```sh
+# inventoryからold_backendを除く（renameなら新しい名前を追加する）
+../../.venv/bin/ansible-playbook -i inventory.yml deploy.yml \
+  --ask-vault-pass -e @vault.yml -e "enderpin_revision=$(git rev-parse HEAD)" \
+  -e '{"enderpin_decommission":["old_backend"]}'
+```
+
+全instanceのステージング後、指定した旧サービスを停止・無効化し、systemdのinactive/dead、MainPID=0、disabledと記録済みのTCP待ち受け終了を確認します。確認に失敗すると旧ルールを残して終了します。廃止の結果はサービス名とデータ保存を明示して出力します。ワールド、workspace、バックアップ、専用アカウントは残ります。同じ名前のポート変更では、その後新設定でサービスを再度有効化・起動します。
+
+切り替え中は旧・新のルールと配備記録を併存させ、全instanceの起動確認後に旧ルールを除きます。失敗時には旧ポートの保護も保持し、再実行時にその記録を使います。同じポートの許可元を変更するときは切り替え完了まで旧制限が優先されます。最後のinstanceも廃止する場合は、そのホストをinventoryに残して`enderpin_instances: []`にし、旧instance名をすべて指定します。成功後は一時的な`enderpin_decommission`指定を外してください。廃止したサービスを手動で再有効化する場合は、先にinventoryへ戻して配布し、保護を再構築します。
+
+旧テンプレートから初めて移行するときは配備記録がないため、検出した既存のEnderpin instanceサービスをすべて`enderpin_decommission`に指定して停止・無効化する必要があります。継続利用するinstanceも今回のinventoryに含めると再配備されます。この初回移行では同じホストの旧instanceが同時に停止します。既存のfirewallを残したまま移行し、配備記録を手動削除・編集しないでください。
 
 ## 復旧と検証範囲
 

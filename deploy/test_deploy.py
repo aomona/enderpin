@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -125,7 +126,7 @@ roots=["fabricproxy-lite"]
         environment.filters["to_json"] = json.dumps
         templates = {name: environment.from_string((BASE / "ansible/templates" / name).read_text())
                      for name in ["firewall.nft.j2", "enderpin.service.j2"]}
-        source_expression = yaml.safe_load((BASE / "ansible/instance.yml").read_text())[0]["ansible.builtin.set_fact"]["source"]
+        source_expression = yaml.safe_load((BASE / "ansible/stage.yml").read_text())[0]["ansible.builtin.set_fact"]["source"]
         resolve_source = environment.compile_expression(source_expression.removeprefix("{{").removesuffix("}}").strip())
         variables = self.inventory | dict(enderpin_source_root=str(self.source), enderpin_instances=instances,
                                          inventory_hostname="home", groups=dict(vpn_clients=["home"]))
@@ -139,6 +140,9 @@ roots=["fabricproxy-lite"]
                     extra_lock = f'\n[runtimes.server]\nloader="{other_runtime}"\n'
                     (self.source / "enderpin.toml").write_text(manifest + extra_manifest)
                     (self.source / "enderpin.lock").write_text(lock + extra_lock)
+                variables["enderpin_protected"] = filters.deployment(
+                    instances, self.source, self.inventory["enderpin_backend_interface"],
+                    self.inventory["enderpin_proxy_address"])
                 firewall = templates["firewall.nft.j2"].render(**variables)
                 for instance, runtime in zip(instances, ["paper", "fabric", "velocity"], strict=True):
                     source = resolve_source(**variables, instance=instance)
@@ -154,13 +158,13 @@ roots=["fabricproxy-lite"]
                         self.assertIn(f"tcp dport {instance['port']} drop", firewall)
         unknown = instances[0] | dict(target="missing")
         with self.assertRaisesRegex(AnsibleFilterError, "unknown deployment target: missing"):
-            templates["firewall.nft.j2"].render(**(variables | dict(enderpin_instances=[unknown])))
+            filters.deployment([unknown], self.source, "epvpn", "10.77.0.1")
         with self.assertRaisesRegex(AnsibleFilterError, "unknown deployment target: missing"):
             resolve_source(**variables, instance=unknown)
 
     def test_instance_and_vpn_validation(self):
         filters.instances([self.instance])
-        for overrides in [dict(port=True), dict(name="../../etc"), dict(properties={"motd":"hi\nonline-mode=false"}),
+        for overrides in [dict(port=True), dict(name="../../etc"), dict(name="firewall"), dict(properties={"motd":"hi\nonline-mode=false"}),
                           dict(properties={"motd":"hi\\"}), dict(fabric_proxy_hack_early_send="true"), dict(memory_mib=-1)]:
             with self.assertRaises(AnsibleFilterError):
                 filters.instances([self.instance | overrides])
@@ -184,6 +188,9 @@ roots=["fabricproxy-lite"]
                        enderpin_instances=[self.instance], enderpin_source_root=str(self.root),
                        inventory_hostname="home", groups=dict(vpn_clients=["home"]),
                        hostvars=dict(localhost=dict(vpn_network=dict(network="10.77.0.0", netmask="255.255.255.0"))))
+        variables["enderpin_protected"] = filters.deployment(
+            [self.instance], self.root, self.inventory["enderpin_backend_interface"],
+            self.inventory["enderpin_proxy_address"])
         def render(name):
             return environment.from_string((BASE / "ansible/templates" / name).read_text()).render(**variables)
         proxy = tomllib.loads(render("velocity.toml.j2"))
@@ -210,6 +217,33 @@ roots=["fabricproxy-lite"]
         self.assertIn("route-nopull", render("openvpn-client.conf.j2"))
         self.assertNotIn("ca.key", render("openvpn-server.conf.j2"))
 
+    def test_firewall_transition_retains_old_inventory_and_requires_decommission(self):
+        old = filters.deployment([self.instance], self.root, "epvpn", "10.77.0.1")
+        retained = old[0] | dict(name="retained", port=25567)
+        previous = old + [retained]
+        for desired in [[retained], [retained, old[0] | dict(name="renamed")],
+                        [retained, old[0] | dict(port=25568)],
+                        [retained, old[0] | dict(runtime="velocity")],
+                        [retained, old[0] | dict(proxy_address="10.77.0.3")], []]:
+            with self.subTest(desired=desired):
+                with self.assertRaises(AnsibleFilterError):
+                    filters.transition(desired, previous, [], {})
+                retired = ["backend"] if desired else ["backend", "retained"]
+                result = filters.transition(desired, previous, retired, {})
+                self.assertEqual(result["decommission"], retired)
+                self.assertTrue(all(entry in result["protected"] for entry in previous + desired))
+        self.assertEqual(filters.transition(previous, previous, [], {})["protected"], previous)
+        with self.assertRaises(AnsibleFilterError):
+            filters.transition(old, None, [], {"enderpin-backend.service": {}})
+        self.assertEqual(filters.transition(old, None, ["backend"], {
+            "enderpin-backend.service": {}, "enderpin-firewall.service": {}})["decommission"], ["backend"])
+        for invalid in ["backend", ["../bad"], ["firewall"], ["unknown"]]:
+            with self.assertRaises(AnsibleFilterError):
+                filters.transition(old, old, invalid, {})
+        for invalid in [{}, [{}], [old[0] | dict(interface='bad"')]]:
+            with self.assertRaises(AnsibleFilterError):
+                filters.transition(old, invalid, [], {})
+
     def test_vpn_pki_is_persistent(self):
         inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())
         inventory["all"]["vars"]["enderpin_pki_directory"] = str(self.root / "pki")
@@ -228,6 +262,136 @@ roots=["fabricproxy-lite"]
         key = (self.root / "pki/tls-crypt.key").read_text().splitlines()
         self.assertEqual(len(key), 18)
         self.assertTrue(all(re.fullmatch(r"[a-f0-9]{32}", line) for line in key[1:-1]))
+
+    def run_deployment_model(self, desired, previous, retired=(), failure=None, refuse_stop=None, missing_units=()):
+        """Execute real includes/loops/asserts/rescue with isolated host-operation doubles."""
+        scenario = self.root / "playbook"
+        scenario.mkdir(exist_ok=True)
+        shutil.copytree(BASE / "ansible/filter_plugins", scenario / "filter_plugins", dirs_exist_ok=True)
+        shutil.copytree(BASE / "tests/action_plugins", scenario / "action_plugins", dirs_exist_ok=True)
+        native = {"assert", "fail", "debug", "set_fact", "include_tasks"}
+        def instrument(tasks):
+            for task in tasks:
+                task.pop("become_user", None)
+                for key in ["block", "rescue", "always"]:
+                    if key in task:
+                        instrument(task[key])
+                for key in list(task):
+                    if key.startswith("ansible.builtin.") and key.split(".")[-1] not in native:
+                        task["host_model"] = dict(module=key.split(".")[-1], args=task.pop(key))
+        for name in ["stage.yml", "instance.yml", "firewall.yml", "decommission.yml"]:
+            tasks = yaml.safe_load((BASE / "ansible" / name).read_text())
+            instrument(tasks)
+            (scenario / name).write_text(yaml.safe_dump(tasks, sort_keys=False))
+        play = yaml.safe_load((BASE / "ansible/deploy.yml").read_text())[0]
+        play.update(hosts="localhost", become=False, gather_facts=False)
+        instrument(play["pre_tasks"])
+        instrument(play["tasks"])
+        play["pre_tasks"].insert(0, dict(host_model=dict(module="setup", args={})))
+        play["vars"] = self.inventory | dict(
+            enderpin_source_root=str(self.root), enderpin_instances=desired,
+            enderpin_decommission=list(retired), enderpin_revision="a" * 40,
+            enderpin_accept_eula=True, enderpin_forwarding_secret="a" * 64,
+            model_path=str(scenario / "state.json"), template_root=str(BASE / "ansible"))
+        (scenario / "deploy.yml").write_text(yaml.safe_dump([play], sort_keys=False))
+        world = "/srv/enderpin/backend/workspace/server/run/world/level.dat"
+        state = dict(files={world: "world must survive"}, services={}, events=[], applied=[],
+                     firewall="old live rules", failure=failure or {}, refuse_stop=refuse_stop)
+        if previous is not None:
+            state["files"]["/etc/enderpin/instances.json"] = json.dumps(previous)
+        for entry in previous if previous is not None else [self.instance]:
+            state["services"]["enderpin-" + entry["name"]] = dict(active=True, enabled=True)
+        for name in missing_units:
+            state["services"].pop(name)
+        (scenario / "state.json").write_text(json.dumps(state))
+        result = subprocess.run([str(Path(sys.executable).with_name("ansible-playbook")),
+                                 "-i", "localhost,", "-c", "local", "deploy.yml"],
+                                cwd=scenario, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        state = json.loads((scenario / "state.json").read_text())
+        self.assertEqual(state["files"][world], "world must survive")
+        self.assertFalse(any("/stage-test/" in path for path in state["files"]))
+        return result, state
+
+    def test_host_preflight_failures_preserve_services_and_firewall(self):
+        other = self.instance | dict(name="other", port=25567)
+        previous = filters.deployment([self.instance, other], self.root, "epvpn", "10.77.0.1")
+        scenarios = [([self.instance, other | dict(target="missing")], None),
+                     ([self.instance, other], dict(task="Verify and cache all locked downloads before stopping the live server", instance="other"))]
+        for desired, failure in scenarios:
+            with self.subTest(failure=failure):
+                result, state = self.run_deployment_model(desired, previous, failure=failure)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(state["firewall"], "old live rules")
+                self.assertEqual(json.loads(state["files"]["/etc/enderpin/instances.json"]), previous)
+                self.assertTrue(all(service["active"] and service["enabled"] for service in state["services"].values()))
+                self.assertFalse(any(event["module"] == "systemd_service" for event in state["events"]))
+                if failure:
+                    self.assertIn("injected host failure", result.stdout)
+
+    def test_host_decommission_and_cutover_fail_closed(self):
+        retained = self.instance | dict(name="retained", port=25567)
+        previous = filters.deployment([self.instance, retained], self.root, "epvpn", "10.77.0.1")
+        for replacement in [None, self.instance | dict(name="renamed"), self.instance | dict(port=25568)]:
+            desired = [retained] + ([replacement] if replacement else [])
+            with self.subTest(replacement=replacement):
+                result, state = self.run_deployment_model(desired, previous)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(state["firewall"], "old live rules")
+                self.assertTrue(state["services"]["enderpin-backend"]["active"])
+                result, state = self.run_deployment_model(desired, previous, ["backend"])
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("worlds, backups and account preserved", result.stdout)
+                self.assertIn("tcp dport 25566 drop", state["applied"][0])
+                self.assertIn("tcp dport 25567 drop", state["firewall"])
+                for entry in desired:
+                    self.assertIn(f"tcp dport {entry['port']} drop", state["applied"][0])
+                self.assertEqual(json.loads(state["files"]["/etc/enderpin/instances.json"]),
+                                 filters.deployment(desired, self.root, "epvpn", "10.77.0.1"))
+                if replacement is None or replacement["port"] != 25566:
+                    self.assertNotIn("tcp dport 25566", state["firewall"])
+                if replacement is None or replacement["name"] != "backend":
+                    self.assertEqual(state["services"]["enderpin-backend"], dict(active=False, enabled=False))
+                self.assertTrue(state["services"]["enderpin-retained"]["active"])
+                events = state["events"]
+                last_download = max(i for i, event in enumerate(events) if event["task"].startswith("Verify and cache"))
+                first_service_change = next(i for i, event in enumerate(events) if event["module"] == "systemd_service")
+                self.assertLess(last_download, first_service_change)
+                self.assertTrue(all(event["args"]["state"] == "reloaded" for event in events
+                                    if event["module"] == "systemd_service" and event["args"]["name"] == "enderpin-firewall"))
+        result, state = self.run_deployment_model([retained], previous, ["backend"], refuse_stop="enderpin-backend")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(state["firewall"], "old live rules")
+        result, state = self.run_deployment_model([retained], previous, ["backend"], failure=dict(task="Verify that recorded old TCP listeners have closed"))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(state["firewall"], "old live rules")
+        result, state = self.run_deployment_model([retained], previous, ["backend"], failure=dict(task="Wait for the instance TCP listener"))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tcp dport 25566 drop", state["firewall"])
+        self.assertIn("tcp dport 25567 drop", state["firewall"])
+        self.assertEqual(json.loads(state["files"]["/etc/enderpin/instances.json"]), previous)
+        self.assertFalse(state["services"]["enderpin-retained"]["active"])
+        changed = self.instance | dict(port=25568)
+        result, state = self.run_deployment_model([retained, changed], previous, ["backend"],
+                                                  failure=dict(task="Wait for the instance TCP listener", instance="backend"))
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tcp dport 25566 drop", state["firewall"])
+        self.assertIn("tcp dport 25568 drop", state["firewall"])
+        self.assertEqual({entry["port"] for entry in json.loads(state["files"]["/etc/enderpin/instances.json"])},
+                         {25566, 25567, 25568})
+        result, state = self.run_deployment_model([], previous, ["backend", "retained"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("tcp dport", state["firewall"])
+        result, state = self.run_deployment_model([retained], previous, ["backend"], missing_units=["enderpin-backend"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("tcp dport 25566", state["firewall"])
+
+    def test_legacy_adoption_requires_explicit_stop(self):
+        result, state = self.run_deployment_model([self.instance], None)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(state["firewall"], "old live rules")
+        result, state = self.run_deployment_model([self.instance], None, ["backend"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tcp dport 25566 drop", state["firewall"])
 
     def test_cd_commit_credentials_and_cleanup(self):
         environment = dict(GITHUB_SHA="a" * 40, ENDERPIN_INVENTORY="all: {}", ENDERPIN_VAULT="encrypted",
