@@ -27,7 +27,7 @@ def manifest(root, inventory_path, revision, config_revision=None, config_sha256
         raise ValueError("checkout does not match GITHUB_SHA")
     if record.run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root, text=True):
         raise ValueError("deployment requires a clean committed checkout")
-    inventory = record.inventory(inventory_path)
+    inventory = record.inventory(inventory_path, root / "deploy/ansible")
     config = record.configuration_revision(root, inventory_path, revision, config_revision, config_sha256)
     config["effective_sha256"] = record.digest(record.encoded(inventory))
     spec = importlib.util.spec_from_file_location("enderpin_filters", root / "deploy/ansible/filter_plugins/enderpin.py")
@@ -60,6 +60,8 @@ def apply(root, inventory, revision, manage_vpn):
     ansible = Path(sys.executable).with_name("ansible-playbook")
     with tempfile.TemporaryDirectory(prefix="enderpin-cd-") as directory:
         temporary = Path(directory)
+        inventory_path = temporary / "inventory.yml"
+        record.write(inventory_path, yaml.safe_dump(record.frozen_inventory(inventory)).encode())
         for name, variable in [("vault.yml", "ENDERPIN_VAULT"), ("password", "ENDERPIN_VAULT_PASSWORD")]:
             value = os.environ[variable]
             if not value.strip():
@@ -77,7 +79,7 @@ def apply(root, inventory, revision, manage_vpn):
                 raise ValueError("vault credentials must be strings")
         except yaml.YAMLError:
             raise ValueError("cannot parse deployment credentials") from None
-        command = [str(ansible), "-i", str(inventory), "--vault-password-file", str(temporary / "password"),
+        command = [str(ansible), "-i", str(inventory_path), "--vault-password-file", str(temporary / "password"),
                    "-e", "@" + str(temporary / "vault.yml"),
                    "-e", json.dumps({"enderpin_revision": revision, "enderpin_source_root": str(root)})]
         for playbook in (["vpn.yml"] if manage_vpn else []) + ["deploy.yml"]:
@@ -108,7 +110,7 @@ def main(argv=None):
         reviewed = json.loads(args.manifest.read_bytes())
         if reviewed != proposed:
             raise ValueError("deployment inputs changed after review; generate and review a new plan")
-        apply(ROOT, args.inventory.resolve(), revision, proposed["manage_vpn"])
+        apply(ROOT, proposed["inventory"], revision, proposed["manage_vpn"])
         record.write(args.record, record.encoded(proposed))
         print("Deployment applied; input revisions recorded.")
 

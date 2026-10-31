@@ -8,7 +8,7 @@
 
 ホスト配置を公開できない場合は、inventoryを別の保護された設定リポジトリまたは不変artifactで版管理し、controllerで取得してください。checkout外のinventoryには `--config-revision <immutable-revision> --config-sha256 <sha256-of-inventory>` をplan/apply双方で指定します。manifestにもホスト情報が含まれるため、レビューartifactの閲覧権限も設定リポジトリと同じ範囲に制限してください。
 
-inventoryは静的YAMLです。Jinjaのlookupや運用設定をvault経由で上書きする方法は利用できません。既存の `ENDERPIN_INVENTORY` Secretをファイルへ移行してください。秘密値を含むキーや未対応変数は拒否します。非秘密と宣言したフィールドに秘密値を埋め込まないでください。
+inventoryは1つの静的YAMLです。`group_vars/`・`host_vars/` の別ファイルはinventoryへ統合してください。applyにはレビュー済みのホスト変数とグループ所属を固定した一時inventoryを渡します。Jinjaのlookupや運用設定をvault経由で上書きする方法は利用できません。既存の `ENDERPIN_INVENTORY` Secretをファイルへ移行してください。秘密値を含むキーや未対応変数は拒否します。非秘密と宣言したフィールドに秘密値を埋め込まないでください。
 
 vaultには `enderpin_forwarding_secret`、`ansible_password`、`ansible_become_password`（互換名 `ansible_ssh_pass` / `ansible_become_pass`）のみを許可します。GitHub Secretsの `ENDERPIN_VAULT` に暗号化vault、`ENDERPIN_VAULT_PASSWORD` に復号パスワードを設定します。その他のSSH鍵は信頼するcontrollerで管理します。
 

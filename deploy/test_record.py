@@ -53,6 +53,20 @@ class RecordTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             record.inventory(self.inventory)
 
+    def test_frozen_inventory_preserves_nested_groups_without_sidecar_inputs(self):
+        self.config["all"]["vars"] = {"enderpin_root": "/srv/enderpin"}
+        self.config["all"]["children"]["minecraft"] = {"children": {"backends": {"hosts": {"home": {"ansible_host": "127.0.0.1"}}}}}
+        self.inventory.write_text(yaml.safe_dump(self.config))
+        before = record.inventory(self.inventory)
+        self.inventory.write_text(yaml.safe_dump(record.frozen_inventory(before)))
+        after = record.inventory(self.inventory)
+        self.assertEqual(before["_meta"], after["_meta"])
+        for group in ["all", "minecraft", "backends"]:
+            self.assertEqual(record.members(before, group), record.members(after, group))
+        (self.root / "host_vars").mkdir()
+        with self.assertRaises(ValueError):
+            record.inventory(self.inventory)
+
     def test_binary_and_external_config_changes_without_source_commit_change(self):
         binary = self.root / "enderpin"
         binary.write_bytes(b"reviewed executable")
@@ -96,13 +110,13 @@ class RecordTests(unittest.TestCase):
             return b""
         with patch.dict(os.environ, ENDERPIN_VAULT="encrypted", ENDERPIN_VAULT_PASSWORD=self.secret), \
              patch.object(record, "run", side_effect=execute):
-            cd.apply(self.root, self.inventory, "a" * 40, True)
+            cd.apply(self.root, {"_meta": {"hostvars": {}}}, "a" * 40, True)
         self.assertEqual([command[-1] for command in calls[1:]], ["vpn.yml", "deploy.yml"])
         self.assertFalse(Path(calls[-1][calls[-1].index("--vault-password-file") + 1]).exists())
         with patch.dict(os.environ, ENDERPIN_VAULT="encrypted", ENDERPIN_VAULT_PASSWORD=self.secret), \
              patch.object(record, "run", return_value=yaml.safe_dump({"enderpin_root": self.secret})) as run:
             with self.assertRaises(ValueError) as error:
-                cd.apply(self.root, self.inventory, "a" * 40, False)
+                cd.apply(self.root, {"_meta": {"hostvars": {}}}, "a" * 40, False)
             self.assertNotIn(self.secret, str(error.exception))
             self.assertEqual(run.call_count, 1)
         before = record.secret_reference("vault:production/forwarding", "revision-1")
@@ -111,6 +125,24 @@ class RecordTests(unittest.TestCase):
         self.assertIn("revision-2", diff)
         self.assertNotIn(self.secret, diff)
         self.assertNotIn(record.digest(self.secret.encode()), diff)
+
+    def test_ignored_native_files_are_not_silently_deployed(self):
+        source = self.root / "workspace"
+        source.mkdir()
+        (source / "enderpin.toml").write_text("format=4")
+        (source / "enderpin.lock").write_text("format=4")
+        files = source / "server/files"
+        files.mkdir(parents=True)
+        (files / "server.properties").write_text("view-distance=6")
+        (self.root / ".gitignore").write_text("*.local\n")
+        record.run(["git", "init", "-q", str(self.root)])
+        record.run(["git", "add", "."], cwd=self.root)
+        selected = {"path": str(source), "inputs": ["server/files"]}
+        record.tracked_inputs(self.root, selected)
+        (files / "private.local").write_text(self.secret)
+        with self.assertRaises(ValueError) as error:
+            record.tracked_inputs(self.root, selected)
+        self.assertNotIn(self.secret, str(error.exception))
 
     def test_record_is_atomic_private_and_failed_apply_preserves_previous(self):
         path = self.root / "last.json"
@@ -121,7 +153,7 @@ class RecordTests(unittest.TestCase):
                 record.write(path, b"new")
         self.assertEqual(path.read_bytes(), b"previous")
         self.assertFalse(list(self.root.glob(".enderpin-record-*")))
-        proposed = {"manage_vpn": False}
+        proposed = {"manage_vpn": False, "inventory": {}}
         reviewed = self.root / "manifest.json"
         args = ["--inventory", str(self.inventory), "--manifest", str(reviewed)]
         with patch.dict(os.environ, GITHUB_SHA="a" * 40), patch.object(cd, "manifest", return_value=proposed), \
@@ -132,7 +164,7 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"previous")
 
     def test_apply_requires_exact_review_and_success_is_recorded(self):
-        proposed = {"source_commit": "a" * 40, "manage_vpn": False, "hosts": {"memory_mib": 1024}}
+        proposed = {"source_commit": "a" * 40, "manage_vpn": False, "inventory": {}, "hosts": {"memory_mib": 1024}}
         reviewed = self.root / "manifest.json"
         previous = self.root / "last.json"
         args = ["--inventory", str(self.inventory), "--manifest", str(reviewed), "--previous", str(previous)]

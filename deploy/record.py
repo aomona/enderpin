@@ -52,7 +52,8 @@ def non_secret(value):
         for key, item in value.items():
             if not isinstance(key, str) or re.search(r"secret|password|credential|token|private[-_]?key$", key, re.I):
                 raise ValueError("secret-bearing fields are not allowed in deployment configuration")
-            non_secret(item)
+            if key != "ansible_python_interpreter" or item != "{{ ansible_playbook_python }}":
+                non_secret(item)
     elif isinstance(value, list):
         for item in value:
             non_secret(item)
@@ -63,33 +64,24 @@ def non_secret(value):
         raise ValueError("deployment configuration must contain JSON-compatible values")
 
 
-def inventory(path):
+def inventory(path, playbook_dir=None):
     try:
         config = yaml.safe_load(path.read_bytes())
-        # The example's interpreter is an Ansible-owned constant, not an input lookup.
-        def interpreter_constant(value):
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key == "ansible_python_interpreter" and item == "{{ ansible_playbook_python }}":
-                        value[key] = "ansible_playbook_python"
-                    else:
-                        interpreter_constant(item)
-            elif isinstance(value, list):
-                for item in value:
-                    interpreter_constant(item)
-        interpreter_constant(config)
         non_secret(config)
     except (OSError, yaml.YAMLError, KeyError, TypeError):
         raise ValueError("cannot read a static non-secret YAML inventory") from None
-    output = run([str(Path(sys.executable).with_name("ansible-inventory")), "-i", str(path), "--list"], text=True)
+    for directory in {path.parent, playbook_dir or path.parent}:
+        if any((directory / name).exists() for name in ["group_vars", "host_vars"]):
+            raise ValueError("put deployment variables in the single versioned inventory, not sidecar directories")
+    output = run([str(Path(sys.executable).with_name("ansible-inventory")), "-i", str(path), "--list"],
+                 cwd=playbook_dir, text=True)
     try:
         resolved = json.loads(output)
         hosts = resolved["_meta"]["hostvars"]
         for variables in hosts.values():
             if set(variables) - INVENTORY_VARIABLES:
                 raise ValueError("inventory contains unsupported variables; put credentials in the vault")
-            safe = {key: value for key, value in variables.items() if key != "ansible_python_interpreter"}
-            non_secret(safe)
+            non_secret(variables)
         if not resolved.get("minecraft"):
             raise ValueError("inventory must select Minecraft hosts")
     except (KeyError, TypeError, json.JSONDecodeError):
@@ -163,3 +155,11 @@ def tracked_inputs(root, source):
         paths.extend(path for path in (workspace / scope).rglob("*") if path.is_file())
     if any(str(path.relative_to(root)) not in tracked for path in paths):
         raise ValueError("all deployed workspace inputs must be tracked; ignored local files cannot be reproduced")
+
+
+def frozen_inventory(resolved):
+    # Preserve membership and effective host variables without loading sidecar files again.
+    return {"all": {"hosts": resolved["_meta"]["hostvars"], "children": {
+        group: {"hosts": {host: {} for host in members(resolved, group)}}
+        for group in resolved if group not in {"_meta", "all"}
+    }}}
