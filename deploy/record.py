@@ -98,6 +98,8 @@ def members(inventory, group):
 
 
 def binary(path, version, expected):
+    if not Path(path).is_absolute():
+        raise ValueError("binary paths must be absolute controller paths")
     if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}", version):
         raise ValueError("binary release/version must be pinned")
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):

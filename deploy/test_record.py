@@ -72,6 +72,8 @@ class RecordTests(unittest.TestCase):
         binary = self.root / "enderpin"
         binary.write_bytes(b"reviewed executable")
         expected = record.digest(binary.read_bytes())
+        with self.assertRaises(ValueError):
+            record.binary(Path("relative/enderpin"), "v1", expected)
         identity = record.binary(binary, "v1", expected)
         self.assertEqual(identity["sha256"], expected)
         binary.write_bytes(b"different executable")

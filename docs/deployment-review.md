@@ -18,6 +18,8 @@ vaultには `enderpin_forwarding_secret`、`ansible_password`、`ansible_become_
 
 各ホストの `enderpin_binary` は配布先アーキテクチャの実行ファイルです。`enderpin_binary_version` にレビューしたrelease/build識別子、`enderpin_binary_sha256` にその実行ファイルのSHA-256を設定します。圧縮アーカイブのdigestとは異なります。controller側でplan/apply時に検証し、ホスト上のステージ済みファイルも実行前に検証します。既存のcontrollerパスのファイルが差し替わっても、同じworkspace commitのまま検証を通過できません。
 
+`enderpin_inspector` はcontroller自身で動く、schema v1の `config show` に対応したバイナリです。こちらも `enderpin_inspector_version` / `enderpin_inspector_sha256` で固定します。配布先CPU用binaryとcontroller用inspectorは別々に検証します。両方のパスは絶対パスで指定してください。
+
 ## 手動レビュー
 
 専用controllerの永続ディレクトリを配布用アカウントだけが書き込める状態で用意します。生成物をcheckout内へ置くとclean checkout検証に失敗するため、外へ保存してください。
