@@ -8,7 +8,7 @@ import subprocess
 from ansible.errors import AnsibleFilterError
 
 
-def workspace(source_root, relative, target, inspector):
+def workspace(source_root, relative, target, inspector, integration="none"):
     root = Path(source_root).resolve(strict=True)
     path = root / relative
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
@@ -76,7 +76,6 @@ def workspace(source_root, relative, target, inspector):
     return {"path": str(path), "runtime": runtime, "target": target,
             "inputs": [item for item in inputs if (path / item).is_dir()],
             "files": config["files"], "launch": config["launch"], "sources": config["sources"]}
-
 
 
 def instances(items):

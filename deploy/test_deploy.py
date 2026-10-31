@@ -46,6 +46,7 @@ class DeploymentTests(unittest.TestCase):
         self.instance = dict(name="backend", workspace="servers/backend", target="server", address="10.77.0.2", port=25566, integration="velocity")
         self.inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]["vars"]
         self.inventory["enderpin_inspector"] = str(BINARY)
+        self.inventory["enderpin_forwarding_secret"] = "a" * 64
 
     def prepare_lock(self, target="server", packages=(), append=False):
         # Build valid fixture identities using the real Rust fingerprints; no downloads.
@@ -232,8 +233,8 @@ profile="backend"
         environment.filters.update({key: CoreFilters().filters()[key] for key in ["combine", "to_nice_yaml"]})
         environment.filters.update(filters.FilterModule().filters())
         environment.filters["to_json"] = json.dumps
-        variables = self.inventory | dict(instance=self.instance | dict(motd="サーバー 🐈"),
-                       source=dict(runtime="velocity", target="server"), enderpin_forwarding_secret="a" * 64,
+        variables = self.inventory | dict(instance=self.instance,
+                       source=dict(runtime="velocity", target="server", native=native.native_settings(dict(inputs=[]), self.instance)), enderpin_forwarding_secret="a" * 64,
                        enderpin_instances=[self.instance], enderpin_source_root=str(self.root),
                        inventory_hostname="home", groups=dict(vpn_clients=["home"]),
                        hostvars=dict(localhost=dict(vpn_network=dict(network="10.77.0.0", netmask="255.255.255.0"))))
@@ -319,7 +320,7 @@ profile="backend"
             "server.properties": ["online-mode=true", "server-port: 25565", "server-ip 127.0.0.1", r"online\u002dmode=false", r"online\-mode=false", "# comment\\\nonline-mode=true"],
             "velocity.toml": ['bind="0.0.0.0:25565"', '[servers]\nlobby="x"', '"online-mode"=true'],
             "config/FabricProxy-Lite.toml": ['secret="DO_NOT_LOG_THIS"', "hackOnlineMode=false"],
-            "config/paper-global.yml": ['proxies:\n  velocity:\n    secret: DO_NOT_LOG_THIS', "proxies: {}\nproxies: {}"],
+            "config/paper-global.yml": ['proxies:\n  velocity:\n    secret: DO_NOT_LOG_THIS', "proxies: {}\nproxies: {}", "[]", "false", "[DO_NOT_LOG_THIS]"],
             "spigot.yml": ["settings: {bungeecord: false}"],
             "forwarding.secret": ["DO_NOT_LOG_THIS"],
         }
@@ -456,6 +457,70 @@ profile="backend"
         self.assertNotIn("DO_NOT_LOG_THIS", result.stdout + result.stderr)
         self.assertFalse(marker.exists())
 
+    def test_canonical_launch_sources_and_native_file_selection(self):
+        manifest = '''format=4
+minecraft="1.21.1"
+[profiles.backend]
+type="server"
+loader="paper"
+memory_mib=4096
+jvm_args=["-XX:+UseZGC", "-Dexample.token=DO_NOT_LOG_THIS"]
+file_groups=["common"]
+[targets.survival]
+profile="backend"
+'''
+        shared = self.source / "shared/common/files"
+        target = self.source / "survival/files"
+        shared.mkdir(parents=True)
+        target.mkdir(parents=True)
+        (shared / "server.properties").write_text("motd=shared\n")
+        (target / "server.properties").write_text("motd=target\n")
+        for override, expected, origin in [("", 4096, "profiles.backend"), ("memory_mib=6144\n", 6144, "targets.survival")]:
+            with self.subTest(origin=origin):
+                (self.source / "enderpin.toml").write_text(manifest + override)
+                self.prepare_lock("survival")
+                source = self.workspace(self.source, ".", "survival")
+                self.assertEqual(source["launch"]["memory_mib"], expected)
+                self.assertEqual(source["sources"]["memory_mib"], origin)
+                self.assertEqual(source["launch"]["jvm_args"], ["-XX:+UseZGC", "-Dexample.token=[REDACTED]"])
+                self.assertNotIn("DO_NOT_LOG_THIS", json.dumps(source))
+                self.assertEqual(source["files"]["survival/run/server.properties"], "survival/files/server.properties")
+                settings = native.native_settings(source, self.instance)
+                self.assertEqual(settings["properties"], "motd=target\n")
+
+    def test_legacy_record_and_explicit_integration_transition(self):
+        old = self.deployment([self.instance], self.root, "epvpn", "10.77.0.1")
+        legacy = [{key: value for key, value in old[0].items() if key != "integration"}]
+        self.assertEqual(filters.transition(old, legacy, [], {})["decommission"], [])
+        normal = self.instance | dict(integration="none")
+        new = self.deployment([normal], self.root, "lo", "127.0.0.1")
+        with self.assertRaisesRegex(AnsibleFilterError, "explicit enderpin_decommission"):
+            filters.transition(new, legacy, [], {})
+        inputs = self.source / "server/files"
+        inputs.mkdir(parents=True)
+        (inputs / "server.properties").write_text("online-mode=true\n")
+        for key in ["enderpin_backend_interface", "enderpin_proxy_address", "enderpin_backends", "enderpin_try", "enderpin_forwarding_secret"]:
+            self.inventory.pop(key)
+        result, state = self.run_deployment_model([normal], legacy, ["backend"])
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("tcp dport 25566 drop", state["applied"][0])
+        self.assertNotIn("tcp dport", state["firewall"])
+        self.assertTrue(state["services"]["enderpin-backend"]["active"])
+        self.assertEqual(json.loads(state["files"]["/etc/enderpin/instances.json"]), new)
+
+    def test_host_native_conflict_preserves_running_services(self):
+        previous = self.deployment([self.instance], self.root, "epvpn", "10.77.0.1")
+        inputs = self.source / "server/files"
+        inputs.mkdir(parents=True)
+        (inputs / "server.properties").write_text("online-mode=false\nrcon.password=DO_NOT_LOG_THIS\n")
+        result, state = self.run_deployment_model([self.instance], previous)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Velocity integration conflicts", result.stdout)
+        self.assertNotIn("DO_NOT_LOG_THIS", result.stdout)
+        self.assertEqual(state["firewall"], "old live rules")
+        self.assertTrue(state["services"]["enderpin-backend"]["active"])
+        self.assertFalse(any(event["module"] == "systemd_service" for event in state["events"]))
+
     def test_vpn_pki_is_persistent(self):
         inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())
         inventory["all"]["vars"]["enderpin_pki_directory"] = str(self.root / "pki")
@@ -503,7 +568,7 @@ profile="backend"
         play["vars"] = self.inventory | dict(
             enderpin_source_root=str(self.root), enderpin_instances=desired,
             enderpin_decommission=list(retired), enderpin_revision="a" * 40,
-            enderpin_accept_eula=True, enderpin_forwarding_secret="a" * 64,
+            enderpin_accept_eula=True,
             model_path=str(scenario / "state.json"), template_root=str(BASE / "ansible"))
         (scenario / "deploy.yml").write_text(yaml.safe_dump([play], sort_keys=False))
         world = "/srv/enderpin/backend/workspace/server/run/world/level.dat"

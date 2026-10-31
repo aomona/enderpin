@@ -66,7 +66,9 @@ def native_settings(source, instance):
                         raise ValueError("reserved TOML key")
                     value = content
                 else:
-                    value = yaml.load(content, Loader=UniqueLoader) or {}
+                    value = yaml.load(content, Loader=UniqueLoader)
+                    if value is None:
+                        value = {}
                     if not isinstance(value, dict):
                         raise ValueError("expected YAML mapping")
                     parent, key = ("proxies", "velocity") if kind == "paper" else ("settings", "bungeecord")
