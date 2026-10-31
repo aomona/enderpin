@@ -48,7 +48,7 @@ openssl rand -hex 32
 
 `inventory.yml`で次を設定します。
 
-- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。同じホストのポートと名前は重複できません。
+- `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。`target`は必須で、manifestに存在するターゲット名を明示します（`server`への自動補完はありません）。同じホストのポートと名前は重複できません。
 - `enderpin_binary`: コントローラー上の検証済みLinuxバイナリ。配布先のCPUアーキテクチャに合わせてホストごとに変更できます。ホスト上ではビルドしません。
 - `enderpin_backends`と`enderpin_try`: Velocityから到達できるIPv4:portと接続順序。
 - `enderpin_proxy_address`と`enderpin_backend_interface`: バックエンドへの接続を許可するプロキシの送信元と受信インターフェース。

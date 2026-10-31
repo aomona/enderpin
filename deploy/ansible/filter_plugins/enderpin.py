@@ -7,7 +7,7 @@ import tomllib
 from ansible.errors import AnsibleFilterError
 
 
-def workspace(source_root, relative, target="server"):
+def workspace(source_root, relative, target):
     root = Path(source_root).resolve(strict=True)
     path = root / relative
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
@@ -32,7 +32,7 @@ def workspace(source_root, relative, target="server"):
         raise AnsibleFilterError("deployment requires format 4; migrate existing worlds explicitly first")
     entry = manifest.get("targets", {}).get(target)
     if entry is None:
-        raise AnsibleFilterError("unknown deployment target")
+        raise AnsibleFilterError(f"unknown deployment target: {target}")
     profile = manifest.get("profiles", {}).get(entry.get("profile"), {})
     if "profile" in entry and entry["profile"] not in manifest.get("profiles", {}):
         raise AnsibleFilterError("unknown target profile")
@@ -87,6 +87,8 @@ def instances(items):
         name = item["name"]
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name) or name in names:
             raise AnsibleFilterError("instance names must be unique lower-case service identifiers")
+        if not isinstance(item.get("target"), str) or not item["target"]:
+            raise AnsibleFilterError(f"instance {name} requires an explicit non-empty target")
         address = ipaddress.ip_address(item["address"])
         port = item["port"]
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535 or port in ports:

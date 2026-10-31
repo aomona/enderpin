@@ -1,6 +1,6 @@
 - name: Read and validate the source workspace
   ansible.builtin.set_fact:
-    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target | default('server')) }}"
+    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target) }}"
     instance_root: "{{ enderpin_root }}/{{ instance.name }}"
     instance_user: "ep_{{ instance.name }}"
     cutover: false

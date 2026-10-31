@@ -34,32 +34,32 @@ class DeploymentTests(unittest.TestCase):
         self.manifest = 'format=4\nminecraft="1.21.1"\n[targets.server]\ntype="server"\nloader="paper"\n'
         (self.source / "enderpin.toml").write_text(self.manifest)
         (self.source / "enderpin.lock").write_text('format=4\n[runtimes.server]\nloader="paper"\n')
-        self.instance = dict(name="backend", workspace="servers/backend", address="10.77.0.2", port=25566, memory_mib=1024)
+        self.instance = dict(name="backend", workspace="servers/backend", target="server", address="10.77.0.2", port=25566, memory_mib=1024)
         self.inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]["vars"]
 
     def test_workspace_boundaries_and_required_fabric_proxy(self):
-        self.assertEqual(filters.workspace(self.root, "servers/backend")["runtime"], "paper")
+        self.assertEqual(filters.workspace(self.root, "servers/backend", "server")["runtime"], "paper")
         for path in ["..", str(self.source)]:
             with self.assertRaises(AnsibleFilterError):
-                filters.workspace(self.root, path)
+                filters.workspace(self.root, path, "server")
         (self.root / "shortcut").symlink_to(self.source)
         with self.assertRaises(AnsibleFilterError):
-            filters.workspace(self.root, "shortcut")
+            filters.workspace(self.root, "shortcut", "server")
         inputs = self.source / "server/files"
         inputs.mkdir(parents=True)
         (inputs / "server.properties").write_text("online-mode=false")
         with self.assertRaises(AnsibleFilterError):
-            filters.workspace(self.root, "servers/backend")
+            filters.workspace(self.root, "servers/backend", "server")
         (inputs / "server.properties").unlink()
         manifest = self.manifest.replace('loader="paper"', 'loader="fabric"') + '[targets.server.packages.proxy]\nmodrinth="fabricproxy-lite"\n'
         (self.source / "enderpin.toml").write_text(manifest)
         with self.assertRaises(AnsibleFilterError):
-            filters.workspace(self.root, "servers/backend")
+            filters.workspace(self.root, "servers/backend", "server")
         (self.source / "enderpin.lock").write_text('format=4\n[runtimes.server]\nloader="fabric"\n[[targets.server.packages]]\nname="fabricproxy-lite"\nkind="mod"\nroots=["proxy"]\n')
-        self.assertEqual(filters.workspace(self.root, "servers/backend")["runtime"], "fabric")
+        self.assertEqual(filters.workspace(self.root, "servers/backend", "server")["runtime"], "fabric")
         (self.source / "enderpin.toml").write_text(manifest.replace('[targets.server]\n', '[targets.server]\ndisabled=["proxy"]\n'))
         with self.assertRaises(AnsibleFilterError):
-            filters.workspace(self.root, "servers/backend")
+            filters.workspace(self.root, "servers/backend", "server")
 
     def test_root_manifest_named_target_profiles_and_groups(self):
         manifest = '''format=4
@@ -94,6 +94,70 @@ roots=["proxy"]
         with self.assertRaises(AnsibleFilterError):
             filters.workspace(self.source, ".", "survival")
 
+    def test_inventory_requires_explicit_target(self):
+        missing = {key: value for key, value in self.instance.items() if key != "target"}
+        for instance in [missing] + [self.instance | dict(target=value) for value in [None, "", 17]]:
+            with self.subTest(instance=instance), self.assertRaisesRegex(AnsibleFilterError, "instance backend requires.*target"):
+                filters.instances([instance])
+
+    def test_complete_named_target_example(self):
+        manifest = (BASE / "example/enderpin.toml").read_text()
+        self.assertNotIn("server", tomllib.loads(manifest)["targets"])
+        # Only lock metadata consumed by the deployment filter; no runtime downloads.
+        lock = '''format=4
+[runtimes.lobby]
+loader="paper"
+[runtimes.survival]
+loader="fabric"
+[runtimes.proxy]
+loader="velocity"
+[[targets.survival.packages]]
+name="fabricproxy-lite"
+kind="mod"
+roots=["fabricproxy-lite"]
+'''
+        inventory = yaml.safe_load((BASE / "ansible/inventory.example.yml").read_text())["all"]
+        hosts = inventory["children"]["minecraft"]["hosts"]
+        instances = [instance for host in hosts.values() for instance in host["enderpin_instances"]]
+        filters.instances(instances)
+        environment = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+        environment.filters.update(filters.FilterModule().filters())
+        environment.filters["to_json"] = json.dumps
+        templates = {name: environment.from_string((BASE / "ansible/templates" / name).read_text())
+                     for name in ["firewall.nft.j2", "enderpin.service.j2"]}
+        source_expression = yaml.safe_load((BASE / "ansible/instance.yml").read_text())[0]["ansible.builtin.set_fact"]["source"]
+        resolve_source = environment.compile_expression(source_expression.removeprefix("{{").removesuffix("}}").strip())
+        variables = self.inventory | dict(enderpin_source_root=str(self.source), enderpin_instances=instances,
+                                         inventory_hostname="home", groups=dict(vpn_clients=["home"]))
+        for other_runtime in [None, "paper", "velocity"]:
+            with self.subTest(other_server_runtime=other_runtime):
+                (self.source / "enderpin.toml").write_text(manifest)
+                (self.source / "enderpin.lock").write_text(lock)
+                if other_runtime is not None:
+                    target_type = "proxy" if other_runtime == "velocity" else "server"
+                    extra_manifest = f'\n[targets.server]\ntype="{target_type}"\nloader="{other_runtime}"\n'
+                    extra_lock = f'\n[runtimes.server]\nloader="{other_runtime}"\n'
+                    (self.source / "enderpin.toml").write_text(manifest + extra_manifest)
+                    (self.source / "enderpin.lock").write_text(lock + extra_lock)
+                firewall = templates["firewall.nft.j2"].render(**variables)
+                for instance, runtime in zip(instances, ["paper", "fabric", "velocity"], strict=True):
+                    source = resolve_source(**variables, instance=instance)
+                    self.assertEqual(source["target"], instance["target"])
+                    self.assertEqual(source["runtime"], runtime)
+                    service = templates["enderpin.service.j2"].render(**variables, instance=instance, source=source)
+                    self.assertIn(f"run --target {instance['target']} --no-interactive", service)
+                    self.assertEqual(" --accept-eula" in service, runtime != "velocity")
+                    if runtime == "velocity":
+                        self.assertNotIn(f"tcp dport {instance['port']}", firewall)
+                    else:
+                        self.assertIn(f"ip saddr 10.77.0.1 tcp dport {instance['port']} accept", firewall)
+                        self.assertIn(f"tcp dport {instance['port']} drop", firewall)
+        unknown = instances[0] | dict(target="missing")
+        with self.assertRaisesRegex(AnsibleFilterError, "unknown deployment target: missing"):
+            templates["firewall.nft.j2"].render(**(variables | dict(enderpin_instances=[unknown])))
+        with self.assertRaisesRegex(AnsibleFilterError, "unknown deployment target: missing"):
+            resolve_source(**variables, instance=unknown)
+
     def test_instance_and_vpn_validation(self):
         filters.instances([self.instance])
         for overrides in [dict(port=True), dict(name="../../etc"), dict(properties={"motd":"hi\nonline-mode=false"}),
@@ -116,7 +180,7 @@ roots=["proxy"]
         environment.filters.update(filters.FilterModule().filters())
         environment.filters["to_json"] = json.dumps
         variables = self.inventory | dict(instance=self.instance | dict(motd="サーバー 🐈"),
-                       source=dict(runtime="velocity"), enderpin_forwarding_secret="a" * 64,
+                       source=dict(runtime="velocity", target="server"), enderpin_forwarding_secret="a" * 64,
                        enderpin_instances=[self.instance], enderpin_source_root=str(self.root),
                        inventory_hostname="home", groups=dict(vpn_clients=["home"]),
                        hostvars=dict(localhost=dict(vpn_network=dict(network="10.77.0.0", netmask="255.255.255.0"))))
