@@ -18,7 +18,7 @@ use serde::Serialize;
 #[command(
     version,
     about = "Reproducible Minecraft client and server workspaces",
-    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\nGetting started:\n  init         Create a workspace and download Minecraft, Java and packages\n\nEveryday:\n  add          Add a package and synchronize\n  remove       Remove a package and synchronize\n  search       Find packages on Modrinth\n  list         Show locked packages\n  sync         Prepare runtimes, packages and shared files without updating pins\n  run          Run a locked client or server\n  update       Update runtimes and Modrinth packages\n\nSettings & authentication:\n  permissions  Review, edit and approve game permissions\n  login        Sign in with Microsoft\n  logout       Remove this CLI's saved credential\n\nAutomation & recovery:\n  wrapper      Generate repository launchers pinned to an Enderpin release\n  lock         Resolve packages without installing files\n  restore      Restore managed files, discarding local changes\n  help         Show command help\n\nOptions:\n{options}\n\nExamples:\n  enderpin init my-world --loader fabric\n  cd my-world\n  enderpin add sodium\n  enderpin login\n  enderpin run\n\nUse enderpin <COMMAND> --help for options and examples.\n"
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\nGetting started:\n  init         Create a workspace and download Minecraft, Java and packages\n\nEveryday:\n  add          Add a package and synchronize\n  remove       Remove a package and synchronize\n  search       Find packages on Modrinth\n  list         Show locked packages\n  sync         Prepare runtimes, packages and shared files without updating pins\n  run          Run a locked client or server\n  update       Update runtimes and Modrinth packages\n\nSettings & authentication:\n  permissions  Review, edit and approve game permissions\n  login        Sign in with Microsoft\n  logout       Remove this CLI's saved credential\n\nAutomation & recovery:\n  wrapper      Generate repository launchers pinned to an Enderpin release\n  config       Inspect resolved configuration as versioned JSON\n  lock         Resolve packages without installing files\n  restore      Restore managed files, discarding local changes\n  help         Show command help\n\nOptions:\n{options}\n\nExamples:\n  enderpin init my-world --loader fabric\n  cd my-world\n  enderpin add sodium\n  enderpin login\n  enderpin run\n\nUse enderpin <COMMAND> --help for options and examples.\n"
 )]
 struct Cli {
     /// Workspace directory (default: current directory).
@@ -125,6 +125,11 @@ struct Init {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect effective configuration without downloads or workspace changes.
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommand,
+    },
     /// Create or initialize targets and native settings; does not start a game session or approve it.
     Init(Init),
     /// Generate repository launchers pinned to a verified GitHub release.
@@ -264,6 +269,19 @@ enum Command {
     List {
         #[command(flatten)]
         selection: Selection,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Emit the versioned, redacted configuration inspection document.
+    Show {
+        #[arg(long, default_value = "all")]
+        target: String,
+        #[arg(long, required = true)]
+        resolved: bool,
+        #[arg(long, required = true)]
+        json: bool,
     },
 }
 
@@ -1604,7 +1622,11 @@ fn run(cli: &Cli) -> Result<()> {
             let summary: Vec<_> = prepared.iter().map(|(side, runtime)| serde_json::json!({"target": side, "java": runtime.java, "classpath_entries": runtime.classpath.len(), "assets": runtime.assets})).collect();
             cli.emit(&summary, "Runtimes, packages and shared files synchronized")
         }
-        Command::Init(_) | Command::Wrapper { .. } | Command::Login { .. } | Command::Logout => {
+        Command::Config { .. }
+        | Command::Init(_)
+        | Command::Wrapper { .. }
+        | Command::Login { .. }
+        | Command::Logout => {
             unreachable!()
         }
         Command::Add { package, .. } => add(cli, &mut ws, package),
@@ -1786,6 +1808,22 @@ fn run(cli: &Cli) -> Result<()> {
 
 fn main() {
     let cli = Cli::parse();
+    if let Command::Config {
+        action: ConfigCommand::Show { target, .. },
+    } = &cli.command
+    {
+        match enderpin::config::inspect(cli.workspace_directory(), target) {
+            Ok(document) => println!("{document}"),
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"schema_version": 1, "error": error})
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Err(error) = run(&cli) {
         if cli.json() {
             eprintln!("{}", serde_json::json!({"error": format!("{error:#}")}));

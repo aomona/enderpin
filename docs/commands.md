@@ -48,6 +48,7 @@ enderpin run
 | `wrapper [--version VERSION] [--force]` | リポジトリ用の起動スクリプトと、Enderpinの固定版・SHA-256を生成。既存ファイルの置き換えは `--force` が必要 |
 | `sync --locked` | パッケージとランタイムのロックが現在の構成と一致する場合だけ準備 |
 | `sync --locked --offline` | 一致するロックとローカルキャッシュだけを使って準備 |
+| `config show --resolved --json` | 読み取り専用の[解決済み JSON](resolved-config.md)。既定は全ターゲット、`--target NAME` で選択 |
 | `lock` | パッケージの解決結果を保存。ゲームファイルの配置・ランタイムの準備はしない |
 | `restore` | ローカルの管理ファイル変更を破棄し、パッケージはロック、共有ファイルは現在の `files/` の内容へ復元 |
 
@@ -64,8 +65,8 @@ enderpin run --target server --accept-eula --memory 1024
 enderpin run --target server --jvm-arg -XX:+UseZGC
 ```
 
-- `--target` の既定は `client`。`init`・パッケージ操作・`sync`・`update`・`lock`・`restore`・`list` は `all` を指定でき、`run`・`search`・`permissions` は 宣言された一つのターゲット名を指定します。
-- `--json` はパッケージ操作・`sync`・`update`・`lock`・`restore`・`list`・`permissions` で利用できます。`init`・`run`・認証操作にはありません。
+- `config show` の `--target` の既定は `all`。ほかのコマンドの既定は `client`。`init`・パッケージ操作・`sync`・`update`・`lock`・`restore`・`list` は `all` を指定でき、`run`・`search`・`permissions` は 宣言された一つのターゲット名を指定します。
+- `config show` は `--resolved --json` が必須です。`--json` はパッケージ操作・`sync`・`update`・`lock`・`restore`・`list`・`permissions` で利用できます。`init`・`run`・認証操作にはありません。
 - `--no-interactive` は `init`・`add`・`search`・`run`・`permissions`、`--yes` は `init`・`add`・`search` で利用できます。それ以外は対話操作を行いません。
 - `enderpin --version` はEnderpin自体の版の表示です。`enderpin wrapper --version VERSION` はWrapperで固定するEnderpin版の指定です。Minecraft版の指定には使いません。
 

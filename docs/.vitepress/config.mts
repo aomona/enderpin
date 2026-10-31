@@ -29,6 +29,7 @@ export default defineConfig({
       { text: '調べる', items: [
         { text: 'コマンド一覧', link: '/commands' },
         { text: 'enderpin.toml の設定', link: '/configuration' },
+        { text: '解決済み JSON API', link: '/resolved-config' },
         { text: '困ったときは', link: '/troubleshooting' },
         { text: '対応環境と制限', link: '/platforms' },
         { text: '認証アダプターの対応', link: '/auth-compatibility' },

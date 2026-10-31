@@ -2,12 +2,13 @@
 import ipaddress
 from pathlib import Path
 import re
-import tomllib
+import json
+import subprocess
 
 from ansible.errors import AnsibleFilterError
 
 
-def workspace(source_root, relative, target):
+def workspace(source_root, relative, target, inspector):
     root = Path(source_root).resolve(strict=True)
     path = root / relative
     if Path(relative).is_absolute() or ".." in Path(relative).parts:
@@ -26,34 +27,32 @@ def workspace(source_root, relative, target):
     for name in ["enderpin.toml", "enderpin.lock"]:
         if (path / name).is_symlink():
             raise AnsibleFilterError("deployment inputs cannot contain symbolic links")
-    manifest = tomllib.loads((path / "enderpin.toml").read_text())
-    lock = tomllib.loads((path / "enderpin.lock").read_text())
-    if manifest.get("format") != 4 or lock.get("format") != 4:
-        raise AnsibleFilterError("deployment requires format 4; migrate existing worlds explicitly first")
-    entry = manifest.get("targets", {}).get(target)
-    if entry is None:
-        raise AnsibleFilterError(f"unknown deployment target: {target}")
-    profile = manifest.get("profiles", {}).get(entry.get("profile"), {})
-    if "profile" in entry and entry["profile"] not in manifest.get("profiles", {}):
-        raise AnsibleFilterError("unknown target profile")
-    config = {**profile, **entry}
-    packages = {}
-    for group in config.get("groups", []):
-        if group not in manifest.get("groups", {}):
-            raise AnsibleFilterError("unknown package group")
-        for alias, package in manifest["groups"][group].get("packages", {}).items():
-            if alias in packages and packages[alias] != package:
-                raise AnsibleFilterError("conflicting package groups")
-            packages[alias] = package
-    packages.update(profile.get("packages", {}))
-    packages.update(entry.get("packages", {}))
-    runtime = config["loader"]
-    if runtime not in ["paper", "fabric", "velocity"] or target not in lock.get("runtimes", {}) or config.get("type") not in ["server", "proxy"]:
-        raise AnsibleFilterError("deployment requires a prepared Paper, Fabric or Velocity server lock")
-    inputs = [f"{target}/files"]
-    for group in config.get("file_groups", []):
-        safe_name(group)
-        inputs.append(f"shared/{group}/files")
+    if not Path(inspector).is_absolute():
+        raise AnsibleFilterError("enderpin_inspector must be an absolute path to a reviewed controller binary")
+    try:
+        result = subprocess.run([str(inspector), "-C", str(path), "config", "show", "--resolved",
+                                 "--target", target, "--json"], capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            failure = json.loads(result.stderr)
+            if failure.get("schema_version") == 1 and failure.get("error", {}).get("code") == "unknown_target":
+                raise AnsibleFilterError(f"unknown deployment target: {target}")
+            raise AnsibleFilterError("Enderpin rejected the source configuration; inspect it with config show")
+        document = json.loads(result.stdout)
+        if document.get("schema_version") != 1:
+            raise AnsibleFilterError("unsupported Enderpin resolved configuration schema")
+        config = document["targets"][target]
+        if any(item["severity"] == "error" for item in config["diagnostics"]):
+            raise AnsibleFilterError("Enderpin reported an incompatible source configuration")
+        if any(config["lock"][scope]["status"] != "current" for scope in ["packages", "runtime"]):
+            raise AnsibleFilterError("deployment requires current package and runtime locks")
+        runtime = config["runtime"]["loader"]
+        if runtime not in ["paper", "fabric", "velocity"] or config["type"] not in ["server", "proxy"]:
+            raise AnsibleFilterError("deployment requires a prepared Paper, Fabric or Velocity server lock")
+        inputs = config["file_inputs"]
+        packages = {alias: item["declaration"] for alias, item in config["packages"].items()}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError, AttributeError):
+        # Do not log subprocess output: even an incompatible binary may print secrets.
+        raise AnsibleFilterError("cannot inspect workspace with the reviewed Enderpin binary") from None
     for relative_input in inputs:
         item = path / relative_input
         if any(parent.is_symlink() for parent in [item, *item.parents] if parent != root) or (item.is_dir() and any(p.is_symlink() for p in item.rglob("*"))):
@@ -67,11 +66,11 @@ def workspace(source_root, relative, target):
             raise AnsibleFilterError("Fabric backends require an enabled direct fabricproxy-lite Modrinth package")
         if not any(set(p.get("roots", [])) & set(aliases) and p.get("kind") == "mod"
                    and p.get("name") not in disabled and p.get("project") not in disabled
-                   for p in lock.get("targets", {}).get(target, {}).get("packages", [])):
+                   for p in config["lock"]["packages"]["identities"]):
             raise AnsibleFilterError("FabricProxy-Lite must be present and enabled in the server package lock")
     if runtime == "paper":
         # shortcut: the managed forwarding template uses the Paper 1.19+ configuration layout.
-        version = config.get("minecraft", manifest["minecraft"]).split(".")
+        version = config["runtime"]["minecraft"].split(".")
         if len(version) < 2 or not version[0].isdigit() or not version[1].isdigit() or (int(version[0]), int(version[1])) < (1, 19):
             raise AnsibleFilterError("the Paper deployment template requires Minecraft 1.19 or newer")
     managed = ["server.properties", "velocity.toml", "forwarding.secret", "config/FabricProxy-Lite.toml", "config/paper-global.yml", "spigot.yml"]
@@ -122,12 +121,12 @@ def backends(items):
     return items
 
 
-def deployment(items, source_root, interface, proxy_address):
+def deployment(items, source_root, interface, proxy_address, inspector):
     return [dict(name=item["name"], address=item["address"], port=item["port"],
                  workspace=item["workspace"], target=source["target"], runtime=source["runtime"],
                  interface=interface, proxy_address=proxy_address)
             for item in instances(items)
-            for source in [workspace(source_root, item["workspace"], item["target"])]]
+            for source in [workspace(source_root, item["workspace"], item["target"], inspector)]]
 
 
 def transition(desired, previous, decommission, services):

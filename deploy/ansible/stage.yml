@@ -1,6 +1,6 @@
 - name: Read and validate the source workspace
   ansible.builtin.set_fact:
-    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target) }}"
+    source: "{{ enderpin_source_root | enderpin_workspace(instance.workspace, instance.target, enderpin_inspector) }}"
     instance_root: "{{ enderpin_root }}/{{ instance.name }}"
     instance_user: "ep_{{ instance.name }}"
 - name: Check for an unmigrated legacy game directory

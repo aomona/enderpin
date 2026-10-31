@@ -46,7 +46,7 @@
   tasks:
     - name: Resolve every selected workspace before staging
       ansible.builtin.set_fact:
-        enderpin_desired: "{{ enderpin_instances | enderpin_deployment(enderpin_source_root, enderpin_backend_interface, enderpin_proxy_address) }}"
+        enderpin_desired: "{{ enderpin_instances | enderpin_deployment(enderpin_source_root, enderpin_backend_interface, enderpin_proxy_address, enderpin_inspector) }}"
         enderpin_staged: []
     - name: Read the previous deployment record
       ansible.builtin.stat:

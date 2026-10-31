@@ -7,6 +7,8 @@ all:
     ansible_user: deploy
     enderpin_root: /srv/enderpin
     # A reviewed binary on the Ansible controller; override per host for ARM64.
+    # Native binary for read-only config inspection on the controller (schema v1).
+    enderpin_inspector: /opt/enderpin/bin/enderpin
     enderpin_binary: /opt/enderpin/bin/linux-x86_64/enderpin
     enderpin_accept_eula: false # Set true only after reviewing the Minecraft EULA.
     enderpin_proxy_address: 10.77.0.1

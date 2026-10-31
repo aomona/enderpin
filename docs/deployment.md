@@ -49,6 +49,7 @@ openssl rand -hex 32
 `inventory.yml`で次を設定します。
 
 - `minecraft.hosts.<host>.enderpin_instances`: サービス名、リポジトリ内workspace（ルートは`.`）、target名、bind address、port、memory_mib。`target`は必須で、manifestに存在するターゲット名を明示します（`server`への自動補完はありません）。同じホストのポートと名前は重複できません。
+- `enderpin_inspector`: コントローラーのOS/CPUで実行できる検証済みEnderpinの絶対パス。`config show --resolved --json` の schema v1 対応版を事前配置します。Ansible はこの[読み取り専用 API](resolved-config.md)で継承・グループ・ロックを検査します。リポジトリ内の Wrapper や Manifest のコマンドは実行しません。配布先のLinuxバイナリとは別に設定できます。
 - `enderpin_binary`: コントローラー上の検証済みLinuxバイナリ。配布先のCPUアーキテクチャに合わせてホストごとに変更できます。ホスト上ではビルドしません。
 - `enderpin_backends`と`enderpin_try`: Velocityから到達できるIPv4:portと接続順序。
 - `enderpin_proxy_address`と`enderpin_backend_interface`: バックエンドへの接続を許可するプロキシの送信元と受信インターフェース。
