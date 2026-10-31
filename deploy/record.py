@@ -20,7 +20,8 @@ INVENTORY_VARIABLES = {
     "enderpin_root", "enderpin_binary", "enderpin_binary_version", "enderpin_binary_sha256",
     "enderpin_accept_eula", "enderpin_proxy_address", "enderpin_backend_interface",
     "enderpin_backends", "enderpin_try", "enderpin_vpn", "enderpin_vpn_clients",
-    "enderpin_pki_directory", "enderpin_instances",
+    "enderpin_pki_directory", "enderpin_instances", "enderpin_decommission",
+    "enderpin_inspector", "enderpin_inspector_version", "enderpin_inspector_sha256",
 }
 
 
