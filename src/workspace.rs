@@ -22,6 +22,8 @@ pub struct SyncOptions {
     pub restore: bool,
     pub no_ignore: bool,
     pub lock_only: bool,
+    /// Prepare a demo runtime without requiring account authentication compatibility.
+    pub demo: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,8 +114,17 @@ impl Workspace {
             !(options.locked && options.update),
             "locked and update cannot be combined"
         );
+        // Demo only changes runtime inspection; planning and commit retain the shared permissions.
+        let mut runtime_manifest = manifest.clone();
         for &side in sides {
-            crate::runtime::preflight(&manifest.target(side)?, None)?;
+            if options.demo {
+                runtime_manifest
+                    .target_mut(side)?
+                    .permissions
+                    .get_or_insert_with(Default::default)
+                    .account_authentication = false;
+            }
+            crate::runtime::preflight(&runtime_manifest.target(side)?, None)?;
         }
         let mut lock = self.lockfile.clone();
         let mut prepared = BTreeMap::new();
@@ -132,7 +143,8 @@ impl Workspace {
                     side
                 );
             }
-            let runtime = crate::runtime::resolve(&manifest, side, previous, update, &self.cache)?;
+            let runtime =
+                crate::runtime::resolve(&runtime_manifest, side, previous, update, &self.cache)?;
             lock.runtimes.insert(side.into(), runtime);
         }
         let packages = self.plan(&manifest, sides, options)?;

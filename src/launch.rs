@@ -197,6 +197,7 @@ pub fn start(
         SyncOptions {
             locked: true,
             offline: options.offline,
+            demo,
             ..Default::default()
         },
         false,
